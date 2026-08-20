@@ -1,0 +1,29 @@
+@import url('https://fonts.googleapis.com/css2?family=Raleway:wght@300;400;600;700&family=Sacramento&display=swap');
+@import "tailwindcss";
+
+:root {
+  /* Aligned with MUI's Light Theme Neutral values as fallbacks */
+  --background: #f4f5f7;       /* neutral[50] */
+  --foreground: #14191e;       /* neutral[900] */
+  --cc-bg-paper: #ffffff;      /* common.white */
+  --cc-text-secondary: #4d5761; /* neutral[700] */
+  --cc-border: #d0d4da;        /* neutral[200] */
+  --cc-radius: 6px;            /* BORDER_RADIUS */
+  --cc-spacing: 8px;           /* SPACING_UNIT */
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-surface: var(--cc-bg-paper);
+  --color-border: var(--cc-border);
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  --radius-default: var(--cc-radius);
+  --spacing-default: var(--cc-spacing);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+}
