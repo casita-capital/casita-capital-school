@@ -7,6 +7,7 @@ const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'sb_publish
 export const supabase = createSupabaseClient(supabaseUrl, supabaseAnonKey, {
   db: { schema: 'school' },
   auth: {
+    flowType: 'implicit',
     lock: async (_name, _acquireTimeout, fn) => {
       return await fn();
     },
@@ -17,6 +18,7 @@ export function createClient() {
   return createBrowserClient(supabaseUrl, supabaseAnonKey, {
     db: { schema: 'school' },
     auth: {
+      flowType: 'implicit',
       lock: async (_name, _acquireTimeout, fn) => {
         return await fn();
       },

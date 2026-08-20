@@ -2,7 +2,7 @@
 
 import { useEffect, useState, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Box, Button, Card, CardContent, CircularProgress, Typography, Alert, Stack } from '@mui/material';
+import { Box, Button, Card, CardContent, CircularProgress, Typography, Alert } from '@mui/material';
 import { createClient } from 'src/services/supabase/client';
 import { Logo } from 'src/components/base/logo';
 
@@ -34,29 +34,7 @@ function AuthCallbackContent() {
         return;
       }
 
-      // 3. Check for PKCE ?code=...
-      const code = searchParams.get('code');
-      if (code) {
-        try {
-          const { data, error } = await supabase.auth.exchangeCodeForSession(code);
-          if (error) {
-            setErrorDetails(error.message);
-            return;
-          }
-          if (data.session?.user?.email) {
-            localStorage.setItem('school_active_user_email', data.session.user.email);
-            router.push('/');
-            router.refresh();
-            return;
-          }
-        } catch (err: unknown) {
-          const errText = err instanceof Error ? err.message : 'Session exchange failed';
-          setErrorDetails(errText);
-          return;
-        }
-      }
-
-      // 4. Check for active Supabase session
+      // 3. Check for active Supabase session (handles Implicit flow #access_token and PKCE session)
       const { data: { session } } = await supabase.auth.getSession();
       if (session?.user?.email) {
         localStorage.setItem('school_active_user_email', session.user.email);
@@ -65,8 +43,33 @@ function AuthCallbackContent() {
         return;
       }
 
-      // If no code, error, or session found, show error
-      setErrorDetails('No authentication code or active session returned from provider.');
+      // 4. Check for PKCE ?code=...
+      const code = searchParams.get('code');
+      if (code) {
+        try {
+          const { data, error } = await supabase.auth.exchangeCodeForSession(code);
+          if (!error && data.session?.user?.email) {
+            localStorage.setItem('school_active_user_email', data.session.user.email);
+            router.push('/');
+            router.refresh();
+            return;
+          }
+        } catch {
+          // Ignore exchange error if session was created
+        }
+
+        // Retry session check
+        const { data: retryData } = await supabase.auth.getSession();
+        if (retryData.session?.user?.email) {
+          localStorage.setItem('school_active_user_email', retryData.session.user.email);
+          router.push('/');
+          router.refresh();
+          return;
+        }
+      }
+
+      // If no session found after attempts, show fallback error
+      setErrorDetails('Authentication session could not be established. Please try logging in again.');
     }
 
     processAuth();
@@ -98,9 +101,6 @@ function AuthCallbackContent() {
                 {errorDetails}
               </Typography>
             </Alert>
-            <Typography variant="caption" color="text.secondary" paragraph display="block">
-              Please check your Supabase Auth Provider settings and Google Cloud OAuth credentials.
-            </Typography>
             <Button
               variant="contained"
               color="primary"
