@@ -8,6 +8,10 @@ import {
   CardContent,
   Chip,
   CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   Divider,
   Grid,
   IconButton,
@@ -23,11 +27,11 @@ import {
   BookOpen,
   Plus,
   Trash2,
+  Edit3,
   GripVertical,
   ArrowUp,
   ArrowDown,
-  Sparkles,
-  CheckCircle,
+  Save,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { PageHeading } from 'src/components/base/page-heading';
@@ -59,6 +63,17 @@ export default function SubjectsHabitsPage() {
   const [newSubjectColor, setNewSubjectColor] = useState('#0C74E4');
   const [newHabitTitle, setNewHabitTitle] = useState('');
   const [saving, setSaving] = useState(false);
+
+  // Edit Subject Modal State
+  const [editingSubject, setEditingSubject] = useState<Subject | null>(null);
+  const [editSubjectName, setEditSubjectName] = useState('');
+  const [editSubjectColor, setEditSubjectColor] = useState('#0C74E4');
+  const [savingSubjectEdit, setSavingSubjectEdit] = useState(false);
+
+  // Edit Habit Modal State
+  const [editingHabit, setEditingHabit] = useState<Habit | null>(null);
+  const [editHabitTitle, setEditHabitTitle] = useState('');
+  const [savingHabitEdit, setSavingHabitEdit] = useState(false);
 
   const [draggedSubjectIndex, setDraggedSubjectIndex] = useState<number | null>(null);
   const [draggedHabitIndex, setDraggedHabitIndex] = useState<number | null>(null);
@@ -117,6 +132,49 @@ export default function SubjectsHabitsPage() {
       toast.error('Failed to add subject');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleOpenEditSubject = (sub: Subject) => {
+    setEditingSubject(sub);
+    setEditSubjectName(sub.name);
+    setEditSubjectColor(sub.color || '#0C74E4');
+  };
+
+  const handleSaveEditSubject = async () => {
+    if (!editingSubject) return;
+    if (!editSubjectName.trim()) {
+      toast.error('Subject name cannot be empty');
+      return;
+    }
+
+    setSavingSubjectEdit(true);
+    try {
+      const { error } = await supabase
+        .from('subjects')
+        .update({
+          name: editSubjectName.trim(),
+          color: editSubjectColor,
+        })
+        .eq('id', editingSubject.id);
+
+      if (error) {
+        toast.error(`Failed to update subject: ${error.message}`);
+      } else {
+        setSubjects((prev) =>
+          prev.map((s) =>
+            s.id === editingSubject.id
+              ? { ...s, name: editSubjectName.trim(), color: editSubjectColor }
+              : s
+          )
+        );
+        toast.success('Subject updated!');
+        setEditingSubject(null);
+      }
+    } catch {
+      toast.error('Error updating subject');
+    } finally {
+      setSavingSubjectEdit(false);
     }
   };
 
@@ -246,6 +304,45 @@ export default function SubjectsHabitsPage() {
     }
   };
 
+  const handleOpenEditHabit = (habit: Habit) => {
+    setEditingHabit(habit);
+    setEditHabitTitle(habit.title);
+  };
+
+  const handleSaveEditHabit = async () => {
+    if (!editingHabit) return;
+    if (!editHabitTitle.trim()) {
+      toast.error('Habit title cannot be empty');
+      return;
+    }
+
+    setSavingHabitEdit(true);
+    try {
+      const { error } = await supabase
+        .from('habits')
+        .update({
+          title: editHabitTitle.trim(),
+        })
+        .eq('id', editingHabit.id);
+
+      if (error) {
+        toast.error(`Failed to update habit: ${error.message}`);
+      } else {
+        setHabits((prev) =>
+          prev.map((h) =>
+            h.id === editingHabit.id ? { ...h, title: editHabitTitle.trim() } : h
+          )
+        );
+        toast.success('Habit updated!');
+        setEditingHabit(null);
+      }
+    } catch {
+      toast.error('Error updating habit');
+    } finally {
+      setSavingHabitEdit(false);
+    }
+  };
+
   const handleDeleteHabit = async (id: string) => {
     try {
       const { error } = await supabase.from('habits').delete().eq('id', id);
@@ -332,7 +429,7 @@ export default function SubjectsHabitsPage() {
     <Box>
       <PageHeading
         heading="Subjects & Habit Trackers Manager"
-        caption="Define your 8 school subjects in 1 draggable column with block colors, and organize habit tracker lines for your printable weekly binder planners."
+        caption="Define your school subjects in draggable order with accent colors, and organize habit tracker lines for your printable weekly binder planners."
       />
 
       <Grid container spacing={3}>
@@ -397,10 +494,10 @@ export default function SubjectsHabitsPage() {
                   </Stack>
 
                   <Typography variant="subtitle2" fontWeight={700} mb={1.5}>
-                    Single-Column Draggable Subjects List (1–{subjects.length})
+                    Draggable Subjects List (1–{subjects.length})
                   </Typography>
                   <Typography variant="caption" color="text.secondary" mb={2} display="block">
-                    Drag items or use the up/down arrows to re-order 1 to {subjects.length}. Click the color circle to assign block colors for weekly time scheduling.
+                    Drag items or use the up/down arrows to re-order. Click the edit icon to rename a subject without deleting associated data.
                   </Typography>
 
                   {/* SINGLE COLUMN DRAGGABLE SUBJECTS LIST */}
@@ -470,6 +567,15 @@ export default function SubjectsHabitsPage() {
                         </Stack>
 
                         <Stack direction="row" alignItems="center" spacing={1}>
+                          <Tooltip title="Edit Subject">
+                            <IconButton
+                              size="small"
+                              color="primary"
+                              onClick={() => handleOpenEditSubject(s)}
+                            >
+                              <Edit3 size={18} />
+                            </IconButton>
+                          </Tooltip>
                           <IconButton
                             size="small"
                             disabled={idx === 0}
@@ -517,10 +623,10 @@ export default function SubjectsHabitsPage() {
                   </Stack>
 
                   <Typography variant="subtitle2" fontWeight={700} mb={1.5}>
-                    Single-Column Draggable Habits List (1–{habits.length})
+                    Draggable Habits List (1–{habits.length})
                   </Typography>
                   <Typography variant="caption" color="text.secondary" mb={2} display="block">
-                    Drag items or use the up/down arrows to re-order 1 to {habits.length}. The order matches the habit rows on Page 2 of your Weekly Planner.
+                    Drag items or use the up/down arrows to re-order. Click the edit icon to update habit titles without losing existing logs.
                   </Typography>
 
                   {/* SINGLE COLUMN DRAGGABLE HABITS LIST */}
@@ -571,6 +677,15 @@ export default function SubjectsHabitsPage() {
                         </Stack>
 
                         <Stack direction="row" alignItems="center" spacing={1}>
+                          <Tooltip title="Edit Habit">
+                            <IconButton
+                              size="small"
+                              color="secondary"
+                              onClick={() => handleOpenEditHabit(h)}
+                            >
+                              <Edit3 size={18} />
+                            </IconButton>
+                          </Tooltip>
                           <IconButton
                             size="small"
                             disabled={idx === 0}
@@ -610,18 +725,109 @@ export default function SubjectsHabitsPage() {
               </Box>
               <Divider sx={{ my: 2 }} />
               <Typography variant="body2" color="text.secondary" paragraph>
+                <strong>Editing Items:</strong> Click the edit icon (<Edit3 size={14} style={{ display: 'inline' }} />) to update any subject name or habit title without deleting associated assignments, notes, or schedule blocks.
+              </Typography>
+              <Typography variant="body2" color="text.secondary" paragraph>
                 <strong>Subjects Order:</strong> The order defined here (1–8) determines the row sequence printed on both Page 1 and Page 2 of your binder planners.
               </Typography>
               <Typography variant="body2" color="text.secondary" paragraph>
-                <strong>Block Colors:</strong> Each subject color assigned here will be highlighted in future time-block weekly scheduling tools.
+                <strong>Block Colors:</strong> Each subject color assigned here will be highlighted in your weekly time schedule.
               </Typography>
               <Typography variant="body2" color="text.secondary">
-                <strong>Habit Lines:</strong> Habit titles match the printable bubble rows on the right sidebar of Page 2.
+                <strong>Habit Lines:</strong> Habit titles match the printable bubble rows on Page 2 of your Weekly Planner.
               </Typography>
             </CardContent>
           </Card>
         </Grid>
       </Grid>
+
+      {/* EDIT SUBJECT MODAL */}
+      <Dialog open={Boolean(editingSubject)} onClose={() => setEditingSubject(null)} maxWidth="xs" fullWidth>
+        <DialogTitle fontWeight={700}>Edit Subject</DialogTitle>
+        <DialogContent dividers>
+          <Stack spacing={2.5} pt={1}>
+            <TextField
+              fullWidth
+              label="Subject Name"
+              value={editSubjectName}
+              onChange={(e) => setEditSubjectName(e.target.value)}
+              required
+            />
+            <Box display="flex" alignItems="center" justifyContent="space-between">
+              <Typography variant="subtitle2" fontWeight={700}>
+                Subject Accent Color
+              </Typography>
+              <Stack direction="row" spacing={1.5} alignItems="center">
+                <input
+                  type="color"
+                  value={editSubjectColor}
+                  onChange={(e) => setEditSubjectColor(e.target.value)}
+                  style={{
+                    width: 36,
+                    height: 36,
+                    padding: 0,
+                    border: 'none',
+                    borderRadius: '50%',
+                    cursor: 'pointer',
+                  }}
+                />
+                <TextField
+                  size="small"
+                  value={editSubjectColor}
+                  onChange={(e) => setEditSubjectColor(e.target.value)}
+                  sx={{ width: 110 }}
+                />
+              </Stack>
+            </Box>
+          </Stack>
+        </DialogContent>
+        <DialogActions sx={{ p: 2 }}>
+          <Button onClick={() => setEditingSubject(null)} color="inherit">
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            color="primary"
+            onClick={handleSaveEditSubject}
+            disabled={savingSubjectEdit}
+            startIcon={<Save size={16} />}
+            sx={{ fontWeight: 700 }}
+          >
+            {savingSubjectEdit ? 'Saving...' : 'Save Changes'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* EDIT HABIT MODAL */}
+      <Dialog open={Boolean(editingHabit)} onClose={() => setEditingHabit(null)} maxWidth="xs" fullWidth>
+        <DialogTitle fontWeight={700}>Edit Habit Tracker</DialogTitle>
+        <DialogContent dividers>
+          <Stack spacing={2.5} pt={1}>
+            <TextField
+              fullWidth
+              label="Habit Title"
+              value={editHabitTitle}
+              onChange={(e) => setEditHabitTitle(e.target.value)}
+              required
+            />
+          </Stack>
+        </DialogContent>
+        <DialogActions sx={{ p: 2 }}>
+          <Button onClick={() => setEditingHabit(null)} color="inherit">
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            color="primary"
+            onClick={handleSaveEditHabit}
+            disabled={savingHabitEdit}
+            startIcon={<Save size={16} />}
+            sx={{ fontWeight: 700 }}
+          >
+            {savingHabitEdit ? 'Saving...' : 'Save Changes'}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 }
