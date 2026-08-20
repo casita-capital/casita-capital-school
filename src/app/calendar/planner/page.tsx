@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import {
   Alert,
@@ -129,7 +129,7 @@ const DEFAULT_HABITS: Habit[] = [
   { id: 'hab-7', title: 'Vitamin 7', sort_order: 7 },
 ];
 
-export default function WeeklyPlannerCreatorPage() {
+function PlannerContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const theme = useTheme();
@@ -1314,5 +1314,19 @@ export default function WeeklyPlannerCreatorPage() {
         }
       `}</style>
     </Box>
+  );
+}
+
+export default function WeeklyPlannerCreatorPage() {
+  return (
+    <Suspense
+      fallback={
+        <Box display="flex" justifyContent="center" alignItems="center" minHeight="50vh">
+          <CircularProgress />
+        </Box>
+      }
+    >
+      <PlannerContent />
+    </Suspense>
   );
 }
