@@ -28,11 +28,13 @@ import {
   Check,
   Settings,
   Palette,
+  ArrowRight,
 } from 'lucide-react';
 import { useCustomization } from 'src/hooks/use-customization';
 import { HEADER_HEIGHT, SIDEBAR_WIDTH } from 'src/theme/utils';
 import { createClient } from 'src/services/supabase/client';
 import { RouterLink } from 'src/components/base/router-link';
+import { ItemIcon } from 'src/components/base/item-icon';
 import type { ColorPreset } from 'src/theme';
 
 interface HeaderProps {
@@ -43,6 +45,7 @@ interface UserProfile {
   full_name: string;
   email: string;
   role: string;
+  avatar_url?: string | null;
 }
 
 interface ColorPresetOption {
@@ -80,27 +83,62 @@ export function Header({ onMobileNavOpen }: HeaderProps) {
   useEffect(() => {
     async function loadUser() {
       const { data: { user } } = await supabase.auth.getUser();
-      if (user) {
-        const { data } = await supabase
-          .from('users')
-          .select('full_name, email, role')
-          .eq('auth_id', user.id)
-          .single();
+      const activeEmail = user?.email || (typeof window !== 'undefined' ? localStorage.getItem('school_active_user_email') : null) || 'blake.womble@gmail.com';
 
-        if (data) {
-          setProfile(data as UserProfile);
-        } else {
-          setProfile({
-            full_name: (user.user_metadata?.full_name as string) || user.email || 'Parent User',
-            email: user.email || '',
-            role: 'parent',
-          });
+      if (user?.id) {
+        const { data: byAuthId } = await supabase
+          .from('users')
+          .select('full_name, email, role, avatar_url')
+          .eq('auth_id', user.id)
+          .maybeSingle();
+
+        if (byAuthId) {
+          setProfile(byAuthId as UserProfile);
+          return;
         }
+      }
+
+      if (activeEmail) {
+        const { data: byEmail } = await supabase
+          .from('users')
+          .select('full_name, email, role, avatar_url')
+          .eq('email', activeEmail)
+          .maybeSingle();
+
+        if (byEmail) {
+          setProfile(byEmail as UserProfile);
+          return;
+        }
+      }
+
+      // Default fallback
+      const { data: fallbackUser } = await supabase
+        .from('users')
+        .select('full_name, email, role, avatar_url')
+        .eq('email', 'blake.womble@gmail.com')
+        .maybeSingle();
+
+      if (fallbackUser) {
+        setProfile(fallbackUser as UserProfile);
       } else {
-        setProfile(null);
+        setProfile({
+          full_name: 'Blake Womble',
+          email: 'blake.womble@gmail.com',
+          role: 'admin',
+        });
       }
     }
+
     loadUser();
+
+    const handleProfileUpdated = () => {
+      loadUser();
+    };
+
+    window.addEventListener('school_user_profile_updated', handleProfileUpdated);
+    return () => {
+      window.removeEventListener('school_user_profile_updated', handleProfileUpdated);
+    };
   }, [supabase]);
 
   const handleOpenMenu = (event: React.MouseEvent<HTMLElement>) => {
@@ -121,6 +159,9 @@ export function Header({ onMobileNavOpen }: HeaderProps) {
 
   const handleSignOut = async () => {
     handleCloseMenu();
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem('school_active_user_email');
+    }
     await supabase.auth.signOut();
     setProfile(null);
     router.push('/login');
@@ -164,10 +205,6 @@ export function Header({ onMobileNavOpen }: HeaderProps) {
           <MenuIcon size={20} />
         </IconButton>
 
-        <Typography variant="subtitle2" fontWeight={600} color="text.primary">
-          school.casitacapital.com
-        </Typography>
-
         <Box sx={{ flexGrow: 1 }} />
 
         <Box display="flex" alignItems="center" gap={1}>
@@ -192,6 +229,7 @@ export function Header({ onMobileNavOpen }: HeaderProps) {
             }}
           >
             <Avatar
+              src={profile?.avatar_url && (profile.avatar_url.startsWith('data:') || profile.avatar_url.startsWith('http')) ? profile.avatar_url : undefined}
               sx={{
                 width: 32,
                 height: 32,
@@ -200,11 +238,17 @@ export function Header({ onMobileNavOpen }: HeaderProps) {
                 fontWeight: 700,
               }}
             >
-              {profile ? getInitials(profile.full_name) : <User size={16} />}
+              {profile && (!profile.avatar_url || (!profile.avatar_url.startsWith('data:') && !profile.avatar_url.startsWith('http'))) ? (
+                profile.avatar_url && profile.avatar_url !== 'User' ? (
+                  <ItemIcon name={profile.avatar_url} size={16} color="#ffffff" />
+                ) : (
+                  getInitials(profile.full_name)
+                )
+              ) : null}
             </Avatar>
             <Box sx={{ display: { xs: 'none', sm: 'block' }, textAlign: 'left', pr: 0.5 }}>
               <Typography variant="body2" fontWeight={700} color="text.primary" lineHeight={1.2}>
-                {profile ? profile.full_name : 'Guest Account'}
+                {profile ? (profile.full_name.includes('@') ? profile.full_name.split('@')[0] : profile.full_name) : 'Parent User'}
               </Typography>
               <Typography variant="caption" color="text.secondary" lineHeight={1}>
                 {profile ? profile.role.toUpperCase() : 'Click to customize theme'}
@@ -232,14 +276,36 @@ export function Header({ onMobileNavOpen }: HeaderProps) {
             }}
           >
             {/* Header: User Account Info */}
-            <Box sx={{ pb: 1.5 }}>
+            <Box sx={{ pb: 1 }}>
               <Typography variant="subtitle1" fontWeight={700} color="text.primary">
-                {profile ? profile.full_name : 'Casita Capital School'}
+                {profile ? (profile.full_name.includes('@') ? profile.full_name.split('@')[0] : profile.full_name) : 'Parent User'}
               </Typography>
               <Typography variant="caption" color="text.secondary" display="block" noWrap>
-                {profile ? profile.email : 'school.casitacapital.com'}
+                {profile ? profile.email : ''}
               </Typography>
             </Box>
+
+            {/* Edit User Profile Button */}
+            <Button
+              component={RouterLink}
+              href="/profile"
+              onClick={handleCloseMenu}
+              variant="outlined"
+              color="primary"
+              fullWidth
+              size="small"
+              startIcon={<User size={16} />}
+              endIcon={<ArrowRight size={14} />}
+              sx={{
+                fontWeight: 700,
+                borderRadius: 2,
+                justifyContent: 'space-between',
+                my: 1,
+                py: 0.8,
+              }}
+            >
+              Edit User Profile
+            </Button>
 
             <Divider sx={{ my: 1.5 }} />
 

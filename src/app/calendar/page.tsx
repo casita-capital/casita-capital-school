@@ -15,6 +15,7 @@ import {
   Grid,
   IconButton,
   Stack,
+  TextField,
   Typography,
   useTheme,
 } from '@mui/material';
@@ -33,6 +34,7 @@ import toast from 'react-hot-toast';
 import { PageHeading } from 'src/components/base/page-heading';
 import { createClient } from 'src/services/supabase/client';
 import { useSchoolSettings } from 'src/contexts/school-settings';
+import { ItemIcon } from 'src/components/base/item-icon';
 
 interface Holiday {
   id: string;
@@ -68,7 +70,7 @@ export default function MasterCalendarPage() {
   const router = useRouter();
   const theme = useTheme();
   const supabase = createClient();
-  const { schoolName } = useSchoolSettings();
+  const { schoolName, branding } = useSchoolSettings();
 
   const [loading, setLoading] = useState(true);
   const [currentDate, setCurrentDate] = useState<Date>(new Date(2026, 8, 1)); // Sept 2026 default
@@ -85,6 +87,22 @@ export default function MasterCalendarPage() {
 
   const year = currentDate.getFullYear();
   const month = currentDate.getMonth();
+  const monthKey = `${year}-${String(month + 1).padStart(2, '0')}`;
+  const [monthlyNotes, setMonthlyNotes] = useState('');
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem(`school_monthly_notes_${monthKey}`);
+      setMonthlyNotes(saved || '');
+    }
+  }, [monthKey]);
+
+  const handleUpdateMonthlyNotes = (text: string) => {
+    setMonthlyNotes(text);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(`school_monthly_notes_${monthKey}`, text);
+    }
+  };
 
   const monthNames = [
     'January', 'February', 'March', 'April', 'May', 'June',
@@ -156,12 +174,13 @@ export default function MasterCalendarPage() {
     return `${yyyy}-${mm}-${dd}`;
   };
 
-  // Get Monday of a given week
+  // Get Monday of a given week row (Sunday to Saturday)
   const getMonday = (d: Date) => {
     const date = new Date(d);
-    const day = date.getDay();
-    const diff = date.getDate() - day + (day === 0 ? -6 : 1);
-    return new Date(date.setDate(diff));
+    const day = date.getDay(); // 0 = Sun, 1 = Mon, ..., 6 = Sat
+    const diff = day === 0 ? 1 : 1 - day;
+    date.setDate(date.getDate() + diff);
+    return date;
   };
 
   const handleJumpToWeek = (d: Date) => {
@@ -463,8 +482,9 @@ export default function MasterCalendarPage() {
                             label={h.title}
                             size="small"
                             className="holiday-chip"
+                            icon={<ItemIcon name={branding.holidays.icon} size={12} color="#ffffff" />}
                             sx={{
-                              bgcolor: '#d32f2f',
+                              bgcolor: branding.holidays.color,
                               color: '#ffffff !important',
                               height: 18,
                               fontSize: '0.68rem',
@@ -475,22 +495,25 @@ export default function MasterCalendarPage() {
 
                         {/* Parent Notes */}
                         {dayNotes.map((n) => (
-                          <Typography key={n.id} variant="caption" display="block" noWrap className="note-item-text" sx={{ color: 'primary.main', fontWeight: 600, fontSize: '0.68rem' }}>
-                            📝 {n.description}
+                          <Typography key={n.id} variant="caption" display="flex" alignItems="center" gap={0.5} noWrap className="note-item-text" sx={{ color: branding.notes.color, fontWeight: 700, fontSize: '0.68rem' }}>
+                            <ItemIcon name={branding.notes.icon} size={11} color={branding.notes.color} />
+                            <span>{n.description}</span>
                           </Typography>
                         ))}
 
                         {/* School Assignments */}
                         {daySchoolAssignments.map((a) => (
-                          <Typography key={a.id} variant="caption" display="block" noWrap className="assignment-item-text" sx={{ color: 'info.main', fontWeight: 700, fontSize: '0.68rem' }}>
-                            • [{a.category.toUpperCase()}] {a.title}
+                          <Typography key={a.id} variant="caption" display="flex" alignItems="center" gap={0.5} noWrap className="assignment-item-text" sx={{ color: branding.assignments.color, fontWeight: 700, fontSize: '0.68rem' }}>
+                            <ItemIcon name={branding.assignments.icon} size={11} color={branding.assignments.color} />
+                            <span>[{a.category.toUpperCase()}] {a.title}</span>
                           </Typography>
                         ))}
 
                         {/* To-Do Tasks */}
                         {dayTasks.map((t) => (
-                          <Typography key={t.id} variant="caption" display="block" noWrap className="task-item-text" sx={{ color: 'success.main', fontWeight: 700, fontSize: '0.68rem' }}>
-                            {t.status === 'completed' ? '✓' : '☐'} {t.title}
+                          <Typography key={t.id} variant="caption" display="flex" alignItems="center" gap={0.5} noWrap className="task-item-text" sx={{ color: branding.tasks.color, fontWeight: 700, fontSize: '0.68rem' }}>
+                            <ItemIcon name={branding.tasks.icon} size={11} color={branding.tasks.color} />
+                            <span>{t.status === 'completed' ? '✓' : '☐'} {t.title}</span>
                           </Typography>
                         ))}
                       </Stack>
@@ -504,7 +527,7 @@ export default function MasterCalendarPage() {
 
         {/* BOTTOM HALF NOTES SECTION FOR MONTHLY OVERVIEW PRINT */}
         <Card elevation={8} sx={{ borderRadius: 3, p: 3, minHeight: 260 }} className="notes-print-card">
-          {/* Screen Header */}
+          {/* Screen Header & Editable Textarea */}
           <Box className="notes-screen-header">
             <Typography variant="h5" fontWeight={700} gutterBottom display="flex" alignItems="center" gap={1}>
               <Sparkles size={20} color={theme.palette.primary.main} />
@@ -514,22 +537,29 @@ export default function MasterCalendarPage() {
               Write monthly goals, curriculum milestones, exam dates, or notes below.
             </Typography>
 
-            <Box
-              className="notes-inner-box-screen"
+            <TextField
+              fullWidth
+              multiline
+              rows={5}
+              placeholder="Type monthly goals, curriculum milestones, exam dates, or parent notes here..."
+              value={monthlyNotes}
+              onChange={(e) => handleUpdateMonthlyNotes(e.target.value)}
               sx={{
-                minHeight: 180,
                 borderRadius: 2,
-                border: '1.5px dashed',
-                borderColor: 'divider',
-                p: 2,
+                '& .MuiOutlinedInput-root': {
+                  borderRadius: 2,
+                },
               }}
             />
           </Box>
 
-          {/* Print View: Clean "Notes" Header & Full Blank Area */}
+          {/* Print View: Clean "Notes" Header & Typed Content */}
           <Box className="notes-print-content">
-            <Typography variant="h5" fontWeight={800} sx={{ mb: 1.5, color: '#000000' }}>
+            <Typography variant="h5" fontWeight={800} sx={{ mb: 1, color: '#000000' }}>
               Notes
+            </Typography>
+            <Typography variant="body1" sx={{ color: '#000000', whiteSpace: 'pre-wrap', minHeight: 140, fontSize: '13px' }}>
+              {monthlyNotes || ''}
             </Typography>
           </Box>
         </Card>

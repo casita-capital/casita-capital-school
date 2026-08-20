@@ -53,6 +53,8 @@ export interface Database {
           status: 'pending' | 'in_progress' | 'completed';
           priority: 'low' | 'medium' | 'high';
           assigned_to: string | null;
+          created_by: string | null;
+          updated_by: string | null;
           created_at: string;
           updated_at: string;
         };
@@ -64,6 +66,8 @@ export interface Database {
           status?: 'pending' | 'in_progress' | 'completed';
           priority?: 'low' | 'medium' | 'high';
           assigned_to?: string | null;
+          created_by?: string | null;
+          updated_by?: string | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -75,6 +79,8 @@ export interface Database {
           status?: 'pending' | 'in_progress' | 'completed';
           priority?: 'low' | 'medium' | 'high';
           assigned_to?: string | null;
+          created_by?: string | null;
+          updated_by?: string | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -169,21 +175,30 @@ export interface Database {
           subject_id: string;
           note_date: string;
           description: string;
+          created_by: string | null;
+          updated_by: string | null;
           created_at: string;
+          updated_at: string;
         };
         Insert: {
           id?: string;
           subject_id: string;
           note_date: string;
           description: string;
+          created_by?: string | null;
+          updated_by?: string | null;
           created_at?: string;
+          updated_at?: string;
         };
         Update: {
           id?: string;
           subject_id?: string;
           note_date?: string;
           description?: string;
+          created_by?: string | null;
+          updated_by?: string | null;
           created_at?: string;
+          updated_at?: string;
         };
       };
       assignments: {
@@ -196,7 +211,10 @@ export interface Database {
           priority: 'low' | 'medium' | 'high';
           category: 'homework' | 'project' | 'test' | 'quiz' | 'reading' | 'paper';
           status: 'pending' | 'in_progress' | 'completed';
+          created_by: string | null;
+          updated_by: string | null;
           created_at: string;
+          updated_at: string;
         };
         Insert: {
           id?: string;
@@ -207,7 +225,10 @@ export interface Database {
           priority?: 'low' | 'medium' | 'high';
           category?: 'homework' | 'project' | 'test' | 'quiz' | 'reading' | 'paper';
           status?: 'pending' | 'in_progress' | 'completed';
+          created_by?: string | null;
+          updated_by?: string | null;
           created_at?: string;
+          updated_at?: string;
         };
         Update: {
           id?: string;
@@ -218,7 +239,10 @@ export interface Database {
           priority?: 'low' | 'medium' | 'high';
           category?: 'homework' | 'project' | 'test' | 'quiz' | 'reading' | 'paper';
           status?: 'pending' | 'in_progress' | 'completed';
+          created_by?: string | null;
+          updated_by?: string | null;
           created_at?: string;
+          updated_at?: string;
         };
       };
       holidays: {
@@ -278,6 +302,8 @@ export interface Database {
           priorities: Json;
           for_next_month: string;
           notes: string;
+          schedule_start_hour?: number;
+          schedule_end_hour?: number;
           created_at: string;
         };
         Insert: {
@@ -287,6 +313,8 @@ export interface Database {
           priorities?: Json;
           for_next_month?: string;
           notes?: string;
+          schedule_start_hour?: number;
+          schedule_end_hour?: number;
           created_at?: string;
         };
         Update: {
@@ -296,7 +324,56 @@ export interface Database {
           priorities?: Json;
           for_next_month?: string;
           notes?: string;
+          schedule_start_hour?: number;
+          schedule_end_hour?: number;
           created_at?: string;
+        };
+      };
+      time_schedule_blocks: {
+        Row: {
+          id: string;
+          day_of_week: string;
+          start_time: string;
+          end_time: string;
+          title: string;
+          block_type: 'class' | 'homework' | 'custom';
+          subject_id: string | null;
+          color: string | null;
+          note: string | null;
+          created_by: string | null;
+          updated_by: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          day_of_week: string;
+          start_time: string;
+          end_time: string;
+          title: string;
+          block_type: 'class' | 'homework' | 'custom';
+          subject_id?: string | null;
+          color?: string | null;
+          note?: string | null;
+          created_by?: string | null;
+          updated_by?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          day_of_week?: string;
+          start_time?: string;
+          end_time?: string;
+          title?: string;
+          block_type?: 'class' | 'homework' | 'custom';
+          subject_id?: string | null;
+          color?: string | null;
+          note?: string | null;
+          created_by?: string | null;
+          updated_by?: string | null;
+          created_at?: string;
+          updated_at?: string;
         };
       };
     };

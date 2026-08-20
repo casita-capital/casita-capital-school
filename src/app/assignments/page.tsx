@@ -43,6 +43,7 @@ import {
   Layers,
   FileText,
   Bookmark,
+  Clock,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { PageHeading } from 'src/components/base/page-heading';
@@ -63,7 +64,10 @@ interface Assignment {
   priority: 'low' | 'medium' | 'high';
   category: 'homework' | 'project' | 'test' | 'quiz' | 'reading' | 'paper';
   status: 'pending' | 'in_progress' | 'completed';
+  created_by?: string | null;
+  updated_by?: string | null;
   created_at?: string;
+  updated_at?: string;
 }
 
 type SortField = 'due_date' | 'priority' | 'category' | 'subject';
@@ -198,6 +202,12 @@ export default function AssignmentsPage() {
     }
 
     setSaving(true);
+    const activeUserName =
+      typeof window !== 'undefined'
+        ? localStorage.getItem('school_active_user_name') || 'Blake Womble'
+        : 'Blake Womble';
+    const nowIso = new Date().toISOString();
+
     try {
       if (editingAssignment) {
         const { error } = await supabase
@@ -209,6 +219,8 @@ export default function AssignmentsPage() {
             due_date: dueDate,
             priority,
             category,
+            updated_by: activeUserName,
+            updated_at: nowIso,
           })
           .eq('id', editingAssignment.id);
 
@@ -226,6 +238,8 @@ export default function AssignmentsPage() {
                     due_date: dueDate,
                     priority,
                     category,
+                    updated_by: activeUserName,
+                    updated_at: nowIso,
                   }
                 : a
             )
@@ -244,6 +258,9 @@ export default function AssignmentsPage() {
             priority,
             category,
             status: 'pending',
+            created_by: activeUserName,
+            updated_by: activeUserName,
+            updated_at: nowIso,
           })
           .select('*')
           .single();
@@ -785,6 +802,18 @@ export default function AssignmentsPage() {
               />
             </Stack>
           </DialogContent>
+
+          {editingAssignment && (
+            <Box px={3} py={1.2} sx={{ bgcolor: 'action.hover', borderTop: 1, borderColor: 'divider' }}>
+              <Typography variant="caption" color="text.secondary" display="flex" alignItems="center" gap={0.8} fontWeight={600}>
+                <Clock size={14} />
+                Created / Last edited by <strong>{editingAssignment.updated_by || editingAssignment.created_by || 'Blake Womble'}</strong>
+                {editingAssignment.updated_at || editingAssignment.created_at
+                  ? ` on ${new Date(editingAssignment.updated_at || editingAssignment.created_at).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })}`
+                  : ''}
+              </Typography>
+            </Box>
+          )}
 
           <DialogActions sx={{ p: 2 }}>
             <Button onClick={() => setOpenModal(false)} color="inherit">

@@ -45,6 +45,7 @@ import {
   ArrowUpDown,
   ArrowUp,
   ArrowDown,
+  Clock,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { PageHeading } from 'src/components/base/page-heading';
@@ -57,7 +58,10 @@ interface Task {
   due_date: string | null;
   status: 'pending' | 'in_progress' | 'completed';
   priority: 'low' | 'medium' | 'high';
+  created_by?: string | null;
+  updated_by?: string | null;
   created_at?: string;
+  updated_at?: string;
 }
 
 type SortField = 'due_date' | 'priority' | 'created_at';
@@ -170,6 +174,12 @@ export default function TasksPage() {
     }
 
     setSaving(true);
+    const activeUserName =
+      typeof window !== 'undefined'
+        ? localStorage.getItem('school_active_user_name') || 'Blake Womble'
+        : 'Blake Womble';
+    const nowIso = new Date().toISOString();
+
     try {
       if (editingTask) {
         const { error } = await supabase
@@ -179,6 +189,8 @@ export default function TasksPage() {
             description: description.trim() || null,
             due_date: dueDate || null,
             priority,
+            updated_by: activeUserName,
+            updated_at: nowIso,
           })
           .eq('id', editingTask.id);
 
@@ -194,6 +206,8 @@ export default function TasksPage() {
                     description: description.trim() || null,
                     due_date: dueDate || null,
                     priority,
+                    updated_by: activeUserName,
+                    updated_at: nowIso,
                   }
                 : t
             )
@@ -210,6 +224,9 @@ export default function TasksPage() {
             due_date: dueDate || null,
             priority,
             status: 'pending',
+            created_by: activeUserName,
+            updated_by: activeUserName,
+            updated_at: nowIso,
           })
           .select('*')
           .single();
@@ -218,7 +235,7 @@ export default function TasksPage() {
           toast.error(`Failed to create task: ${error.message}`);
         } else if (data) {
           setTasks((prev) => [data as Task, ...prev]);
-          toast.success('New task created!');
+          toast.success('Task created!');
           setOpenModal(false);
         }
       }
@@ -576,6 +593,18 @@ export default function TasksPage() {
               </Grid>
             </Stack>
           </DialogContent>
+
+          {editingTask && (
+            <Box px={3} py={1.2} sx={{ bgcolor: 'action.hover', borderTop: 1, borderColor: 'divider' }}>
+              <Typography variant="caption" color="text.secondary" display="flex" alignItems="center" gap={0.8} fontWeight={600}>
+                <Clock size={14} />
+                Created / Last edited by <strong>{editingTask.updated_by || editingTask.created_by || 'Blake Womble'}</strong>
+                {editingTask.updated_at || editingTask.created_at
+                  ? ` on ${new Date(editingTask.updated_at || editingTask.created_at).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })}`
+                  : ''}
+              </Typography>
+            </Box>
+          )}
 
           <DialogActions sx={{ p: 2 }}>
             <Button onClick={() => setOpenModal(false)} color="inherit">

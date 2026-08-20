@@ -43,10 +43,13 @@ import {
   ArrowUp,
   ArrowDown,
   FileText,
+  Clock,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { PageHeading } from 'src/components/base/page-heading';
 import { createClient } from 'src/services/supabase/client';
+import { useSchoolSettings } from 'src/contexts/school-settings';
+import { ItemIcon } from 'src/components/base/item-icon';
 
 interface Subject {
   id: string;
@@ -60,6 +63,10 @@ interface ParentNote {
   subject_id: string;
   note_date: string;
   description: string;
+  created_by?: string | null;
+  updated_by?: string | null;
+  created_at?: string;
+  updated_at?: string;
 }
 
 interface SchoolAssignment {
@@ -127,6 +134,7 @@ export default function WeeklyPlannerCreatorPage() {
   const router = useRouter();
   const theme = useTheme();
   const supabase = createClient();
+  const { branding } = useSchoolSettings();
 
   const initialWeek = searchParams.get('week') || '2026-09-14';
   const [weekStartDate, setWeekStartDate] = useState<string>(initialWeek);
@@ -327,6 +335,12 @@ export default function WeeklyPlannerCreatorPage() {
     if (!selectedSubject || !selectedDate) return;
 
     setSavingNote(true);
+    const activeUserName =
+      typeof window !== 'undefined'
+        ? localStorage.getItem('school_active_user_name') || 'Blake Womble'
+        : 'Blake Womble';
+    const nowIso = new Date().toISOString();
+
     try {
       const existing = parentNotes.find(
         (n) => n.subject_id === selectedSubject.id && n.note_date === selectedDate
@@ -344,7 +358,11 @@ export default function WeeklyPlannerCreatorPage() {
       } else if (existing) {
         const { error } = await supabase
           .from('parent_notes')
-          .update({ description: cellNoteDesc.trim() })
+          .update({
+            description: cellNoteDesc.trim(),
+            updated_by: activeUserName,
+            updated_at: nowIso,
+          })
           .eq('id', existing.id);
 
         if (error) {
@@ -354,7 +372,14 @@ export default function WeeklyPlannerCreatorPage() {
 
         setParentNotes((prev) =>
           prev.map((n) =>
-            n.id === existing.id ? { ...n, description: cellNoteDesc.trim() } : n
+            n.id === existing.id
+              ? {
+                  ...n,
+                  description: cellNoteDesc.trim(),
+                  updated_by: activeUserName,
+                  updated_at: nowIso,
+                }
+              : n
           )
         );
       } else {
@@ -364,6 +389,9 @@ export default function WeeklyPlannerCreatorPage() {
             subject_id: selectedSubject.id,
             note_date: selectedDate,
             description: cellNoteDesc.trim(),
+            created_by: activeUserName,
+            updated_by: activeUserName,
+            updated_at: nowIso,
           })
           .select('*')
           .single();
@@ -572,12 +600,14 @@ export default function WeeklyPlannerCreatorPage() {
                   return (
                     <td key={d.dateStr} className="all-day-events-cell">
                       {dayHolidays.map((h) => (
-                        <div key={h.id} className="holiday-banner-top">
-                          ★ {h.title}
+                        <div key={h.id} className="holiday-banner-top" style={{ backgroundColor: branding.holidays.color }}>
+                          <ItemIcon name={branding.holidays.icon} size={11} color="#ffffff" style={{ marginRight: 4, display: 'inline' }} />
+                          {h.title}
                         </div>
                       ))}
                       {dayTasks.map((t) => (
-                        <div key={t.id} className="task-banner-top">
+                        <div key={t.id} className="task-banner-top" style={{ backgroundColor: branding.tasks.color }}>
+                          <ItemIcon name={branding.tasks.icon} size={11} color="#ffffff" style={{ marginRight: 4, display: 'inline' }} />
                           {t.status === 'completed' ? '✓' : '☐'} {t.title}
                         </div>
                       ))}
@@ -609,13 +639,15 @@ export default function WeeklyPlannerCreatorPage() {
                         onClick={() => handleOpenCellEditor(subject, d.dateStr)}
                       >
                         {cellNote && (
-                          <div className="parent-note-item">
-                            📝 {cellNote.description}
+                          <div className="parent-note-item" style={{ color: branding.notes.color }}>
+                            <ItemIcon name={branding.notes.icon} size={11} color={branding.notes.color} style={{ marginRight: 4, display: 'inline' }} />
+                            {cellNote.description}
                           </div>
                         )}
                         {cellSchoolAssignments.map((a) => (
-                          <div key={a.id} className="school-assignment-item">
-                            • [{a.category.toUpperCase()}] {a.title}
+                          <div key={a.id} className="school-assignment-item" style={{ color: branding.assignments.color }}>
+                            <ItemIcon name={branding.assignments.icon} size={11} color={branding.assignments.color} style={{ marginRight: 4, display: 'inline' }} />
+                            [{a.category.toUpperCase()}] {a.title}
                           </div>
                         ))}
                       </td>
@@ -663,12 +695,14 @@ export default function WeeklyPlannerCreatorPage() {
                       return (
                         <td key={d.dateStr} className="all-day-events-cell">
                           {dayHolidays.map((h) => (
-                            <div key={h.id} className="holiday-banner-top">
-                              ★ {h.title}
+                            <div key={h.id} className="holiday-banner-top" style={{ backgroundColor: branding.holidays.color }}>
+                              <ItemIcon name={branding.holidays.icon} size={11} color="#ffffff" style={{ marginRight: 4, display: 'inline' }} />
+                              {h.title}
                             </div>
                           ))}
                           {dayTasks.map((t) => (
-                            <div key={t.id} className="task-banner-top">
+                            <div key={t.id} className="task-banner-top" style={{ backgroundColor: branding.tasks.color }}>
+                              <ItemIcon name={branding.tasks.icon} size={11} color="#ffffff" style={{ marginRight: 4, display: 'inline' }} />
                               {t.status === 'completed' ? '✓' : '☐'} {t.title}
                             </div>
                           ))}
@@ -700,13 +734,15 @@ export default function WeeklyPlannerCreatorPage() {
                             onClick={() => handleOpenCellEditor(subject, d.dateStr)}
                           >
                             {cellNote && (
-                              <div className="parent-note-item">
-                                📝 {cellNote.description}
+                              <div className="parent-note-item" style={{ color: branding.notes.color }}>
+                                <ItemIcon name={branding.notes.icon} size={11} color={branding.notes.color} style={{ marginRight: 4, display: 'inline' }} />
+                                {cellNote.description}
                               </div>
                             )}
                             {cellSchoolAssignments.map((a) => (
-                              <div key={a.id} className="school-assignment-item">
-                                • [{a.category.toUpperCase()}] {a.title}
+                              <div key={a.id} className="school-assignment-item" style={{ color: branding.assignments.color }}>
+                                <ItemIcon name={branding.assignments.icon} size={11} color={branding.assignments.color} style={{ marginRight: 4, display: 'inline' }} />
+                                [{a.category.toUpperCase()}] {a.title}
                               </div>
                             ))}
                           </td>
@@ -908,6 +944,25 @@ export default function WeeklyPlannerCreatorPage() {
             </Button>
           </Stack>
         </DialogContent>
+
+        {(() => {
+          const note = parentNotes.find(
+            (n) => n.subject_id === selectedSubject?.id && n.note_date === selectedDate
+          );
+          if (!note) return null;
+          return (
+            <Box px={3} py={1.2} sx={{ bgcolor: 'action.hover', borderTop: 1, borderColor: 'divider' }}>
+              <Typography variant="caption" color="text.secondary" display="flex" alignItems="center" gap={0.8} fontWeight={600}>
+                <Clock size={14} />
+                Created / Last edited by <strong>{note.updated_by || note.created_by || 'Blake Womble'}</strong>
+                {note.updated_at || note.created_at
+                  ? ` on ${new Date(note.updated_at || note.created_at).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })}`
+                  : ''}
+              </Typography>
+            </Box>
+          );
+        })()}
+
         <DialogActions sx={{ p: 2 }}>
           <Button onClick={() => setOpenCellModal(false)} color="inherit">
             Close
