@@ -83,7 +83,12 @@ export function Header({ onMobileNavOpen }: HeaderProps) {
   useEffect(() => {
     async function loadUser() {
       const { data: { user } } = await supabase.auth.getUser();
-      const activeEmail = user?.email || (typeof window !== 'undefined' ? localStorage.getItem('school_active_user_email') : null) || 'blake.womble@gmail.com';
+      const activeEmail = user?.email || (typeof window !== 'undefined' ? localStorage.getItem('school_active_user_email') : null);
+
+      if (!activeEmail) {
+        setProfile(null);
+        return;
+      }
 
       if (user?.id) {
         const { data: byAuthId } = await supabase
@@ -98,32 +103,18 @@ export function Header({ onMobileNavOpen }: HeaderProps) {
         }
       }
 
-      if (activeEmail) {
-        const { data: byEmail } = await supabase
-          .from('users')
-          .select('full_name, email, role, avatar_url')
-          .eq('email', activeEmail)
-          .maybeSingle();
-
-        if (byEmail) {
-          setProfile(byEmail as UserProfile);
-          return;
-        }
-      }
-
-      // Default fallback
-      const { data: fallbackUser } = await supabase
+      const { data: byEmail } = await supabase
         .from('users')
         .select('full_name, email, role, avatar_url')
-        .eq('email', 'blake.womble@gmail.com')
+        .eq('email', activeEmail)
         .maybeSingle();
 
-      if (fallbackUser) {
-        setProfile(fallbackUser as UserProfile);
+      if (byEmail) {
+        setProfile(byEmail as UserProfile);
       } else {
         setProfile({
-          full_name: 'Blake Womble',
-          email: 'blake.womble@gmail.com',
+          full_name: activeEmail.split('@')[0],
+          email: activeEmail,
           role: 'admin',
         });
       }
@@ -135,9 +126,14 @@ export function Header({ onMobileNavOpen }: HeaderProps) {
       loadUser();
     };
 
-    window.addEventListener('school_user_profile_updated', handleProfileUpdated);
+    if (typeof window !== 'undefined') {
+      window.addEventListener('school_user_profile_updated', handleProfileUpdated);
+    }
+
     return () => {
-      window.removeEventListener('school_user_profile_updated', handleProfileUpdated);
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('school_user_profile_updated', handleProfileUpdated);
+      }
     };
   }, [supabase]);
 
