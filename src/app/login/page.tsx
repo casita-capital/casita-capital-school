@@ -8,7 +8,6 @@ import {
   Button,
   Card,
   CardContent,
-  Chip,
   CircularProgress,
   Divider,
   IconButton,
@@ -31,12 +30,6 @@ export default function LoginPage() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const supabase = createClient();
-
-  const handleQuickFill = (presetEmail: string) => {
-    setEmail(presetEmail);
-    setPassword('Casita2026!');
-    setErrorMessage(null);
-  };
 
   const handleGoogleLogin = async () => {
     setLoading(true);
@@ -128,28 +121,6 @@ export default function LoginPage() {
             <Typography variant="body2" color="text.secondary">
               Sign in to manage weekly school calendars &amp; tasks
             </Typography>
-          </Box>
-
-          <Box mb={3}>
-            <Typography variant="caption" color="text.secondary" fontWeight={600} display="block" mb={1}>
-              Quick Select User (Development Setup):
-            </Typography>
-            <Stack direction="row" spacing={1} flexWrap="wrap" gap={1}>
-              <Chip
-                label="Blake Womble"
-                onClick={() => handleQuickFill('blake.womble@gmail.com')}
-                color={email === 'blake.womble@gmail.com' ? 'primary' : 'default'}
-                variant={email === 'blake.womble@gmail.com' ? 'filled' : 'outlined'}
-                sx={{ fontWeight: 600, cursor: 'pointer' }}
-              />
-              <Chip
-                label="Stephanie Womble"
-                onClick={() => handleQuickFill('stephanie.womble@gmail.com')}
-                color={email === 'stephanie.womble@gmail.com' ? 'primary' : 'default'}
-                variant={email === 'stephanie.womble@gmail.com' ? 'filled' : 'outlined'}
-                sx={{ fontWeight: 600, cursor: 'pointer' }}
-              />
-            </Stack>
           </Box>
 
           {errorMessage && (
