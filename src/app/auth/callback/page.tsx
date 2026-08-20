@@ -14,6 +14,9 @@ function AuthCallbackContent() {
 
   useEffect(() => {
     async function processAuth() {
+      // Check for custom return URL e.g. ?next=/settings
+      const nextUrl = searchParams.get('next') || searchParams.get('redirect') || '/';
+
       // 1. Check for URL Hash Error (#error=...&error_description=...)
       const hash = typeof window !== 'undefined' ? window.location.hash : '';
       if (hash.includes('error=')) {
@@ -38,7 +41,10 @@ function AuthCallbackContent() {
       const { data: { session } } = await supabase.auth.getSession();
       if (session?.user?.email) {
         localStorage.setItem('school_active_user_email', session.user.email);
-        router.push('/');
+        if (session.provider_token) {
+          localStorage.setItem('google_provider_token', session.provider_token);
+        }
+        router.push(nextUrl);
         router.refresh();
         return;
       }
@@ -50,7 +56,10 @@ function AuthCallbackContent() {
           const { data, error } = await supabase.auth.exchangeCodeForSession(code);
           if (!error && data.session?.user?.email) {
             localStorage.setItem('school_active_user_email', data.session.user.email);
-            router.push('/');
+            if (data.session.provider_token) {
+              localStorage.setItem('google_provider_token', data.session.provider_token);
+            }
+            router.push(nextUrl);
             router.refresh();
             return;
           }
@@ -62,7 +71,10 @@ function AuthCallbackContent() {
         const { data: retryData } = await supabase.auth.getSession();
         if (retryData.session?.user?.email) {
           localStorage.setItem('school_active_user_email', retryData.session.user.email);
-          router.push('/');
+          if (retryData.session.provider_token) {
+            localStorage.setItem('google_provider_token', retryData.session.provider_token);
+          }
+          router.push(nextUrl);
           router.refresh();
           return;
         }

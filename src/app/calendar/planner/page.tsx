@@ -145,6 +145,7 @@ function PlannerContent() {
   const [schoolAssignments, setSchoolAssignments] = useState<SchoolAssignment[]>([]);
   const [holidays, setHolidays] = useState<Holiday[]>([]);
   const [tasksList, setTasksList] = useState<PlannerTask[]>([]);
+  const [googleEvents, setGoogleEvents] = useState<{ id: string; title: string; event_date: string; color: string }[]>([]);
   const [habits, setHabits] = useState<Habit[]>([]);
   const [plannerSettings, setPlannerSettings] = useState<WeeklySettings>({
     week_start_date: initialWeek,
@@ -291,6 +292,29 @@ function PlannerContent() {
           notes: '',
         });
       }
+
+      // 8. Fetch Google Calendar Events enabled for Weekly Planner
+      const { data: connData } = await supabase
+        .from('google_calendar_connections')
+        .select('id, color')
+        .eq('is_enabled', true)
+        .eq('show_on_weekly', true);
+
+      if (connData && connData.length > 0) {
+        const connIds = connData.map((c) => c.id);
+        const { data: gEvtData } = await supabase
+          .from('google_calendar_events')
+          .select('*')
+          .in('connection_id', connIds)
+          .gte('event_date', startDate)
+          .lte('event_date', endDate);
+
+        if (gEvtData) {
+          setGoogleEvents(gEvtData as { id: string; title: string; event_date: string; color: string }[]);
+        }
+      } else {
+        setGoogleEvents([]);
+      }
     } catch {
       toast.error('Error loading planner data');
     } finally {
@@ -407,6 +431,35 @@ function PlannerContent() {
       setOpenCellModal(false);
     } catch {
       toast.error('Error saving parent note');
+    } finally {
+      setSavingNote(false);
+    }
+  };
+
+  const handleDeleteCellNote = async () => {
+    if (!selectedSubject || !selectedDate) return;
+    const existing = parentNotes.find(
+      (n) => n.subject_id === selectedSubject.id && n.note_date === selectedDate
+    );
+    if (!existing) return;
+
+    setSavingNote(true);
+    try {
+      const { error } = await supabase
+        .from('parent_notes')
+        .delete()
+        .eq('id', existing.id);
+
+      if (error) {
+        toast.error(`Error deleting note: ${error.message}`);
+      } else {
+        setParentNotes((prev) => prev.filter((n) => n.id !== existing.id));
+        setCellNoteDesc('');
+        toast.success('Parent note deleted!');
+        setOpenCellModal(false);
+      }
+    } catch {
+      toast.error('Failed to delete parent note');
     } finally {
       setSavingNote(false);
     }
@@ -690,7 +743,8 @@ function PlannerContent() {
                     {page2Days.map((d) => {
                       const dayHolidays = holidays.filter((h) => h.holiday_date === d.dateStr);
                       const dayTasks = tasksList.filter((t) => t.due_date === d.dateStr);
-                      const hasEvents = dayHolidays.length > 0 || dayTasks.length > 0;
+                      const dayGoogleEvents = googleEvents.filter((g) => g.event_date === d.dateStr);
+                      const hasEvents = dayHolidays.length > 0 || dayTasks.length > 0 || dayGoogleEvents.length > 0;
 
                       return (
                         <td key={d.dateStr} className="all-day-events-cell">
@@ -698,6 +752,12 @@ function PlannerContent() {
                             <div key={h.id} className="holiday-banner-top" style={{ backgroundColor: branding.holidays.color }}>
                               <ItemIcon name={branding.holidays.icon} size={11} color="#ffffff" style={{ marginRight: 4, display: 'inline' }} />
                               {h.title}
+                            </div>
+                          ))}
+                          {dayGoogleEvents.map((g) => (
+                            <div key={g.id} className="task-banner-top" style={{ backgroundColor: g.color || '#4285F4' }}>
+                              <ItemIcon name="Calendar" size={11} color="#ffffff" style={{ marginRight: 4, display: 'inline' }} />
+                              {g.title}
                             </div>
                           ))}
                           {dayTasks.map((t) => (
@@ -963,20 +1023,38 @@ function PlannerContent() {
           );
         })()}
 
-        <DialogActions sx={{ p: 2 }}>
-          <Button onClick={() => setOpenCellModal(false)} color="inherit">
-            Close
-          </Button>
-          <Button
-            onClick={handleSaveCellNote}
-            variant="contained"
-            color="primary"
-            disabled={savingNote}
-            startIcon={<Save size={16} />}
-            sx={{ fontWeight: 700 }}
-          >
-            {savingNote ? 'Saving...' : 'Save Parent Note'}
-          </Button>
+        <DialogActions sx={{ p: 2, justifyContent: 'space-between' }}>
+          <Box>
+            {parentNotes.some(
+              (n) => n.subject_id === selectedSubject?.id && n.note_date === selectedDate
+            ) && (
+              <Button
+                onClick={handleDeleteCellNote}
+                color="error"
+                variant="outlined"
+                disabled={savingNote}
+                startIcon={<Trash2 size={16} />}
+                sx={{ fontWeight: 700 }}
+              >
+                Delete Note
+              </Button>
+            )}
+          </Box>
+          <Stack direction="row" spacing={1}>
+            <Button onClick={() => setOpenCellModal(false)} color="inherit">
+              Close
+            </Button>
+            <Button
+              onClick={handleSaveCellNote}
+              variant="contained"
+              color="primary"
+              disabled={savingNote}
+              startIcon={<Save size={16} />}
+              sx={{ fontWeight: 700 }}
+            >
+              {savingNote ? 'Saving...' : 'Save Parent Note'}
+            </Button>
+          </Stack>
         </DialogActions>
       </Dialog>
 

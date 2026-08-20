@@ -376,6 +376,100 @@ export interface Database {
           updated_at?: string;
         };
       };
+      google_calendar_connections: {
+        Row: {
+          id: string;
+          user_id: string | null;
+          google_email: string;
+          calendar_id: string;
+          calendar_name: string;
+          color: string;
+          is_enabled: boolean;
+          show_on_monthly: boolean;
+          show_on_weekly: boolean;
+          access_token: string | null;
+          refresh_token: string | null;
+          token_expires_at: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          user_id?: string | null;
+          google_email: string;
+          calendar_id?: string;
+          calendar_name?: string;
+          color?: string;
+          is_enabled?: boolean;
+          show_on_monthly?: boolean;
+          show_on_weekly?: boolean;
+          access_token?: string | null;
+          refresh_token?: string | null;
+          token_expires_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          user_id?: string | null;
+          google_email?: string;
+          calendar_id?: string;
+          calendar_name?: string;
+          color?: string;
+          is_enabled?: boolean;
+          show_on_monthly?: boolean;
+          show_on_weekly?: boolean;
+          access_token?: string | null;
+          refresh_token?: string | null;
+          token_expires_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
+      google_calendar_events: {
+        Row: {
+          id: string;
+          connection_id: string;
+          google_event_id: string;
+          title: string;
+          description: string | null;
+          start_time: string | null;
+          end_time: string | null;
+          is_all_day: boolean;
+          event_date: string;
+          color: string;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          connection_id: string;
+          google_event_id: string;
+          title: string;
+          description?: string | null;
+          start_time?: string | null;
+          end_time?: string | null;
+          is_all_day?: boolean;
+          event_date: string;
+          color?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          connection_id?: string;
+          google_event_id?: string;
+          title?: string;
+          description?: string | null;
+          start_time?: string | null;
+          end_time?: string | null;
+          is_all_day?: boolean;
+          event_date?: string;
+          color?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
     };
     Views: Record<string, never>;
     Functions: {

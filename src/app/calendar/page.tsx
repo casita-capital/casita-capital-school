@@ -66,6 +66,14 @@ interface TaskItem {
   priority: 'low' | 'medium' | 'high';
 }
 
+interface GoogleCalendarEventItem {
+  id: string;
+  title: string;
+  event_date: string;
+  color: string;
+  is_all_day: boolean;
+}
+
 export default function MasterCalendarPage() {
   const router = useRouter();
   const theme = useTheme();
@@ -78,16 +86,19 @@ export default function MasterCalendarPage() {
   const [parentNotes, setParentNotes] = useState<ParentNote[]>([]);
   const [schoolAssignments, setSchoolAssignments] = useState<SchoolAssignment[]>([]);
   const [tasksList, setTasksList] = useState<TaskItem[]>([]);
+  const [googleEvents, setGoogleEvents] = useState<GoogleCalendarEventItem[]>([]);
 
   // Filter toggles for printable monthly overview
   const [showHolidays, setShowHolidays] = useState(true);
   const [showParentNotes, setShowParentNotes] = useState(true);
   const [showSchoolAssignments, setShowSchoolAssignments] = useState(true);
   const [showTasks, setShowTasks] = useState(true);
+  const [showGoogleCalendars, setShowGoogleCalendars] = useState(true);
 
   const year = currentDate.getFullYear();
   const month = currentDate.getMonth();
   const monthKey = `${year}-${String(month + 1).padStart(2, '0')}`;
+
   const [monthlyNotes, setMonthlyNotes] = useState('');
 
   useEffect(() => {
@@ -147,6 +158,27 @@ export default function MasterCalendarPage() {
       if (taskData) {
         setTasksList(taskData as TaskItem[]);
       }
+
+      // 5. Fetch Enabled Google Calendar Connections & Events
+      const { data: connData } = await supabase
+        .from('google_calendar_connections')
+        .select('id, color')
+        .eq('is_enabled', true)
+        .eq('show_on_monthly', true);
+
+      if (connData && connData.length > 0) {
+        const connIds = connData.map((c) => c.id);
+        const { data: gEvtData } = await supabase
+          .from('google_calendar_events')
+          .select('*')
+          .in('connection_id', connIds);
+
+        if (gEvtData) {
+          setGoogleEvents(gEvtData as GoogleCalendarEventItem[]);
+        }
+      } else {
+        setGoogleEvents([]);
+      }
     } catch {
       toast.error('Error loading calendar data');
     } finally {
@@ -178,43 +210,48 @@ export default function MasterCalendarPage() {
   const getMonday = (d: Date) => {
     const date = new Date(d);
     const day = date.getDay(); // 0 = Sun, 1 = Mon, ..., 6 = Sat
-    const diff = day === 0 ? 1 : 1 - day;
-    date.setDate(date.getDate() + diff);
-    return date;
+    const diff = date.getDate() - day + (day === 0 ? -6 : 1); // adjust when day is sunday
+    return new Date(date.setDate(diff));
   };
 
-  const handleJumpToWeek = (d: Date) => {
-    const monday = getMonday(d);
-    const weekStr = formatDateStr(monday);
-    router.push(`/calendar/planner?week=${weekStr}`);
+  const handleJumpToWeek = (date: Date) => {
+    const monday = getMonday(date);
+    const mondayStr = formatDateStr(monday);
+    router.push(`/calendar/planner?week=${mondayStr}`);
   };
-
-  // Build calendar matrix (Sunday to Saturday)
-  const firstDayOfMonth = new Date(year, month, 1);
-  const startingDay = firstDayOfMonth.getDay(); // 0 for Sun
-  const daysInMonth = new Date(year, month + 1, 0).getDate();
-
-  const calendarDays: (Date | null)[] = [];
-  for (let i = 0; i < startingDay; i++) {
-    calendarDays.push(null);
-  }
-  for (let i = 1; i <= daysInMonth; i++) {
-    calendarDays.push(new Date(year, month, i));
-  }
-  // Fill remaining days of last week row to complete 7-day row
-  while (calendarDays.length % 7 !== 0) {
-    calendarDays.push(null);
-  }
-
-  // Chunk calendarDays into week rows of 7 days
-  const weekRows: (Date | null)[][] = [];
-  for (let i = 0; i < calendarDays.length; i += 7) {
-    weekRows.push(calendarDays.slice(i, i + 7));
-  }
 
   const handlePrint = () => {
     window.print();
   };
+
+  // Build Month Grid matrix (7 cols x 5 or 6 rows)
+  const firstDayOfMonth = new Date(year, month, 1).getDay(); // 0 = Sun
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+
+  const calendarRows: (Date | null)[][] = [];
+  let currentWeek: (Date | null)[] = [];
+
+  // Fill padding days for first week
+  for (let i = 0; i < firstDayOfMonth; i++) {
+    currentWeek.push(null);
+  }
+
+  for (let day = 1; day <= daysInMonth; day++) {
+    currentWeek.push(new Date(year, month, day));
+    if (currentWeek.length === 7) {
+      calendarRows.push(currentWeek);
+      currentWeek = [];
+    }
+  }
+
+  if (currentWeek.length > 0) {
+    while (currentWeek.length < 7) {
+      currentWeek.push(null);
+    }
+    calendarRows.push(currentWeek);
+  }
+
+  const daysOfWeek = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
 
   if (loading) {
     return (
@@ -226,27 +263,28 @@ export default function MasterCalendarPage() {
 
   return (
     <Box>
+      {/* Top Header & Page Controls */}
       <Box className="no-print">
         <PageHeading
-          heading="Master Calendar & Monthly Overview"
-          caption="Browse school months, view holidays, parent notes, school assignments & tasks, or print monthly overviews."
+          heading={`${monthNames[month]} ${year} — Master School Calendar`}
+          caption={`Printable 1-page portrait overview for ${schoolName}. Toggle items, print, or click 'Edit Week' to open the 2-page Weekly Planner.`}
           actions={
             <Stack direction="row" spacing={1.5}>
               <Button
                 variant="outlined"
                 color="primary"
-                startIcon={<Printer size={18} />}
                 onClick={handlePrint}
-                sx={{ fontWeight: 600 }}
+                startIcon={<Printer size={18} />}
+                sx={{ fontWeight: 700 }}
               >
-                Print Monthly Overview
+                Print Month Overview
               </Button>
               <Button
                 variant="contained"
                 color="primary"
+                onClick={() => router.push('/calendar/planner')}
                 startIcon={<CalendarIcon size={18} />}
-                onClick={() => handleJumpToWeek(new Date(year, month, 14))}
-                sx={{ fontWeight: 600 }}
+                sx={{ fontWeight: 700 }}
               >
                 Open Weekly Binder Planner &rarr;
               </Button>
@@ -310,6 +348,16 @@ export default function MasterCalendarPage() {
                 }
                 label={<Typography variant="body2" fontWeight={600}>To-Do Tasks</Typography>}
               />
+              <FormControlLabel
+                control={
+                  <Checkbox
+                    checked={showGoogleCalendars}
+                    onChange={(e) => setShowGoogleCalendars(e.target.checked)}
+                    color="primary"
+                  />
+                }
+                label={<Typography variant="body2" fontWeight={600} color="primary.main">Google Calendars</Typography>}
+              />
             </Stack>
           </Stack>
         </Card>
@@ -319,54 +367,83 @@ export default function MasterCalendarPage() {
       <Box
         className="monthly-print-container"
         sx={{
-          '@media print': {
-            '@page': {
-              size: 'letter portrait',
-              margin: '0.3in',
-            },
-            body: {
-              backgroundColor: '#ffffff !important',
-              color: '#000000 !important',
-            },
-          },
+          bgcolor: 'background.paper',
+          p: { xs: 2, sm: 3 },
+          borderRadius: 3,
+          border: '1px solid',
+          borderColor: 'divider',
+          boxShadow: 4,
         }}
       >
-        <Card elevation={8} sx={{ borderRadius: 3, mb: 2, overflow: 'hidden' }} className="calendar-print-card">
-          <Box p={2} borderBottom="1px solid" borderColor="divider" display="flex" justifyContent="space-between" alignItems="center" className="calendar-header-box">
-            <Typography variant="h4" fontWeight={700}>
-              {monthNames[month]} {year} — Monthly School Overview
+        {/* Printable Title Banner */}
+        <Box
+          display="flex"
+          alignItems="center"
+          justifyContent="space-between"
+          mb={2}
+          pb={1.5}
+          borderBottom="2px solid"
+          borderColor="divider"
+        >
+          <Box>
+            <Typography variant="h3" fontWeight={800} color="primary.main" letterSpacing={0.5}>
+              {monthNames[month].toUpperCase()} {year}
             </Typography>
-            <Typography variant="caption" color="text.secondary">
-              {schoolName}
+            <Typography variant="subtitle2" fontWeight={700} color="text.secondary">
+              {schoolName} — Master School &amp; Family Calendar
             </Typography>
           </Box>
+          <Typography variant="caption" fontWeight={600} color="text.secondary">
+            Page 1 of 1 (Monthly View)
+          </Typography>
+        </Box>
 
-          {/* Calendar Grid Header */}
-          <Grid container sx={{ bgcolor: 'action.hover', borderBottom: '1px solid', borderColor: 'divider' }}>
-            <Grid item xs={1.4} className="week-col" sx={{ py: 1.5, textAlign: 'center', fontWeight: 700, fontSize: '0.8rem', color: 'primary.main' }}>
-              WEEK
+        {/* Month Grid Table */}
+        <Box sx={{ borderTop: '1px solid', borderLeft: '1px solid', borderColor: 'divider' }}>
+          {/* Header Row: Column for Edit Week + 7 Days */}
+          <Grid container sx={{ bgcolor: 'action.hover' }}>
+            <Grid
+              item
+              xs={1.4}
+              className="week-col-head"
+              sx={{
+                p: 1,
+                borderRight: '1px solid',
+                borderBottom: '1px solid',
+                borderColor: 'divider',
+                textAlign: 'center',
+                fontWeight: 800,
+                fontSize: '0.75rem',
+                color: 'text.secondary',
+              }}
+            >
+              PLANNER
             </Grid>
-            {['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'].map((day, idx) => (
+
+            {daysOfWeek.map((dayName) => (
               <Grid
                 item
                 xs={(12 - 1.4) / 7}
-                key={day}
-                className="day-col day-header-cell"
+                key={dayName}
                 sx={{
-                  py: 1.2,
+                  p: 1,
+                  borderRight: '1px solid',
+                  borderBottom: '1px solid',
+                  borderColor: 'divider',
                   textAlign: 'center',
-                  fontWeight: 700,
+                  fontWeight: 800,
                   fontSize: '0.8rem',
-                  color: idx === 0 || idx === 6 ? 'text.secondary' : 'primary.main',
+                  letterSpacing: 0.5,
+                  bgcolor: (t) => (t.palette.mode === 'dark' ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.03)'),
                 }}
               >
-                {day}
+                {dayName}
               </Grid>
             ))}
           </Grid>
 
-          {/* Calendar Week Rows */}
-          {weekRows.map((week, wIndex) => {
+          {/* Calendar Rows */}
+          {calendarRows.map((week, wIndex) => {
             const firstValidDate = week.find((d) => d !== null);
             const representativeDate = firstValidDate || new Date(year, month, 1);
 
@@ -435,6 +512,7 @@ export default function MasterCalendarPage() {
                   const dayNotes = showParentNotes ? parentNotes.filter((n) => n.note_date === dateStr) : [];
                   const daySchoolAssignments = showSchoolAssignments ? schoolAssignments.filter((a) => a.due_date === dateStr) : [];
                   const dayTasks = showTasks ? tasksList.filter((t) => t.due_date === dateStr) : [];
+                  const dayGoogleEvents = showGoogleCalendars ? googleEvents.filter((g) => g.event_date === dateStr) : [];
                   const isWeekend = dateObj.getDay() === 0 || dateObj.getDay() === 6;
 
                   return (
@@ -493,6 +571,26 @@ export default function MasterCalendarPage() {
                           />
                         ))}
 
+                        {/* Google Calendar Events */}
+                        {dayGoogleEvents.map((g) => (
+                          <Chip
+                            key={g.id}
+                            label={g.title}
+                            size="small"
+                            icon={<CalendarIcon size={11} color="#ffffff" />}
+                            sx={{
+                              bgcolor: g.color || '#4285F4',
+                              color: '#ffffff !important',
+                              height: 18,
+                              fontSize: '0.66rem',
+                              fontWeight: 800,
+                              borderRadius: 1,
+                              '& .MuiChip-icon': { color: '#ffffff', ml: 0.5 },
+                              '& .MuiChip-label': { px: 0.8 },
+                            }}
+                          />
+                        ))}
+
                         {/* Parent Notes */}
                         {dayNotes.map((n) => (
                           <Typography key={n.id} variant="caption" display="flex" alignItems="center" gap={0.5} noWrap className="note-item-text" sx={{ color: branding.notes.color, fontWeight: 700, fontSize: '0.68rem' }}>
@@ -509,11 +607,13 @@ export default function MasterCalendarPage() {
                           </Typography>
                         ))}
 
-                        {/* To-Do Tasks */}
+                        {/* Tasks */}
                         {dayTasks.map((t) => (
-                          <Typography key={t.id} variant="caption" display="flex" alignItems="center" gap={0.5} noWrap className="task-item-text" sx={{ color: branding.tasks.color, fontWeight: 700, fontSize: '0.68rem' }}>
-                            <ItemIcon name={branding.tasks.icon} size={11} color={branding.tasks.color} />
-                            <span>{t.status === 'completed' ? '✓' : '☐'} {t.title}</span>
+                          <Typography key={t.id} variant="caption" display="flex" alignItems="center" gap={0.5} noWrap className="task-item-text" sx={{ color: branding.tasks.color, fontWeight: 600, fontSize: '0.66rem' }}>
+                            <ItemIcon name={branding.tasks.icon} size={10} color={branding.tasks.color} />
+                            <span style={{ textDecoration: t.status === 'completed' ? 'line-through' : 'none' }}>
+                              {t.title}
+                            </span>
                           </Typography>
                         ))}
                       </Stack>
@@ -523,145 +623,73 @@ export default function MasterCalendarPage() {
               </Grid>
             );
           })}
-        </Card>
+        </Box>
 
-        {/* BOTTOM HALF NOTES SECTION FOR MONTHLY OVERVIEW PRINT */}
-        <Card elevation={8} sx={{ borderRadius: 3, p: 3, minHeight: 260 }} className="notes-print-card">
-          {/* Screen Header & Editable Textarea */}
-          <Box className="notes-screen-header">
-            <Typography variant="h5" fontWeight={700} gutterBottom display="flex" alignItems="center" gap={1}>
-              <Sparkles size={20} color={theme.palette.primary.main} />
-              Monthly Parent &amp; Teacher Notes
-            </Typography>
-            <Typography variant="body2" color="text.secondary" mb={2}>
-              Write monthly goals, curriculum milestones, exam dates, or notes below.
-            </Typography>
-
-            <TextField
-              fullWidth
-              multiline
-              rows={5}
-              placeholder="Type monthly goals, curriculum milestones, exam dates, or parent notes here..."
-              value={monthlyNotes}
-              onChange={(e) => handleUpdateMonthlyNotes(e.target.value)}
-              sx={{
-                borderRadius: 2,
-                '& .MuiOutlinedInput-root': {
-                  borderRadius: 2,
-                },
-              }}
-            />
-          </Box>
-
-          {/* Print View: Clean "Notes" Header & Typed Content */}
-          <Box className="notes-print-content">
-            <Typography variant="h5" fontWeight={800} sx={{ mb: 1, color: '#000000' }}>
-              Notes
-            </Typography>
-            <Typography variant="body1" sx={{ color: '#000000', whiteSpace: 'pre-wrap', minHeight: 140, fontSize: '13px' }}>
-              {monthlyNotes || ''}
-            </Typography>
-          </Box>
-        </Card>
+        {/* Bottom Monthly Notes & Print Signature Section */}
+        <Box mt={3} pt={2} borderTop="1px solid" borderColor="divider">
+          <Typography variant="subtitle2" fontWeight={800} mb={1}>
+            Monthly Parent &amp; Teacher Notes (Prints at Bottom of Calendar Page):
+          </Typography>
+          <TextField
+            fullWidth
+            multiline
+            rows={3}
+            placeholder="Type monthly curriculum goals, field trip reminders, or home study focus notes here..."
+            value={monthlyNotes}
+            onChange={(e) => handleUpdateMonthlyNotes(e.target.value)}
+            sx={{
+              bgcolor: 'background.default',
+              borderRadius: 2,
+              '& .MuiOutlinedInput-root': {
+                fontSize: '0.85rem',
+              },
+            }}
+          />
+        </Box>
       </Box>
 
-      {/* Global CSS for Print Mode */}
+      {/* PRINT MEDIA STYLES FOR 1-PAGE PORTRAIT MONTHLY CALENDAR */}
       <style jsx global>{`
-        .notes-print-content {
-          display: none;
-        }
-
         @media print {
           .no-print, header, nav, aside {
             display: none !important;
           }
 
-          main {
+          body {
+            background-color: #ffffff !important;
+            color: #000000 !important;
+          }
+
+          .monthly-print-container {
+            border: none !important;
+            box-shadow: none !important;
             padding: 0 !important;
             margin: 0 !important;
             width: 100% !important;
             background-color: #ffffff !important;
           }
 
-          /* Full Portrait Page Flex Container */
-          .monthly-print-container {
-            display: flex !important;
-            flex-direction: column !important;
-            height: 10.1in !important;
-            justify-content: space-between !important;
-            background-color: #ffffff !important;
-            color: #000000 !important;
-          }
-
-          /* Hide Week Column in Print */
-          .week-col {
+          .week-col, .week-col-head {
             display: none !important;
           }
 
-          /* Expand 7 Day Columns to 100% Width */
           .day-col {
-            flex-basis: 14.2857% !important;
-            max-width: 14.2857% !important;
-            min-height: 70px !important;
-            border: 1px solid #999999 !important;
-            background-color: #ffffff !important;
-            color: #000000 !important;
-          }
-
-          .day-header-cell {
-            background-color: #f0f0f0 !important;
-            color: #000000 !important;
-            font-weight: 800 !important;
-            border-bottom: 2px solid #000000 !important;
-          }
-
-          .calendar-print-card {
-            flex-shrink: 0 !important;
-            border: 1.5px solid #000000 !important;
-            box-shadow: none !important;
-            margin-bottom: 8px !important;
+            min-height: 110px !important;
+            border-color: #999999 !important;
             background-color: #ffffff !important;
           }
 
-          /* High-Contrast Black & White Printable Colors */
+          .empty-cell {
+            background-color: #f5f5f5 !important;
+          }
+
           .date-number {
-            background-color: transparent !important;
             color: #000000 !important;
-            font-weight: 800 !important;
           }
 
           .holiday-chip {
-            background-color: #ffffff !important;
-            color: #000000 !important;
-            border: 1.5px solid #000000 !important;
-            font-weight: 800 !important;
-          }
-
-          .note-item-text, .assignment-item-text, .task-item-text {
-            color: #000000 !important;
-            font-weight: 700 !important;
-          }
-
-          /* Printable Notes Card */
-          .notes-print-card {
-            flex: 1 1 auto !important;
-            display: flex !important;
-            flex-direction: column !important;
-            border: 1.5px solid #000000 !important;
-            box-shadow: none !important;
-            padding: 16px !important;
-            background-color: #ffffff !important;
-          }
-
-          .notes-screen-header {
-            display: none !important;
-          }
-
-          .notes-print-content {
-            display: flex !important;
-            flex-direction: column !important;
-            flex-grow: 1 !important;
-            height: 100% !important;
+            background-color: #333333 !important;
+            color: #ffffff !important;
           }
         }
       `}</style>
