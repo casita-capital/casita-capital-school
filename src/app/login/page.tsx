@@ -35,10 +35,15 @@ export default function LoginPage() {
     setLoading(true);
     setErrorMessage(null);
     try {
+      const redirectUrl =
+        typeof window !== 'undefined'
+          ? `${window.location.origin}/auth/callback`
+          : 'https://school.casitacapital.com/auth/callback';
+
       const { error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {
-          redirectTo: `${window.location.origin}/`,
+          redirectTo: redirectUrl,
         },
       });
 
