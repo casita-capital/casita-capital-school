@@ -2,7 +2,7 @@
 
 import { useEffect, useState, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Box, CircularProgress, Typography } from '@mui/material';
+import { Box, Button, Card, CardContent, CircularProgress, Typography, Alert, Stack } from '@mui/material';
 import { createClient } from 'src/services/supabase/client';
 import { Logo } from 'src/components/base/logo';
 
@@ -10,7 +10,7 @@ function AuthCallbackContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const supabase = createClient();
-  const [statusMessage, setStatusMessage] = useState('Completing sign-in...');
+  const [errorDetails, setErrorDetails] = useState<string | null>(null);
 
   useEffect(() => {
     async function processAuth() {
@@ -18,15 +18,19 @@ function AuthCallbackContent() {
       const hash = typeof window !== 'undefined' ? window.location.hash : '';
       if (hash.includes('error=')) {
         const params = new URLSearchParams(hash.replace(/^#/, ''));
-        const errDesc = params.get('error_description') || params.get('error') || 'Authentication failed';
-        router.push(`/login?error=${encodeURIComponent(errDesc)}`);
+        const errDesc =
+          params.get('error_description') ||
+          params.get('error_code') ||
+          params.get('error') ||
+          'Authentication failed';
+        setErrorDetails(decodeURIComponent(errDesc));
         return;
       }
 
       // 2. Check for URL Search Error (?error=...&error_description=...)
-      const queryErr = searchParams.get('error_description') || searchParams.get('error');
+      const queryErr = searchParams.get('error_description') || searchParams.get('error_code') || searchParams.get('error');
       if (queryErr) {
-        router.push(`/login?error=${encodeURIComponent(queryErr)}`);
+        setErrorDetails(decodeURIComponent(queryErr));
         return;
       }
 
@@ -36,7 +40,7 @@ function AuthCallbackContent() {
         try {
           const { data, error } = await supabase.auth.exchangeCodeForSession(code);
           if (error) {
-            router.push(`/login?error=${encodeURIComponent(error.message)}`);
+            setErrorDetails(error.message);
             return;
           }
           if (data.session?.user?.email) {
@@ -47,7 +51,7 @@ function AuthCallbackContent() {
           }
         } catch (err: unknown) {
           const errText = err instanceof Error ? err.message : 'Session exchange failed';
-          router.push(`/login?error=${encodeURIComponent(errText)}`);
+          setErrorDetails(errText);
           return;
         }
       }
@@ -61,12 +65,55 @@ function AuthCallbackContent() {
         return;
       }
 
-      // Fallback redirect to login
-      router.push('/login');
+      // If no code, error, or session found, show error
+      setErrorDetails('No authentication code or active session returned from provider.');
     }
 
     processAuth();
   }, [router, searchParams, supabase]);
+
+  if (errorDetails) {
+    return (
+      <Box
+        sx={{
+          minHeight: '100vh',
+          width: '100%',
+          bgcolor: 'background.default',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          p: 3,
+        }}
+      >
+        <Card elevation={8} sx={{ maxWidth: 500, width: '100%', borderRadius: 3 }}>
+          <CardContent sx={{ p: 4, textAlign: 'center' }}>
+            <Box mb={2} display="flex" justifyContent="center">
+              <Logo />
+            </Box>
+            <Typography variant="h5" fontWeight={700} gutterBottom>
+              Google Sign-In Error
+            </Typography>
+            <Alert severity="error" sx={{ my: 3, textAlign: 'left', borderRadius: 2 }}>
+              <Typography variant="body2" fontWeight={600}>
+                {errorDetails}
+              </Typography>
+            </Alert>
+            <Typography variant="caption" color="text.secondary" paragraph display="block">
+              Please check your Supabase Auth Provider settings and Google Cloud OAuth credentials.
+            </Typography>
+            <Button
+              variant="contained"
+              color="primary"
+              onClick={() => router.push('/login')}
+              sx={{ fontWeight: 700, mt: 1 }}
+            >
+              Return to Login
+            </Button>
+          </CardContent>
+        </Card>
+      </Box>
+    );
+  }
 
   return (
     <Box
@@ -84,7 +131,7 @@ function AuthCallbackContent() {
       <Logo />
       <CircularProgress size={36} color="primary" />
       <Typography variant="body2" color="text.secondary" fontWeight={600}>
-        {statusMessage}
+        Completing Google sign-in...
       </Typography>
     </Box>
   );
