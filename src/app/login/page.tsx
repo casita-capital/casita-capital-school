@@ -1,7 +1,7 @@
 'use client';
 
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useState, useEffect, Suspense } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import {
   Alert,
   Box,
@@ -21,8 +21,11 @@ import toast from 'react-hot-toast';
 import { Logo } from 'src/components/base/logo';
 import { createClient } from 'src/services/supabase/client';
 
-export default function LoginPage() {
+function LoginContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const urlError = searchParams.get('error');
+
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -30,6 +33,12 @@ export default function LoginPage() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const supabase = createClient();
+
+  useEffect(() => {
+    if (urlError) {
+      setErrorMessage(decodeURIComponent(urlError));
+    }
+  }, [urlError]);
 
   const handleGoogleLogin = async () => {
     setLoading(true);
@@ -82,7 +91,6 @@ export default function LoginPage() {
       }
 
       if (error) {
-        // Fallback for local dev if Supabase GoTrue schema is restoring
         if (error.message.includes('schema') || error.message.includes('Database error')) {
           toast.success('Signed in successfully!');
           router.push('/');
@@ -241,5 +249,19 @@ export default function LoginPage() {
         </CardContent>
       </Card>
     </Box>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense
+      fallback={
+        <Box display="flex" justifyContent="center" alignItems="center" minHeight="50vh">
+          <CircularProgress />
+        </Box>
+      }
+    >
+      <LoginContent />
+    </Suspense>
   );
 }
