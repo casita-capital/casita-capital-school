@@ -174,6 +174,7 @@ export interface Database {
           id: string;
           subject_id: string;
           note_date: string;
+          title: string | null;
           description: string;
           created_by: string | null;
           updated_by: string | null;
@@ -184,6 +185,7 @@ export interface Database {
           id?: string;
           subject_id: string;
           note_date: string;
+          title?: string | null;
           description: string;
           created_by?: string | null;
           updated_by?: string | null;
@@ -194,6 +196,7 @@ export interface Database {
           id?: string;
           subject_id?: string;
           note_date?: string;
+          title?: string | null;
           description?: string;
           created_by?: string | null;
           updated_by?: string | null;

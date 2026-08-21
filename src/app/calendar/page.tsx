@@ -35,6 +35,7 @@ import { PageHeading } from 'src/components/base/page-heading';
 import { createClient } from 'src/services/supabase/client';
 import { useSchoolSettings } from 'src/contexts/school-settings';
 import { ItemIcon } from 'src/components/base/item-icon';
+import { FormattedParentNote } from 'src/components/base/formatted-parent-note';
 
 interface Holiday {
   id: string;
@@ -48,6 +49,7 @@ interface ParentNote {
   id: string;
   subject_id: string;
   note_date: string;
+  title?: string | null;
   description: string;
 }
 
@@ -593,10 +595,14 @@ export default function MasterCalendarPage() {
 
                         {/* Parent Notes */}
                         {dayNotes.map((n) => (
-                          <Typography key={n.id} variant="caption" display="flex" alignItems="center" gap={0.5} noWrap className="note-item-text" sx={{ color: branding.notes.color, fontWeight: 700, fontSize: '0.68rem' }}>
-                            <ItemIcon name={branding.notes.icon} size={11} color={branding.notes.color} />
-                            <span>{n.description}</span>
-                          </Typography>
+                          <Box key={n.id} className="note-item-text" sx={{ color: branding.notes.color }}>
+                            <FormattedParentNote
+                              description={n.description}
+                              color={branding.notes.color}
+                              iconName={branding.notes.icon}
+                              interactive={false}
+                            />
+                          </Box>
                         ))}
 
                         {/* School Assignments */}

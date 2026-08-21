@@ -50,6 +50,7 @@ import { PageHeading } from 'src/components/base/page-heading';
 import { createClient } from 'src/services/supabase/client';
 import { useSchoolSettings } from 'src/contexts/school-settings';
 import { ItemIcon } from 'src/components/base/item-icon';
+import { FormattedParentNote } from 'src/components/base/formatted-parent-note';
 
 interface Subject {
   id: string;
@@ -62,6 +63,7 @@ interface ParentNote {
   id: string;
   subject_id: string;
   note_date: string;
+  title?: string | null;
   description: string;
   created_by?: string | null;
   updated_by?: string | null;
@@ -155,11 +157,14 @@ function PlannerContent() {
     notes: '',
   });
 
-  // Modal State for adding/editing Parent Note or School Assignment in a cell
+  // Modal State for adding/editing Parent Notes or School Assignment in a cell
   const [openCellModal, setOpenCellModal] = useState(false);
   const [selectedSubject, setSelectedSubject] = useState<Subject | null>(null);
   const [selectedDate, setSelectedDate] = useState<string>('');
+  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
+  const [cellNoteHeader, setCellNoteHeader] = useState('');
   const [cellNoteDesc, setCellNoteDesc] = useState('');
+  const [isFormOpen, setIsFormOpen] = useState(false);
   const [savingNote, setSavingNote] = useState(false);
 
   // New School Assignment input inside cell modal
@@ -188,10 +193,11 @@ function PlannerContent() {
       const mm = String(d.getMonth() + 1).padStart(2, '0');
       const dd = String(d.getDate()).padStart(2, '0');
       const dateStr = `${yyyy}-${mm}-${dd}`;
+      const monthDayStr = `${d.getMonth() + 1}/${d.getDate()}`;
       dates.push({
         dateStr,
         dayName: dayNames[i],
-        formatted: d.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' }),
+        formatted: monthDayStr,
       });
     }
     return dates;
@@ -326,7 +332,8 @@ function PlannerContent() {
     loadPlannerData(weekStartDate);
   }, [weekStartDate]);
 
-  const handlePrevWeek = () => {
+  const handlePrevWeek = async () => {
+    await handleSaveSettings(plannerSettings);
     const cur = new Date(weekStartDate + 'T00:00:00');
     cur.setDate(cur.getDate() - 7);
     const newStr = cur.toISOString().split('T')[0];
@@ -334,7 +341,8 @@ function PlannerContent() {
     router.replace(`/calendar/planner?week=${newStr}`);
   };
 
-  const handleNextWeek = () => {
+  const handleNextWeek = async () => {
+    await handleSaveSettings(plannerSettings);
     const cur = new Date(weekStartDate + 'T00:00:00');
     cur.setDate(cur.getDate() + 7);
     const newStr = cur.toISOString().split('T')[0];
@@ -345,18 +353,42 @@ function PlannerContent() {
   const handleOpenCellEditor = (subject: Subject, dateStr: string) => {
     setSelectedSubject(subject);
     setSelectedDate(dateStr);
-    const existing = parentNotes.find(
+
+    const squareNotes = parentNotes.filter(
       (n) => n.subject_id === subject.id && n.note_date === dateStr
     );
-    setCellNoteDesc(existing ? existing.description : '');
+
+    setEditingNoteId(null);
+    setCellNoteHeader('');
+    setCellNoteDesc('');
+    setIsFormOpen(squareNotes.length === 0);
+
     setAssignmentTitle('');
     setAssignmentCategory('homework');
     setAssignmentPriority('medium');
     setOpenCellModal(true);
   };
 
+  const handleStartEditNote = (note: ParentNote) => {
+    setEditingNoteId(note.id);
+    setCellNoteHeader(note.title || '');
+    setCellNoteDesc(note.description || '');
+    setIsFormOpen(true);
+  };
+
+  const handleAddNewNoteForm = () => {
+    setEditingNoteId(null);
+    setCellNoteHeader('');
+    setCellNoteDesc('');
+    setIsFormOpen(true);
+  };
+
   const handleSaveCellNote = async () => {
     if (!selectedSubject || !selectedDate) return;
+    if (!cellNoteHeader.trim() && !cellNoteDesc.trim()) {
+      toast.error('Please enter a note header or body content');
+      return;
+    }
 
     setSavingNote(true);
     const activeUserName =
@@ -366,28 +398,17 @@ function PlannerContent() {
     const nowIso = new Date().toISOString();
 
     try {
-      const existing = parentNotes.find(
-        (n) => n.subject_id === selectedSubject.id && n.note_date === selectedDate
-      );
-
-      if (cellNoteDesc.trim() === '') {
-        if (existing) {
-          const { error } = await supabase.from('parent_notes').delete().eq('id', existing.id);
-          if (error) {
-            toast.error(`Error deleting parent note: ${error.message}`);
-            return;
-          }
-          setParentNotes((prev) => prev.filter((n) => n.id !== existing.id));
-        }
-      } else if (existing) {
+      if (editingNoteId) {
+        // Update existing parent note
         const { error } = await supabase
           .from('parent_notes')
           .update({
+            title: cellNoteHeader.trim() || null,
             description: cellNoteDesc.trim(),
             updated_by: activeUserName,
             updated_at: nowIso,
           })
-          .eq('id', existing.id);
+          .eq('id', editingNoteId);
 
         if (error) {
           toast.error(`Error updating parent note: ${error.message}`);
@@ -396,9 +417,10 @@ function PlannerContent() {
 
         setParentNotes((prev) =>
           prev.map((n) =>
-            n.id === existing.id
+            n.id === editingNoteId
               ? {
                   ...n,
+                  title: cellNoteHeader.trim() || null,
                   description: cellNoteDesc.trim(),
                   updated_by: activeUserName,
                   updated_at: nowIso,
@@ -406,12 +428,15 @@ function PlannerContent() {
               : n
           )
         );
+        toast.success('Parent note updated!');
       } else {
+        // Insert new parent note
         const { data, error } = await supabase
           .from('parent_notes')
           .insert({
             subject_id: selectedSubject.id,
             note_date: selectedDate,
+            title: cellNoteHeader.trim() || null,
             description: cellNoteDesc.trim(),
             created_by: activeUserName,
             updated_by: activeUserName,
@@ -421,14 +446,18 @@ function PlannerContent() {
           .single();
 
         if (error) {
-          toast.error(`Error saving parent note: ${error.message}`);
+          toast.error(`Error adding parent note: ${error.message}`);
           return;
         } else if (data) {
           setParentNotes((prev) => [...prev, data as ParentNote]);
+          toast.success('Parent note added!');
         }
       }
-      toast.success('Parent note saved!');
-      setOpenCellModal(false);
+
+      setEditingNoteId(null);
+      setCellNoteHeader('');
+      setCellNoteDesc('');
+      setIsFormOpen(false);
     } catch {
       toast.error('Error saving parent note');
     } finally {
@@ -436,32 +465,77 @@ function PlannerContent() {
     }
   };
 
-  const handleDeleteCellNote = async () => {
-    if (!selectedSubject || !selectedDate) return;
-    const existing = parentNotes.find(
-      (n) => n.subject_id === selectedSubject.id && n.note_date === selectedDate
-    );
-    if (!existing) return;
-
+  const handleDeleteSingleParentNote = async (noteId: string) => {
     setSavingNote(true);
     try {
-      const { error } = await supabase
-        .from('parent_notes')
-        .delete()
-        .eq('id', existing.id);
-
+      const { error } = await supabase.from('parent_notes').delete().eq('id', noteId);
       if (error) {
         toast.error(`Error deleting note: ${error.message}`);
       } else {
-        setParentNotes((prev) => prev.filter((n) => n.id !== existing.id));
-        setCellNoteDesc('');
+        setParentNotes((prev) => prev.filter((n) => n.id !== noteId));
         toast.success('Parent note deleted!');
-        setOpenCellModal(false);
+        if (editingNoteId === noteId) {
+          setEditingNoteId(null);
+          setCellNoteHeader('');
+          setCellNoteDesc('');
+          setIsFormOpen(false);
+        }
       }
     } catch {
       toast.error('Failed to delete parent note');
     } finally {
       setSavingNote(false);
+    }
+  };
+
+  const handleToggleParentNoteCheckbox = async (
+    noteId: string,
+    lineIndex: number,
+    newChecked: boolean
+  ) => {
+    const note = parentNotes.find((n) => n.id === noteId);
+    if (!note) return;
+
+    const lines = note.description.split('\n');
+    if (lineIndex < 0 || lineIndex >= lines.length) return;
+
+    const line = lines[lineIndex];
+    let updatedLine = line;
+
+    if (newChecked) {
+      if (line.includes('- [ ]')) updatedLine = line.replace('- [ ]', '- [x]');
+      else if (line.includes('[ ]')) updatedLine = line.replace('[ ]', '[x]');
+      else if (line.includes('☐')) updatedLine = line.replace('☐', '☑');
+      else updatedLine = `- [x] ${line}`;
+    } else {
+      if (line.includes('- [x]') || line.includes('- [X]')) updatedLine = line.replace(/- \[[xX]\]/, '- [ ]');
+      else if (line.includes('[x]') || line.includes('[X]')) updatedLine = line.replace(/\[[xX]\]/, '[ ]');
+      else if (line.includes('☑')) updatedLine = line.replace('☑', '☐');
+      else updatedLine = `- [ ] ${line}`;
+    }
+
+    lines[lineIndex] = updatedLine;
+    const newDescription = lines.join('\n');
+
+    setParentNotes((prev) =>
+      prev.map((n) => (n.id === noteId ? { ...n, description: newDescription } : n))
+    );
+
+    try {
+      await supabase
+        .from('parent_notes')
+        .update({ description: newDescription, updated_at: new Date().toISOString() })
+        .eq('id', noteId);
+    } catch {
+      // Ignore background update error
+    }
+  };
+
+  const handleInsertFormatting = (type: 'bullet' | 'checkbox') => {
+    if (type === 'bullet') {
+      setCellNoteDesc((prev) => (prev ? `${prev}\n• ` : '• '));
+    } else if (type === 'checkbox') {
+      setCellNoteDesc((prev) => (prev ? `${prev}\n- [ ] ` : '- [ ] '));
     }
   };
 
@@ -502,16 +576,40 @@ function PlannerContent() {
 
   const handleSaveSettings = async (newSettings: WeeklySettings) => {
     setPlannerSettings(newSettings);
+    const targetWeek = newSettings.week_start_date || weekStartDate;
     try {
-      await supabase.from('weekly_planner_settings').upsert({
-        week_start_date: monStr,
+      const payload: {
+        id?: string;
+        week_start_date: string;
+        todos: string[];
+        priorities: string[];
+        for_next_month: string;
+        notes: string;
+      } = {
+        week_start_date: targetWeek,
         todos: newSettings.todos,
         priorities: newSettings.priorities,
         for_next_month: newSettings.for_next_month,
         notes: newSettings.notes,
-      });
-    } catch {
-      // Auto-save silently
+      };
+
+      if (newSettings.id) {
+        payload.id = newSettings.id;
+      }
+
+      const { data, error } = await supabase
+        .from('weekly_planner_settings')
+        .upsert(payload, { onConflict: 'week_start_date' })
+        .select('id')
+        .single();
+
+      if (error) {
+        console.error('Error saving weekly planner settings:', error.message);
+      } else if (data && data.id) {
+        setPlannerSettings((prev) => ({ ...prev, id: data.id }));
+      }
+    } catch (err) {
+      console.error('Failed to save settings:', err);
     }
   };
 
@@ -634,7 +732,7 @@ function PlannerContent() {
                 <th className="subject-header-col">SUBJECT</th>
                 {page1Days.map((d) => (
                   <th key={d.dateStr} className="day-header-col">
-                    {d.dayName}
+                    {d.dayName} [{d.formatted}]
                   </th>
                 ))}
               </tr>
@@ -691,12 +789,24 @@ function PlannerContent() {
                         className="assignment-cell"
                         onClick={() => handleOpenCellEditor(subject, d.dateStr)}
                       >
-                        {cellNote && (
-                          <div className="parent-note-item" style={{ color: branding.notes.color }}>
-                            <ItemIcon name={branding.notes.icon} size={11} color={branding.notes.color} style={{ marginRight: 4, display: 'inline' }} />
-                            {cellNote.description}
-                          </div>
-                        )}
+                        {(() => {
+                          const squareNotes = parentNotes.filter(
+                            (n) => n.subject_id === subject.id && n.note_date === d.dateStr
+                          );
+                          if (squareNotes.length === 0) return null;
+                          return squareNotes.map((noteItem) => (
+                            <Box key={noteItem.id} className="parent-note-item" sx={{ color: branding.notes.color, mb: 1 }}>
+                              <FormattedParentNote
+                                noteId={noteItem.id}
+                                title={noteItem.title}
+                                description={noteItem.description}
+                                color={branding.notes.color}
+                                iconName={branding.notes.icon}
+                                onToggleCheckbox={handleToggleParentNoteCheckbox}
+                              />
+                            </Box>
+                          ));
+                        })()}
                         {cellSchoolAssignments.map((a) => (
                           <div key={a.id} className="school-assignment-item" style={{ color: branding.assignments.color }}>
                             <ItemIcon name={branding.assignments.icon} size={11} color={branding.assignments.color} style={{ marginRight: 4, display: 'inline' }} />
@@ -730,8 +840,11 @@ function PlannerContent() {
                 <thead>
                   <tr>
                     <th className="subject-header-col">SUBJECT</th>
-                    <th className="day-header-col">THURSDAY</th>
-                    <th className="day-header-col friday-col">FRIDAY</th>
+                    {page2Days.map((d, idx) => (
+                      <th key={d.dateStr} className={`day-header-col ${idx === page2Days.length - 1 ? 'friday-col' : ''}`}>
+                        {d.dayName} [{d.formatted}]
+                      </th>
+                    ))}
                   </tr>
                 </thead>
                 <tbody>
@@ -793,12 +906,24 @@ function PlannerContent() {
                             className="assignment-cell"
                             onClick={() => handleOpenCellEditor(subject, d.dateStr)}
                           >
-                            {cellNote && (
-                              <div className="parent-note-item" style={{ color: branding.notes.color }}>
-                                <ItemIcon name={branding.notes.icon} size={11} color={branding.notes.color} style={{ marginRight: 4, display: 'inline' }} />
-                                {cellNote.description}
-                              </div>
-                            )}
+                            {(() => {
+                              const squareNotes = parentNotes.filter(
+                                (n) => n.subject_id === subject.id && n.note_date === d.dateStr
+                              );
+                              if (squareNotes.length === 0) return null;
+                              return squareNotes.map((noteItem) => (
+                                <Box key={noteItem.id} className="parent-note-item" sx={{ color: branding.notes.color, mb: 1 }}>
+                                  <FormattedParentNote
+                                    noteId={noteItem.id}
+                                    title={noteItem.title}
+                                    description={noteItem.description}
+                                    color={branding.notes.color}
+                                    iconName={branding.notes.icon}
+                                    onToggleCheckbox={handleToggleParentNoteCheckbox}
+                                  />
+                                </Box>
+                              ));
+                            })()}
                             {cellSchoolAssignments.map((a) => (
                               <div key={a.id} className="school-assignment-item" style={{ color: branding.assignments.color }}>
                                 <ItemIcon name={branding.assignments.icon} size={11} color={branding.assignments.color} style={{ marginRight: 4, display: 'inline' }} />
@@ -921,31 +1046,183 @@ function PlannerContent() {
         </Box>
       </Box>
 
-      {/* CELL PARENT NOTE & ASSIGNMENT EDITOR MODAL */}
+      {/* CELL PARENT NOTES & ASSIGNMENT EDITOR MODAL */}
       <Dialog open={openCellModal} onClose={() => setOpenCellModal(false)} maxWidth="sm" fullWidth>
-        <DialogTitle fontWeight={700}>
-          {selectedSubject?.name} — {selectedDate}
+        <DialogTitle fontWeight={700} display="flex" alignItems="center" justifyContent="space-between">
+          <span>{selectedSubject?.name} — {selectedDate}</span>
+          {!isFormOpen && (
+            <Button
+              size="small"
+              variant="contained"
+              color="primary"
+              onClick={handleAddNewNoteForm}
+              startIcon={<Plus size={16} />}
+              sx={{ fontWeight: 700 }}
+            >
+              + Add Parent Note
+            </Button>
+          )}
         </DialogTitle>
         <DialogContent dividers>
-          <Typography variant="subtitle2" fontWeight={700} color="primary.main" mb={1}>
-            📝 Parent Note
-          </Typography>
-          <Typography variant="caption" color="text.secondary" mb={1.5} display="block">
-            Add or edit parental notes &amp; reminders for this subject on this date.
-          </Typography>
-          <TextField
-            fullWidth
-            multiline
-            rows={3}
-            label="Parent Note Description"
-            placeholder="e.g. Read Chapter 4 together, bring science project kit"
-            value={cellNoteDesc}
-            onChange={(e) => setCellNoteDesc(e.target.value)}
-            sx={{ mb: 3 }}
-          />
+          {/* Section 1: Parent Notes List / Form */}
+          <Box mb={3}>
+            <Typography variant="subtitle2" fontWeight={700} color="primary.main" mb={1} display="flex" alignItems="center" gap={1}>
+              <FileText size={18} />
+              Parent Notes &amp; Reminders
+            </Typography>
+
+            {/* IF FORM IS OPEN (creating new note or editing an existing note) */}
+            {isFormOpen ? (
+              <Box p={2.5} sx={{ bgcolor: 'action.hover', borderRadius: 2, border: '1px solid', borderColor: 'divider' }}>
+                <Typography variant="subtitle2" fontWeight={800} mb={1.5}>
+                  {editingNoteId ? 'Edit Parent Note' : 'Add New Parent Note'}
+                </Typography>
+
+                <Stack spacing={2}>
+                  {/* Note Header (Always Bold) */}
+                  <TextField
+                    fullWidth
+                    size="small"
+                    label="Note Header (Always Bold)"
+                    placeholder="e.g. Reading Assignment, Science Kit, Field Trip"
+                    value={cellNoteHeader}
+                    onChange={(e) => setCellNoteHeader(e.target.value)}
+                    helperText="This title line will always display in bold font at the top of the note."
+                  />
+
+                  {/* Formatting Buttons for Body */}
+                  <Stack direction="row" spacing={1} alignItems="center">
+                    <Typography variant="caption" fontWeight={700} color="text.secondary">
+                      Body Options:
+                    </Typography>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      onClick={() => handleInsertFormatting('bullet')}
+                      sx={{ fontWeight: 700, px: 1, py: 0.25, fontSize: '0.78rem' }}
+                    >
+                      • Bullet List
+                    </Button>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      color="primary"
+                      onClick={() => handleInsertFormatting('checkbox')}
+                      startIcon={<CheckSquare size={14} />}
+                      sx={{ fontWeight: 700, px: 1, py: 0.25, fontSize: '0.78rem' }}
+                    >
+                      + Checkbox Item
+                    </Button>
+                  </Stack>
+
+                  {/* Note Body */}
+                  <TextField
+                    fullWidth
+                    multiline
+                    rows={4}
+                    label="Note Body (Bullets & Checkboxes)"
+                    placeholder="e.g. • Read Chapters 4-5\n- [ ] Complete practice problems 1-10\n- [ ] Sign workbook page"
+                    value={cellNoteDesc}
+                    onChange={(e) => setCellNoteDesc(e.target.value)}
+                  />
+
+                  {/* Live Student Planner Preview */}
+                  {(cellNoteHeader.trim() || cellNoteDesc.trim()) && (
+                    <Box p={2} sx={{ bgcolor: 'background.paper', borderRadius: 2, border: '1px dashed', borderColor: 'divider' }}>
+                      <Typography variant="caption" fontWeight={800} color="text.secondary" display="block" mb={0.75}>
+                        Student Planner Preview:
+                      </Typography>
+                      <FormattedParentNote
+                        title={cellNoteHeader}
+                        description={cellNoteDesc}
+                        color={branding.notes.color}
+                        iconName={branding.notes.icon}
+                        interactive={false}
+                      />
+                    </Box>
+                  )}
+
+                  {/* Action buttons inside form */}
+                  <Stack direction="row" spacing={1.5} justifyContent="flex-end" pt={1}>
+                    {parentNotes.some((n) => n.subject_id === selectedSubject?.id && n.note_date === selectedDate) && (
+                      <Button
+                        size="small"
+                        color="inherit"
+                        onClick={() => {
+                          setEditingNoteId(null);
+                          setCellNoteHeader('');
+                          setCellNoteDesc('');
+                          setIsFormOpen(false);
+                        }}
+                      >
+                        Cancel
+                      </Button>
+                    )}
+                    <Button
+                      variant="contained"
+                      color="primary"
+                      onClick={handleSaveCellNote}
+                      disabled={savingNote || (!cellNoteHeader.trim() && !cellNoteDesc.trim())}
+                      startIcon={<Save size={16} />}
+                      sx={{ fontWeight: 700 }}
+                    >
+                      {savingNote ? 'Saving Note...' : editingNoteId ? 'Update Note' : 'Save Note'}
+                    </Button>
+                  </Stack>
+                </Stack>
+              </Box>
+            ) : (
+              /* LIST VIEW OF EXISTING PARENT NOTES ON THIS SQUARE */
+              <Stack spacing={2}>
+                {(() => {
+                  const squareNotes = parentNotes.filter(
+                    (n) => n.subject_id === selectedSubject?.id && n.note_date === selectedDate
+                  );
+
+                  return squareNotes.map((n, idx) => (
+                    <Card key={n.id} variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+                      <Box display="flex" justifyContent="space-between" alignItems="flex-start" gap={1} mb={1}>
+                        <Typography variant="caption" fontWeight={800} color="text.secondary">
+                          Parent Note #{idx + 1}
+                        </Typography>
+                        <Stack direction="row" spacing={1}>
+                          <IconButton size="small" color="primary" onClick={() => handleStartEditNote(n)}>
+                            <Edit2 size={16} />
+                          </IconButton>
+                          <IconButton size="small" color="error" onClick={() => handleDeleteSingleParentNote(n.id)}>
+                            <Trash2 size={16} />
+                          </IconButton>
+                        </Stack>
+                      </Box>
+
+                      <FormattedParentNote
+                        noteId={n.id}
+                        title={n.title}
+                        description={n.description}
+                        color={branding.notes.color}
+                        iconName={branding.notes.icon}
+                        interactive={false}
+                      />
+                    </Card>
+                  ));
+                })()}
+
+                <Button
+                  variant="outlined"
+                  color="primary"
+                  onClick={handleAddNewNoteForm}
+                  startIcon={<Plus size={16} />}
+                  sx={{ fontWeight: 700, alignSelf: 'flex-start' }}
+                >
+                  + Add Another Parent Note
+                </Button>
+              </Stack>
+            )}
+          </Box>
 
           <Divider sx={{ my: 2 }} />
 
+          {/* Section 2: School Assignments */}
           <Typography variant="subtitle2" fontWeight={700} color="success.main" mb={1} display="flex" alignItems="center" gap={1}>
             <FileText size={18} />
             Quick Add School Assignment
@@ -959,39 +1236,37 @@ function PlannerContent() {
               value={assignmentTitle}
               onChange={(e) => setAssignmentTitle(e.target.value)}
             />
-            <Grid container spacing={2}>
-              <Grid item xs={6}>
-                <TextField
-                  fullWidth
-                  select
-                  size="small"
-                  label="Category"
-                  value={assignmentCategory}
-                  onChange={(e) => setAssignmentCategory(e.target.value as any)}
-                >
-                  <MenuItem value="homework">Homework</MenuItem>
-                  <MenuItem value="project">Project</MenuItem>
-                  <MenuItem value="test">Test</MenuItem>
-                  <MenuItem value="quiz">Quiz</MenuItem>
-                  <MenuItem value="reading">Reading</MenuItem>
-                  <MenuItem value="paper">Paper</MenuItem>
-                </TextField>
-              </Grid>
-              <Grid item xs={6}>
-                <TextField
-                  fullWidth
-                  select
-                  size="small"
-                  label="Priority"
-                  value={assignmentPriority}
-                  onChange={(e) => setAssignmentPriority(e.target.value as any)}
-                >
-                  <MenuItem value="low">Low</MenuItem>
-                  <MenuItem value="medium">Medium</MenuItem>
-                  <MenuItem value="high">High</MenuItem>
-                </TextField>
-              </Grid>
-            </Grid>
+            <Stack direction="row" spacing={2}>
+              <TextField
+                fullWidth
+                select
+                size="small"
+                label="Category"
+                value={assignmentCategory}
+                onChange={(e) => setAssignmentCategory(e.target.value as any)}
+                sx={{ flex: 1 }}
+              >
+                <MenuItem value="homework">Homework</MenuItem>
+                <MenuItem value="project">Project</MenuItem>
+                <MenuItem value="test">Test</MenuItem>
+                <MenuItem value="quiz">Quiz</MenuItem>
+                <MenuItem value="reading">Reading</MenuItem>
+                <MenuItem value="paper">Paper</MenuItem>
+              </TextField>
+              <TextField
+                fullWidth
+                select
+                size="small"
+                label="Priority"
+                value={assignmentPriority}
+                onChange={(e) => setAssignmentPriority(e.target.value as any)}
+                sx={{ flex: 1 }}
+              >
+                <MenuItem value="low">Low</MenuItem>
+                <MenuItem value="medium">Medium</MenuItem>
+                <MenuItem value="high">High</MenuItem>
+              </TextField>
+            </Stack>
             <Button
               variant="outlined"
               color="success"
@@ -1004,57 +1279,10 @@ function PlannerContent() {
             </Button>
           </Stack>
         </DialogContent>
-
-        {(() => {
-          const note = parentNotes.find(
-            (n) => n.subject_id === selectedSubject?.id && n.note_date === selectedDate
-          );
-          if (!note) return null;
-          return (
-            <Box px={3} py={1.2} sx={{ bgcolor: 'action.hover', borderTop: 1, borderColor: 'divider' }}>
-              <Typography variant="caption" color="text.secondary" display="flex" alignItems="center" gap={0.8} fontWeight={600}>
-                <Clock size={14} />
-                Created / Last edited by <strong>{note.updated_by || note.created_by || 'Blake Womble'}</strong>
-                {note.updated_at || note.created_at
-                  ? ` on ${new Date(note.updated_at || note.created_at).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })}`
-                  : ''}
-              </Typography>
-            </Box>
-          );
-        })()}
-
-        <DialogActions sx={{ p: 2, justifyContent: 'space-between' }}>
-          <Box>
-            {parentNotes.some(
-              (n) => n.subject_id === selectedSubject?.id && n.note_date === selectedDate
-            ) && (
-              <Button
-                onClick={handleDeleteCellNote}
-                color="error"
-                variant="outlined"
-                disabled={savingNote}
-                startIcon={<Trash2 size={16} />}
-                sx={{ fontWeight: 700 }}
-              >
-                Delete Note
-              </Button>
-            )}
-          </Box>
-          <Stack direction="row" spacing={1}>
-            <Button onClick={() => setOpenCellModal(false)} color="inherit">
-              Close
-            </Button>
-            <Button
-              onClick={handleSaveCellNote}
-              variant="contained"
-              color="primary"
-              disabled={savingNote}
-              startIcon={<Save size={16} />}
-              sx={{ fontWeight: 700 }}
-            >
-              {savingNote ? 'Saving...' : 'Save Parent Note'}
-            </Button>
-          </Stack>
+        <DialogActions sx={{ p: 2 }}>
+          <Button onClick={() => setOpenCellModal(false)} color="inherit">
+            Close
+          </Button>
         </DialogActions>
       </Dialog>
 
