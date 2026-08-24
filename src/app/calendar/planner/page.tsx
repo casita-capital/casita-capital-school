@@ -15,6 +15,7 @@ import {
   DialogContent,
   DialogTitle,
   Divider,
+  Drawer,
   Grid,
   IconButton,
   MenuItem,
@@ -44,6 +45,7 @@ import {
   ArrowDown,
   FileText,
   Clock,
+  X,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { PageHeading } from 'src/components/base/page-heading';
@@ -634,7 +636,14 @@ function PlannerContent() {
   const page2Days = weekDates.slice(3, 5); // Thu, Fri
 
   return (
-    <Box>
+    <Box
+      sx={{
+        transition: 'padding-right 0.3s ease',
+        pr: openCellModal ? { xs: 0, md: '500px' } : 0,
+        overflowX: 'auto',
+        maxWidth: '100%',
+      }}
+    >
       {/* HEADER & CONTROLS (Hidden during PDF print) */}
       <Box className="no-print" mb={4}>
         <PageHeading
@@ -1046,27 +1055,68 @@ function PlannerContent() {
         </Box>
       </Box>
 
-      {/* CELL PARENT NOTES & ASSIGNMENT EDITOR MODAL */}
-      <Dialog open={openCellModal} onClose={() => setOpenCellModal(false)} maxWidth="sm" fullWidth>
-        <DialogTitle fontWeight={700} display="flex" alignItems="center" justifyContent="space-between">
-          <span>{selectedSubject?.name} — {selectedDate}</span>
-          {!isFormOpen && (
-            <Button
-              size="small"
-              variant="contained"
-              color="primary"
-              onClick={handleAddNewNoteForm}
-              startIcon={<Plus size={16} />}
-              sx={{ fontWeight: 700 }}
-            >
-              + Add Parent Note
-            </Button>
-          )}
-        </DialogTitle>
-        <DialogContent dividers>
+      {/* CELL PARENT NOTES & ASSIGNMENT EDITOR SIDE DRAWER */}
+      <Drawer
+        anchor="right"
+        open={openCellModal}
+        onClose={() => setOpenCellModal(false)}
+        hideBackdrop={true}
+        ModalProps={{
+          keepMounted: true,
+          disableScrollLock: true,
+        }}
+        PaperProps={{
+          sx: {
+            width: { xs: '100%', sm: 460, md: 500 },
+            boxShadow: '-4px 0 24px rgba(0, 0, 0, 0.15)',
+            display: 'flex',
+            flexDirection: 'column',
+            borderLeft: '1px solid',
+            borderColor: 'divider',
+          },
+        }}
+      >
+        {/* Drawer Header */}
+        <Box
+          px={3}
+          py={2}
+          display="flex"
+          alignItems="center"
+          justifyContent="space-between"
+          sx={{ borderBottom: 1, borderColor: 'divider', bgcolor: 'background.paper' }}
+        >
+          <Box>
+            <Typography variant="h6" fontWeight={800} fontSize="1.05rem" color="text.primary">
+              {selectedSubject?.name}
+            </Typography>
+            <Typography variant="caption" color="text.secondary" fontWeight={600}>
+              {selectedDate}
+            </Typography>
+          </Box>
+          <Stack direction="row" spacing={1} alignItems="center">
+            {!isFormOpen && (
+              <Button
+                size="small"
+                variant="contained"
+                color="primary"
+                onClick={handleAddNewNoteForm}
+                startIcon={<Plus size={16} />}
+                sx={{ fontWeight: 700, px: 1.5 }}
+              >
+                + Note
+              </Button>
+            )}
+            <IconButton size="small" onClick={() => setOpenCellModal(false)}>
+              <X size={20} />
+            </IconButton>
+          </Stack>
+        </Box>
+
+        {/* Drawer Body Content */}
+        <Box sx={{ flex: 1, overflowY: 'auto', p: 3 }}>
           {/* Section 1: Parent Notes List / Form */}
           <Box mb={3}>
-            <Typography variant="subtitle2" fontWeight={700} color="primary.main" mb={1} display="flex" alignItems="center" gap={1}>
+            <Typography variant="subtitle2" fontWeight={700} color="primary.main" mb={1.5} display="flex" alignItems="center" gap={1}>
               <FileText size={18} />
               Parent Notes &amp; Reminders
             </Typography>
@@ -1220,14 +1270,14 @@ function PlannerContent() {
             )}
           </Box>
 
-          <Divider sx={{ my: 2 }} />
+          <Divider sx={{ my: 3 }} />
 
           {/* Section 2: School Assignments */}
-          <Typography variant="subtitle2" fontWeight={700} color="success.main" mb={1} display="flex" alignItems="center" gap={1}>
+          <Typography variant="subtitle2" fontWeight={700} color="success.main" mb={1.5} display="flex" alignItems="center" gap={1}>
             <FileText size={18} />
             Quick Add School Assignment
           </Typography>
-          <Stack spacing={2} pt={1}>
+          <Stack spacing={2} pt={0.5}>
             <TextField
               fullWidth
               size="small"
@@ -1278,13 +1328,15 @@ function PlannerContent() {
               {savingAssignment ? 'Adding...' : 'Add School Assignment'}
             </Button>
           </Stack>
-        </DialogContent>
-        <DialogActions sx={{ p: 2 }}>
-          <Button onClick={() => setOpenCellModal(false)} color="inherit">
-            Close
+        </Box>
+
+        {/* Drawer Footer */}
+        <Box px={3} py={2} sx={{ borderTop: 1, borderColor: 'divider', bgcolor: 'action.hover', display: 'flex', justifyContent: 'flex-end' }}>
+          <Button onClick={() => setOpenCellModal(false)} variant="outlined" color="inherit" sx={{ fontWeight: 700 }}>
+            Close Panel
           </Button>
-        </DialogActions>
-      </Dialog>
+        </Box>
+      </Drawer>
 
       {/* CSS STYLES FOR PRINTING & BINDER LAYOUT */}
       <style jsx global>{`
