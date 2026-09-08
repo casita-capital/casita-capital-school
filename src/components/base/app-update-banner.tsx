@@ -10,7 +10,17 @@ export function AppUpdateBanner() {
   const [dismissed, setDismissed] = useState(false);
 
   useEffect(() => {
-    const initialBuildId = APP_BUILD_ID;
+    // Store current loaded build ID in sessionStorage on initial mount
+    if (typeof window !== 'undefined') {
+      if (!sessionStorage.getItem('loaded_build_id')) {
+        sessionStorage.setItem('loaded_build_id', APP_BUILD_ID);
+      }
+    }
+
+    const currentLoadedId =
+      typeof window !== 'undefined'
+        ? sessionStorage.getItem('loaded_build_id') || APP_BUILD_ID
+        : APP_BUILD_ID;
 
     const checkForUpdates = async () => {
       try {
@@ -22,7 +32,7 @@ export function AppUpdateBanner() {
         });
         if (res.ok) {
           const data = (await res.json()) as { buildId?: string };
-          if (data.buildId && data.buildId !== initialBuildId) {
+          if (data.buildId && data.buildId !== currentLoadedId) {
             setUpdateAvailable(true);
           }
         }
@@ -53,16 +63,31 @@ export function AppUpdateBanner() {
     };
   }, []);
 
+  const handleRefresh = () => {
+    if (typeof window !== 'undefined') {
+      sessionStorage.removeItem('loaded_build_id');
+    }
+    window.location.reload();
+  };
+
   if (!updateAvailable || dismissed) return null;
 
   return (
     <Snackbar
+      className="no-print"
       open={updateAvailable}
       anchorOrigin={{ vertical: 'top', horizontal: 'center' }}
       TransitionComponent={Slide}
-      sx={{ top: { xs: 12, sm: 20 }, zIndex: (theme) => theme.zIndex.tooltip + 100 }}
+      sx={{
+        top: { xs: 12, sm: 20 },
+        zIndex: (theme) => theme.zIndex.tooltip + 100,
+        '@media print': {
+          display: 'none !important',
+        },
+      }}
     >
       <Alert
+        className="no-print"
         severity="info"
         variant="filled"
         icon={<Sparkles size={20} />}
@@ -70,7 +95,7 @@ export function AppUpdateBanner() {
           <Button
             color="inherit"
             size="small"
-            onClick={() => window.location.reload()}
+            onClick={handleRefresh}
             startIcon={<RefreshCw size={14} />}
             sx={{
               fontWeight: 800,
@@ -92,6 +117,9 @@ export function AppUpdateBanner() {
           bgcolor: '#0C74E4',
           color: '#ffffff',
           '& .MuiAlert-icon': { color: '#ffffff' },
+          '@media print': {
+            display: 'none !important',
+          },
         }}
       >
         A new version of Casita Capital School is available!
