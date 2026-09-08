@@ -110,12 +110,25 @@ export default function SubjectsHabitsPage() {
     loadData();
   }, []);
 
+function sanitizeUrlInput(raw: string): string | null {
+  if (!raw.trim()) return null;
+  const match = raw.match(/https?:\/\/[^\s]+/i);
+  if (match) return match[0];
+  if (raw.toLowerCase().includes('zoom.us') || raw.toLowerCase().startsWith('www.')) {
+    const domainMatch = raw.match(/(?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/[^\s]*)?/i);
+    if (domainMatch) return `https://${domainMatch[0]}`;
+  }
+  if (raw.startsWith('http://') || raw.startsWith('https://')) return raw.trim();
+  return `https://${raw.trim()}`;
+}
+
   // ---------------------------------------------------------------------------
   // SUBJECT HANDLERS
   // ---------------------------------------------------------------------------
   const handleAddSubject = async () => {
     if (!newSubjectName.trim()) return;
     setSaving(true);
+    const cleanLink = sanitizeUrlInput(newSubjectLink);
     try {
       const { data, error } = await supabase
         .from('subjects')
@@ -123,7 +136,7 @@ export default function SubjectsHabitsPage() {
           name: newSubjectName.trim(),
           sort_order: subjects.length + 1,
           color: newSubjectColor,
-          link: newSubjectLink.trim() || null,
+          link: cleanLink,
         })
         .select('*')
         .single();
@@ -158,13 +171,14 @@ export default function SubjectsHabitsPage() {
     }
 
     setSavingSubjectEdit(true);
+    const cleanLink = sanitizeUrlInput(editSubjectLink);
     try {
       const { error } = await supabase
         .from('subjects')
         .update({
           name: editSubjectName.trim(),
           color: editSubjectColor,
-          link: editSubjectLink.trim() || null,
+          link: cleanLink,
         })
         .eq('id', editingSubject.id);
 
@@ -178,7 +192,7 @@ export default function SubjectsHabitsPage() {
                   ...s,
                   name: editSubjectName.trim(),
                   color: editSubjectColor,
-                  link: editSubjectLink.trim() || null,
+                  link: cleanLink,
                 }
               : s
           )

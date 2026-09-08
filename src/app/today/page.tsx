@@ -28,9 +28,12 @@ import {
   ExternalLink,
   Edit3,
   X,
+  Sun,
+  Moon,
 } from 'lucide-react';
 import { createClient } from 'src/services/supabase/client';
 import { useSchoolSettings } from 'src/contexts/school-settings';
+import { useCustomization } from 'src/hooks/use-customization';
 
 interface Subject {
   id: string;
@@ -75,11 +78,43 @@ function formatTimeDisplay(timeStr: string): string {
   return `${displayHour}:${minsStr} ${ampm}`;
 }
 
+export function extractCleanUrl(rawLink: string | null | undefined): string | null {
+  if (!rawLink) return null;
+  const trimmed = rawLink.trim();
+  if (!trimmed) return null;
+
+  // Search for http:// or https:// inside the string
+  const httpMatch = trimmed.match(/https?:\/\/[^\s]+/i);
+  if (httpMatch) {
+    return httpMatch[0];
+  }
+
+  // Handle case where link starts with zoom.us or www. or similar domain
+  if (trimmed.toLowerCase().includes('zoom.us') || trimmed.toLowerCase().startsWith('www.')) {
+    const domainMatch = trimmed.match(/(?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/[^\s]*)?/i);
+    if (domainMatch) {
+      return `https://${domainMatch[0]}`;
+    }
+  }
+
+  if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+    return trimmed;
+  }
+
+  return `https://${trimmed}`;
+}
+
 export default function PublicTodaySchedulePage() {
   const theme = useTheme();
+  const customization = useCustomization();
   const supabase = createClient();
   const { schoolName, scheduleStartHour, scheduleEndHour } = useSchoolSettings();
   const timelineContainerRef = useRef<HTMLDivElement>(null);
+
+  const toggleThemeMode = () => {
+    const nextMode = theme.palette.mode === 'dark' ? 'light' : 'dark';
+    customization.handleUpdate({ paletteMode: nextMode });
+  };
 
   const [loading, setLoading] = useState(true);
   const [subjects, setSubjects] = useState<Subject[]>([]);
@@ -247,31 +282,56 @@ export default function PublicTodaySchedulePage() {
               </Typography>
             </Box>
 
-            {currentTopPx !== null && (
+            <Stack direction="row" alignItems="center" spacing={1.5}>
+              {/* LIGHT / DARK THEME MODE TOGGLE BUTTON */}
               <Button
-                variant="contained"
-                color="error"
-                startIcon={<Navigation size={18} color="#ffffff" />}
-                onClick={scrollToCurrentTime}
+                variant="outlined"
+                color="inherit"
+                onClick={toggleThemeMode}
+                startIcon={isDarkMode ? <Sun size={18} color="#F59E0B" /> : <Moon size={18} color="#6366F1" />}
                 sx={{
-                  fontWeight: 900,
-                  color: '#ffffff !important',
+                  fontWeight: 800,
                   borderRadius: 2.5,
                   textTransform: 'none',
-                  px: 2.5,
-                  py: 1,
-                  fontSize: '0.9rem',
-                  letterSpacing: 0.5,
-                  boxShadow: '0 4px 14px rgba(239, 68, 68, 0.45)',
+                  px: 2,
+                  py: 0.9,
+                  fontSize: '0.85rem',
+                  bgcolor: isDarkMode ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)',
+                  borderColor: 'divider',
                   '&:hover': {
-                    bgcolor: '#dc2626',
-                    boxShadow: '0 6px 18px rgba(239, 68, 68, 0.6)',
+                    bgcolor: isDarkMode ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.08)',
                   },
                 }}
               >
-                Jump to Now
+                {isDarkMode ? 'Light Mode' : 'Dark Mode'}
               </Button>
-            )}
+
+              {currentTopPx !== null && (
+                <Button
+                  variant="contained"
+                  color="error"
+                  startIcon={<Navigation size={18} color="#ffffff" />}
+                  onClick={scrollToCurrentTime}
+                  sx={{
+                    fontWeight: 900,
+                    color: '#ffffff !important',
+                    borderRadius: 2.5,
+                    textTransform: 'none',
+                    px: 2.5,
+                    py: 1,
+                    fontSize: '0.9rem',
+                    letterSpacing: 0.5,
+                    boxShadow: '0 4px 14px rgba(239, 68, 68, 0.45)',
+                    '&:hover': {
+                      bgcolor: '#dc2626',
+                      boxShadow: '0 6px 18px rgba(239, 68, 68, 0.6)',
+                    },
+                  }}
+                >
+                  Jump to Now
+                </Button>
+              )}
+            </Stack>
           </Stack>
 
           {/* BOTTOM ROW: Days of Week Selector on Left, Current Time Pill on Right */}
@@ -471,7 +531,8 @@ export default function PublicTodaySchedulePage() {
 
                   const isClassBlock = activeBlock?.block_type === 'class';
                   const currentSub = activeBlock ? subjects.find((s) => s.id === activeBlock.subject_id) : null;
-                  const effectiveLink = isClassBlock && activeBlock ? (activeBlock.link || currentSub?.link || null) : null;
+                  const rawLink = isClassBlock && activeBlock ? (activeBlock.link || currentSub?.link || null) : null;
+                  const effectiveLink = extractCleanUrl(rawLink);
 
                   return (
                     <Box
@@ -704,7 +765,8 @@ export default function PublicTodaySchedulePage() {
         {viewingBlock && (() => {
           const isClassBlock = viewingBlock.block_type === 'class';
           const sub = subjects.find((s) => s.id === viewingBlock.subject_id);
-          const link = isClassBlock ? (viewingBlock.link || sub?.link || null) : null;
+          const rawLink = isClassBlock ? (viewingBlock.link || sub?.link || null) : null;
+          const link = extractCleanUrl(rawLink);
           const blockBg = viewingBlock.color || (isDarkMode ? '#1e293b' : '#0C74E4');
 
           return (

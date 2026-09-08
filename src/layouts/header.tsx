@@ -29,6 +29,7 @@ import {
   Settings,
   Palette,
   ArrowRight,
+  Clock,
 } from 'lucide-react';
 import { useCustomization } from 'src/hooks/use-customization';
 import { HEADER_HEIGHT, SIDEBAR_WIDTH } from 'src/theme/utils';
@@ -203,7 +204,27 @@ export function Header({ onMobileNavOpen }: HeaderProps) {
 
         <Box sx={{ flexGrow: 1 }} />
 
-        <Box display="flex" alignItems="center" gap={1}>
+        <Box display="flex" alignItems="center" gap={1.5}>
+          {/* Link to Daily Timeline page (/today) */}
+          <Button
+            component={RouterLink}
+            href="/today"
+            variant="outlined"
+            color="primary"
+            size="small"
+            startIcon={<Clock size={16} />}
+            sx={{
+              fontWeight: 800,
+              borderRadius: 2.5,
+              textTransform: 'none',
+              px: 2,
+              py: 0.75,
+              fontSize: '0.85rem',
+            }}
+          >
+            Daily Timeline
+          </Button>
+
           {/* Avatar Dropdown Trigger Pill */}
           <Box
             onClick={handleOpenMenu}
