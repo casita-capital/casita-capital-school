@@ -1,7 +1,6 @@
 'use client';
 
 import type { Direction, PaletteMode } from '@mui/material';
-import isEqual from 'lodash.isequal';
 import PropTypes from 'prop-types';
 import type { FC, ReactNode } from 'react';
 import { createContext, useCallback, useEffect, useMemo, useState } from 'react';
@@ -46,6 +45,16 @@ export const defaultCustomization: Customization = {
   paletteMode: 'dark',
   stretch: false,
 };
+
+function isCustomizationEqual(a: Customization, b: Customization): boolean {
+  return (
+    a.colorPreset === b.colorPreset &&
+    a.direction === b.direction &&
+    a.layout === b.layout &&
+    a.paletteMode === b.paletteMode &&
+    a.stretch === b.stretch
+  );
+}
 
 export const initialState: State = {
   isInitialized: false,
@@ -130,7 +139,7 @@ export const CustomizationProvider: FC<CustomizationProviderProps> = (props) => 
   }, [onReset]);
 
   const isCustom = useMemo(() => {
-    return !isEqual(settings, defaultCustomization);
+    return !isCustomizationEqual(settings, defaultCustomization);
   }, [settings]);
 
   return (

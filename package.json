@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=22.13.0"
   },
   "scripts": {
     "dev": "next dev -p 3002",
@@ -34,7 +34,6 @@
     "@supabase/supabase-js": "^2.97.0",
     "clsx": "^2.1.1",
     "date-fns": "2.30.0",
-    "lodash.isequal": "4.5.0",
     "lucide-react": "^0.475.0",
     "next": "16.1.6",
     "nprogress": "0.2.0",
