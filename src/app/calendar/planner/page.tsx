@@ -635,6 +635,18 @@ function PlannerContent() {
   const page1Days = weekDates.slice(0, 3); // Mon, Tue, Wed
   const page2Days = weekDates.slice(3, 5); // Thu, Fri
 
+  // Synchronize All-Day row height across Page 1 & Page 2 so binder pages mirror each other
+  const maxAllDayItemCount = Math.max(
+    ...weekDates.map((d) => {
+      const hCount = holidays.filter((h) => h.holiday_date === d.dateStr).length;
+      const tCount = tasksList.filter((t) => t.due_date === d.dateStr).length;
+      const gCount = googleEvents.filter((g) => g.event_date === d.dateStr).length;
+      return hCount + tCount + gCount;
+    }),
+    0
+  );
+  const syncedAllDayMinHeight = maxAllDayItemCount > 1 ? `${maxAllDayItemCount * 24 + 10}px` : '32px';
+
   return (
     <Box
       sx={{
@@ -749,7 +761,7 @@ function PlannerContent() {
             <tbody>
               {/* DEDICATED ALL-DAY EVENTS ROW FOR HOLIDAYS & DAILY TASKS */}
               <tr className="all-day-events-row">
-                <td className="all-day-label-cell">
+                <td className="all-day-label-cell" style={{ minHeight: syncedAllDayMinHeight }}>
                   HOLIDAYS &amp; TASKS
                 </td>
                 {page1Days.map((d) => {
@@ -758,7 +770,7 @@ function PlannerContent() {
                   const hasEvents = dayHolidays.length > 0 || dayTasks.length > 0;
 
                   return (
-                    <td key={d.dateStr} className="all-day-events-cell">
+                    <td key={d.dateStr} className="all-day-events-cell" style={{ minHeight: syncedAllDayMinHeight }}>
                       {dayHolidays.map((h) => (
                         <div key={h.id} className="holiday-banner-top" style={{ backgroundColor: branding.holidays.color }}>
                           <ItemIcon name={branding.holidays.icon} size={11} color="#ffffff" style={{ marginRight: 4, display: 'inline' }} />
@@ -859,7 +871,7 @@ function PlannerContent() {
                 <tbody>
                   {/* DEDICATED ALL-DAY EVENTS ROW FOR HOLIDAYS & DAILY TASKS */}
                   <tr className="all-day-events-row">
-                    <td className="all-day-label-cell">
+                    <td className="all-day-label-cell" style={{ minHeight: syncedAllDayMinHeight }}>
                       HOLIDAYS &amp; TASKS
                     </td>
                     {page2Days.map((d) => {
@@ -869,7 +881,7 @@ function PlannerContent() {
                       const hasEvents = dayHolidays.length > 0 || dayTasks.length > 0 || dayGoogleEvents.length > 0;
 
                       return (
-                        <td key={d.dateStr} className="all-day-events-cell">
+                        <td key={d.dateStr} className="all-day-events-cell" style={{ minHeight: syncedAllDayMinHeight }}>
                           {dayHolidays.map((h) => (
                             <div key={h.id} className="holiday-banner-top" style={{ backgroundColor: branding.holidays.color }}>
                               <ItemIcon name={branding.holidays.icon} size={11} color="#ffffff" style={{ marginRight: 4, display: 'inline' }} />
@@ -1353,6 +1365,10 @@ function PlannerContent() {
           padding: 24px;
           margin-bottom: 32px;
           box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+          min-height: 840px;
+          display: flex;
+          flex-direction: column;
+          box-sizing: border-box;
         }
 
         .planner-header {
@@ -1379,6 +1395,12 @@ function PlannerContent() {
           width: 100%;
           border-collapse: collapse;
           table-layout: fixed;
+          flex: 1;
+          height: 100%;
+        }
+
+        .planner-table tbody tr {
+          height: 1%;
         }
 
         .planner-table th,
@@ -1420,10 +1442,11 @@ function PlannerContent() {
         }
 
         .assignment-cell {
-          height: 85px;
+          min-height: 48px;
+          height: auto;
           cursor: pointer;
-          font-size: 12px;
-          line-height: 1.4;
+          font-size: 11.5px;
+          line-height: 1.35;
           transition: background-color 0.15s ease;
         }
 
@@ -1508,6 +1531,8 @@ function PlannerContent() {
           width: 100%;
           gap: 0px;
           box-sizing: border-box;
+          flex: 1;
+          height: 100%;
         }
 
         .page2-table-wrapper {
@@ -1515,6 +1540,8 @@ function PlannerContent() {
           flex-shrink: 0;
           box-sizing: border-box;
           padding-right: 8px;
+          display: flex;
+          flex-direction: column;
         }
 
         .sidebar-column {
@@ -1522,6 +1549,9 @@ function PlannerContent() {
           flex-shrink: 0;
           box-sizing: border-box;
           padding-left: 8px;
+          display: flex;
+          flex-direction: column;
+          justify-content: space-between;
         }
 
         .sidebar-section {
@@ -1621,13 +1651,31 @@ function PlannerContent() {
 
         /* PRINT STYLING FOR 2-PAGE PORTRAIT BINDER PDF */
         @media print {
-          .no-print, header, nav, aside {
+          @page {
+            size: letter portrait;
+            margin: 0.3in 0.35in;
+          }
+
+          html, body, div, main, section, article, .planner-print-root {
+            padding-right: 0 !important;
+            margin-right: 0 !important;
+            overflow: visible !important;
+          }
+
+          .no-print, header, nav, aside, .MuiDrawer-root, .MuiBackdrop-root, .MuiModal-root {
             display: none !important;
           }
 
           body {
             background: #ffffff !important;
             color: #000000 !important;
+            font-size: 11px !important;
+          }
+
+          .planner-print-root {
+            width: 100% !important;
+            padding: 0 !important;
+            margin: 0 !important;
           }
 
           .print-page {
@@ -1636,18 +1684,126 @@ function PlannerContent() {
             padding: 0 !important;
             margin: 0 !important;
             width: 100% !important;
+            height: 9.9in !important;
+            max-height: 9.9in !important;
+            display: flex !important;
+            flex-direction: column !important;
+            break-after: page !important;
+            page-break-after: always !important;
+            break-inside: avoid !important;
+            page-break-inside: avoid !important;
+            box-sizing: border-box !important;
+            overflow: hidden !important;
           }
 
-          .page-break {
-            break-after: page;
-            page-break-after: always;
+          .print-page:last-of-type,
+          .print-page:last-child {
+            break-after: auto !important;
+            page-break-after: auto !important;
+            break-after: avoid !important;
+            page-break-after: avoid !important;
+          }
+
+          .planner-header {
+            height: 40px !important;
+            min-height: 40px !important;
+            max-height: 40px !important;
+            margin-bottom: 10px !important;
+            padding: 0 8px !important;
+            flex-shrink: 0 !important;
+          }
+
+          .planner-table {
+            flex: 1 !important;
+            height: 100% !important;
+          }
+
+          .planner-table tbody tr {
+            height: 1% !important;
+          }
+
+          .planner-table th,
+          .planner-table td {
+            padding: 4px 6px !important;
+          }
+
+          .day-header-col {
+            padding: 6px 4px !important;
+            font-size: 11px !important;
+          }
+
+          .subject-name-cell {
+            font-size: 11.5px !important;
+            padding: 4px 6px !important;
+          }
+
+          .assignment-cell {
+            min-height: 40px !important;
+            height: auto !important;
+            padding: 4px 5px !important;
+            font-size: 11px !important;
+          }
+
+          .page2-container {
+            flex: 1 !important;
+            height: 100% !important;
+            display: flex !important;
+          }
+
+          .page2-table-wrapper {
+            display: flex !important;
+            flex-direction: column !important;
+            height: 100% !important;
+          }
+
+          .sidebar-column {
+            display: flex !important;
+            flex-direction: column !important;
+            justify-content: space-between !important;
+            height: 100% !important;
+          }
+
+          .parent-note-item {
+            margin-bottom: 2px !important;
+            font-size: 10.5px !important;
+          }
+
+          .school-assignment-item {
+            margin-bottom: 2px !important;
+            font-size: 10.5px !important;
+            color: #000000 !important;
+            font-weight: 700 !important;
+          }
+
+          .sidebar-section {
+            margin-bottom: 6px !important;
+          }
+
+          .sidebar-textarea-next-month {
+            flex: 1 !important;
+            min-height: 65px !important;
+          }
+
+          .sidebar-textarea-notes {
+            flex: 1.2 !important;
+            min-height: 85px !important;
+          }
+
+          .todo-list {
+            gap: 2px !important;
+          }
+
+          .todo-item {
+            gap: 4px !important;
           }
 
           .sidebar-input {
+            font-size: 10px !important;
             border-bottom: 1px solid #999999 !important;
           }
 
           .sidebar-textarea {
+            font-size: 10px !important;
             border: 1px solid #999999 !important;
           }
 
@@ -1656,6 +1812,8 @@ function PlannerContent() {
             color: #000000 !important;
             border: 1.5px solid #000000 !important;
             font-weight: 800 !important;
+            font-size: 10px !important;
+            padding: 1px 4px !important;
           }
 
           .task-banner-top {
@@ -1663,11 +1821,8 @@ function PlannerContent() {
             color: #000000 !important;
             border: 1px solid #333333 !important;
             font-weight: 700 !important;
-          }
-
-          .school-assignment-item {
-            color: #000000 !important;
-            font-weight: 700 !important;
+            font-size: 10px !important;
+            padding: 1px 4px !important;
           }
         }
       `}</style>

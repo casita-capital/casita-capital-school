@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { Inter } from 'next/font/google';
 import type { ReactNode } from 'react';
+import { AppUpdateBanner } from 'src/components/base/app-update-banner';
 import { RootThemeProvider } from 'src/components/base/root-theme-provider';
 import { Toastr } from 'src/components/base/toastr';
 import { CustomizationProvider } from 'src/contexts/customization';
@@ -26,6 +27,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
               <SidebarProvider>
                 <Layout>{children}</Layout>
                 <Toastr />
+                <AppUpdateBanner />
               </SidebarProvider>
             </RootThemeProvider>
           </SchoolSettingsProvider>
