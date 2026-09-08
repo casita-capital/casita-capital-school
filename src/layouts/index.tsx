@@ -23,8 +23,10 @@ export const Layout: FC<LayoutProps> = ({ children }) => {
   const [authChecking, setAuthChecking] = useState(true);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
 
+  const isPublicRoute = pathname === '/login' || pathname === '/today';
+
   useEffect(() => {
-    if (pathname === '/login') {
+    if (isPublicRoute) {
       setAuthChecking(false);
       return;
     }
@@ -57,7 +59,7 @@ export const Layout: FC<LayoutProps> = ({ children }) => {
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (pathname !== '/login') {
+      if (!isPublicRoute) {
         const activeEmail =
           typeof window !== 'undefined'
             ? localStorage.getItem('school_active_user_email')
@@ -75,19 +77,16 @@ export const Layout: FC<LayoutProps> = ({ children }) => {
     return () => {
       subscription.unsubscribe();
     };
-  }, [pathname, router, supabase]);
+  }, [pathname, isPublicRoute, router, supabase]);
 
-  // Unauthenticated / Loading fallback for login page
-  if (pathname === '/login') {
+  // Unauthenticated / Public pages (login & public live schedule tracker)
+  if (isPublicRoute) {
     return (
       <Box
         sx={{
           minHeight: '100vh',
           width: '100%',
           bgcolor: 'background.default',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
         }}
       >
         {children}

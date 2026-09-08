@@ -43,6 +43,7 @@ interface Subject {
   id: string;
   name: string;
   color: string;
+  link?: string | null;
 }
 
 interface ScheduleBlock {
@@ -55,6 +56,7 @@ interface ScheduleBlock {
   subject_id: string | null;
   color: string | null;
   note?: string | null;
+  link?: string | null;
   created_by?: string | null;
   updated_by?: string | null;
   created_at?: string;
@@ -136,8 +138,9 @@ export default function TimeSchedulerPage() {
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [blocks, setBlocks] = useState<ScheduleBlock[]>([]);
 
-  // Drag palette item
+  // Drag palette item & existing block
   const [draggedPaletteItem, setDraggedPaletteItem] = useState<DragPaletteItem | null>(null);
+  const [draggedBlock, setDraggedBlock] = useState<ScheduleBlock | null>(null);
 
   // Mouse Edge Resizing State
   const [resizingState, setResizingState] = useState<{
@@ -153,6 +156,7 @@ export default function TimeSchedulerPage() {
   const [editTitle, setEditTitle] = useState('');
   const [editType, setEditType] = useState<'class' | 'homework' | 'custom'>('class');
   const [editNote, setEditNote] = useState('');
+  const [editLink, setEditLink] = useState('');
   const [editStartTime, setEditStartTime] = useState('');
   const [editEndTime, setEditEndTime] = useState('');
   const [savingEdit, setSavingEdit] = useState(false);
@@ -171,7 +175,7 @@ export default function TimeSchedulerPage() {
         setLoading(true);
         const { data: subData } = await supabase
           .from('subjects')
-          .select('id, name, color, sort_order')
+          .select('id, name, color, sort_order, link')
           .order('sort_order', { ascending: true });
 
         if (subData) {
@@ -211,6 +215,31 @@ export default function TimeSchedulerPage() {
 
       return startMin < bEnd && endMin > bStart;
     });
+  };
+
+  // Calculate maximum available end minutes before collision or day end (auto-squeezing into available space)
+  const getAvailableEndMinutes = (
+    day: 'monday' | 'tuesday' | 'wednesday' | 'thursday' | 'friday',
+    startMin: number,
+    desiredDurationMins: number,
+    ignoreBlockId?: string
+  ): number => {
+    const dayBlocksAfterStart = blocks.filter((b) => {
+      if (b.day_of_week !== day) return false;
+      if (ignoreBlockId && b.id === ignoreBlockId) return false;
+      const bStart = timeToMinutes(b.start_time);
+      return bStart > startMin;
+    });
+
+    let boundaryMin = scheduleEndHour * 60;
+    if (dayBlocksAfterStart.length > 0) {
+      const earliestNextBlockStart = Math.min(
+        ...dayBlocksAfterStart.map((b) => timeToMinutes(b.start_time))
+      );
+      boundaryMin = Math.min(boundaryMin, earliestNextBlockStart);
+    }
+
+    return Math.min(startMin + desiredDurationMins, boundaryMin);
   };
 
   // Drag Mouse Edge Resizer Effect
@@ -295,65 +324,161 @@ export default function TimeSchedulerPage() {
     };
   }, [resizingState, blocks, scheduleEndHour, scheduleStartHour, supabase]);
 
-  // Create block on drop
+  // Create or move block on drop
   const handleDropOnSlot = async (
     day: 'monday' | 'tuesday' | 'wednesday' | 'thursday' | 'friday',
     slotTime: string
   ) => {
-    if (!draggedPaletteItem) return;
-
     const activeUserName =
       typeof window !== 'undefined'
         ? localStorage.getItem('school_active_user_name') || 'Blake Womble'
         : 'Blake Womble';
     const nowIso = new Date().toISOString();
-
     const startMin = timeToMinutes(slotTime);
-    const defaultDuration = 45; // Default 45 mins
-    const endMin = Math.min(startMin + defaultDuration, scheduleEndHour * 60);
 
-    if (endMin <= startMin) {
-      toast.error('Cannot place block past end of schedule day');
-      return;
-    }
+    // MODE 1: MOVING AN EXISTING SCHEDULE BLOCK
+    if (draggedBlock) {
+      const originalDurationMins =
+        timeToMinutes(draggedBlock.end_time) - timeToMinutes(draggedBlock.start_time);
 
-    if (hasCollision(day, startMin, endMin)) {
-      toast.error('Time slot is already occupied! Choose an open slot.');
-      return;
-    }
-
-    const newBlock: Partial<ScheduleBlock> = {
-      day_of_week: day,
-      start_time: slotTime,
-      end_time: minutesToTime(endMin),
-      title: draggedPaletteItem.title,
-      block_type: draggedPaletteItem.type,
-      subject_id: draggedPaletteItem.subject_id || null,
-      color: draggedPaletteItem.color || null,
-      note: null,
-      created_by: activeUserName,
-      updated_by: activeUserName,
-      created_at: nowIso,
-      updated_at: nowIso,
-    };
-
-    try {
-      const { data, error } = await supabase
-        .from('time_schedule_blocks')
-        .insert(newBlock as any)
-        .select('*')
-        .single();
-
-      if (error) {
-        toast.error(`Failed to add block: ${error.message}`);
-      } else if (data) {
-        setBlocks((prev) => [...prev, data as ScheduleBlock]);
-        toast.success(`Added ${draggedPaletteItem.title} to ${day.toUpperCase()}!`);
+      // Verify slot itself is not inside another block
+      if (hasCollision(day, startMin, startMin + 15, draggedBlock.id)) {
+        toast.error('Time slot is already occupied! Choose an open slot.');
+        setDraggedBlock(null);
+        return;
       }
-    } catch {
-      toast.error('Error adding schedule block');
-    } finally {
-      setDraggedPaletteItem(null);
+
+      const availableEndMin = getAvailableEndMinutes(
+        day,
+        startMin,
+        originalDurationMins,
+        draggedBlock.id
+      );
+
+      const actualDuration = availableEndMin - startMin;
+      if (actualDuration < 15) {
+        toast.error('Not enough available space at this time slot');
+        setDraggedBlock(null);
+        return;
+      }
+
+      const newEndTimeStr = minutesToTime(availableEndMin);
+
+      try {
+        const { error } = await supabase
+          .from('time_schedule_blocks')
+          .update({
+            day_of_week: day,
+            start_time: slotTime,
+            end_time: newEndTimeStr,
+            updated_by: activeUserName,
+            updated_at: nowIso,
+          })
+          .eq('id', draggedBlock.id);
+
+        if (error) {
+          toast.error(`Failed to move block: ${error.message}`);
+        } else {
+          setBlocks((prev) =>
+            prev.map((b) =>
+              b.id === draggedBlock.id
+                ? {
+                    ...b,
+                    day_of_week: day,
+                    start_time: slotTime,
+                    end_time: newEndTimeStr,
+                    updated_by: activeUserName,
+                    updated_at: nowIso,
+                  }
+                : b
+            )
+          );
+
+          if (actualDuration < originalDurationMins) {
+            toast.success(
+              `Moved ${draggedBlock.title} to ${day.toUpperCase()} (${actualDuration} mins fit available space)`
+            );
+          } else {
+            toast.success(
+              `Moved ${draggedBlock.title} to ${day.toUpperCase()} (${formatTimeDisplay(slotTime)} – ${formatTimeDisplay(newEndTimeStr)})`
+            );
+          }
+        }
+      } catch {
+        toast.error('Error moving schedule block');
+      } finally {
+        setDraggedBlock(null);
+      }
+      return;
+    }
+
+    // MODE 2: DROPPING A NEW PALETTE ITEM
+    if (draggedPaletteItem) {
+      // Default duration: Break / Lunch / Recess = 15 mins; Class / other = 45 mins
+      const titleLower = draggedPaletteItem.title.toLowerCase();
+      const isShortBreak =
+        titleLower.includes('break') ||
+        titleLower.includes('lunch') ||
+        titleLower.includes('recess');
+      const desiredDuration = isShortBreak ? 15 : 45;
+
+      // Verify slot itself is not inside another block
+      if (hasCollision(day, startMin, startMin + 15)) {
+        toast.error('Time slot is already occupied! Choose an open slot.');
+        setDraggedPaletteItem(null);
+        return;
+      }
+
+      const availableEndMin = getAvailableEndMinutes(day, startMin, desiredDuration);
+      const actualDuration = availableEndMin - startMin;
+
+      if (actualDuration < 15) {
+        toast.error('Not enough available space at this time slot');
+        setDraggedPaletteItem(null);
+        return;
+      }
+
+      const newEndTimeStr = minutesToTime(availableEndMin);
+
+      const newBlock: Partial<ScheduleBlock> = {
+        day_of_week: day,
+        start_time: slotTime,
+        end_time: newEndTimeStr,
+        title: draggedPaletteItem.title,
+        block_type: draggedPaletteItem.type,
+        subject_id: draggedPaletteItem.subject_id || null,
+        color: draggedPaletteItem.color || null,
+        note: null,
+        created_by: activeUserName,
+        updated_by: activeUserName,
+        created_at: nowIso,
+        updated_at: nowIso,
+      };
+
+      try {
+        const { data, error } = await supabase
+          .from('time_schedule_blocks')
+          .insert(newBlock as any)
+          .select('*')
+          .single();
+
+        if (error) {
+          toast.error(`Failed to add block: ${error.message}`);
+        } else if (data) {
+          setBlocks((prev) => [...prev, data as ScheduleBlock]);
+          if (actualDuration < desiredDuration) {
+            toast.success(
+              `Added ${draggedPaletteItem.title} to ${day.toUpperCase()} (${actualDuration} mins fit in available space)`
+            );
+          } else {
+            toast.success(`Added ${draggedPaletteItem.title} to ${day.toUpperCase()}!`);
+          }
+        }
+      } catch {
+        toast.error('Error adding schedule block');
+      } finally {
+        setDraggedPaletteItem(null);
+      }
     }
   };
 
@@ -383,6 +508,8 @@ export default function TimeSchedulerPage() {
     setEditTitle(block.title);
     setEditType(block.block_type);
     setEditNote(block.note || '');
+    const currentSub = subjects.find((s) => s.id === block.subject_id);
+    setEditLink(block.link || currentSub?.link || '');
     setEditStartTime(block.start_time);
     setEditEndTime(block.end_time);
   };
@@ -422,6 +549,7 @@ export default function TimeSchedulerPage() {
           title: editTitle.trim(),
           block_type: editType,
           note: editNote.trim() || null,
+          link: editLink.trim() || null,
           start_time: editStartTime,
           end_time: editEndTime,
           updated_by: activeUserName,
@@ -440,6 +568,7 @@ export default function TimeSchedulerPage() {
                   title: editTitle.trim(),
                   block_type: editType,
                   note: editNote.trim() || null,
+                  link: editLink.trim() || null,
                   start_time: editStartTime,
                   end_time: editEndTime,
                   updated_by: activeUserName,
@@ -448,7 +577,7 @@ export default function TimeSchedulerPage() {
               : b
           )
         );
-        toast.success('Schedule block updated!');
+        toast.success('Block updated!');
         setEditingBlock(null);
       }
     } catch {
@@ -470,21 +599,23 @@ export default function TimeSchedulerPage() {
 
   return (
     <Box className="no-print-root">
-      <PageHeading
-        heading="Weekly Time Scheduler"
-        caption="Plan Monday–Friday hourly schedules down to 15-minute granularity. Drag & drop subjects or custom activities and stretch time blocks using top/bottom handles."
-        actions={
-          <Button
-            variant="outlined"
-            color="primary"
-            startIcon={<Printer size={18} />}
-            onClick={() => window.print()}
-            sx={{ fontWeight: 700 }}
-          >
-            Print Schedule
-          </Button>
-        }
-      />
+      <Box className="no-print">
+        <PageHeading
+          heading="Weekly Time Scheduler"
+          caption="Plan Monday–Friday hourly schedules down to 15-minute granularity. Drag & drop subjects or custom activities and stretch time blocks using top/bottom handles."
+          actions={
+            <Button
+              variant="outlined"
+              color="primary"
+              startIcon={<Printer size={18} />}
+              onClick={() => window.print()}
+              sx={{ fontWeight: 700 }}
+            >
+              Print Schedule
+            </Button>
+          }
+        />
+      </Box>
 
       <Grid container spacing={3} className="schedule-print-container">
         {/* LEFT SIDEBAR PALETTE */}
@@ -626,7 +757,7 @@ export default function TimeSchedulerPage() {
                 {timeSlots.map((slotTime) => {
                   const isHourHeader = slotTime.endsWith(':00');
                   return (
-                    <Grid container key={slotTime} spacing={1} alignItems="stretch" sx={{ height: SLOT_HEIGHT }}>
+                    <Grid container key={slotTime} spacing={1} alignItems="stretch" className="schedule-slot-row" sx={{ height: 'var(--slot-height, 44px)' }}>
                       {/* Time Rail */}
                       <Grid item xs={1.5}>
                         <Box
@@ -670,8 +801,6 @@ export default function TimeSchedulerPage() {
                           ? (timeToMinutes(activeBlock.end_time) - timeToMinutes(activeBlock.start_time)) / 15
                           : 1;
 
-                        const calculatedHeight = durationSlots * SLOT_HEIGHT - 4;
-
                         return (
                           <Grid item key={`${d.id}-${slotTime}`} xs={2.1}>
                             <Box
@@ -699,32 +828,42 @@ export default function TimeSchedulerPage() {
                               {activeBlock && (
                                 <Paper
                                   elevation={4}
+                                  draggable
+                                  onDragStart={(e) => {
+                                    e.stopPropagation();
+                                    setDraggedBlock(activeBlock);
+                                    setDraggedPaletteItem(null);
+                                  }}
                                   onClick={() => handleOpenEditModal(activeBlock)}
+                                  className="schedule-block-paper"
                                   sx={{
                                     position: 'absolute',
                                     top: 0,
                                     left: 2,
                                     right: 2,
-                                    height: calculatedHeight,
+                                    height: `calc(var(--slot-height, 44px) * ${durationSlots} - 2px)`,
                                     zIndex: 10,
-                                    p: 1,
+                                    p: durationSlots === 1 ? 0.3 : 0.8,
+                                    px: 0.8,
                                     borderRadius: 1.5,
                                     bgcolor: getBlockBackground(activeBlock, isDarkMode),
                                     color: getBlockTextColor(activeBlock, isDarkMode),
                                     display: 'flex',
                                     flexDirection: 'column',
                                     justifyContent: 'space-between',
-                                    cursor: 'pointer',
+                                    cursor: 'grab',
                                     border: '2px solid',
                                     borderColor: getBlockBorderColor(activeBlock, isDarkMode),
                                     boxShadow: '0 4px 12px rgba(0,0,0,0.18)',
                                     overflow: 'hidden',
                                     transition: resizingState?.blockId === activeBlock.id ? 'none' : 'height 0.15s ease',
                                     '&:hover': { boxShadow: '0 6px 16px rgba(0,0,0,0.28)' },
+                                    '&:active': { cursor: 'grabbing' },
                                   }}
                                 >
                                   {/* TOP MOUSE RESIZE HANDLE */}
                                   <Box
+                                    className="no-print resize-handle-bar"
                                     onMouseDown={(e) => {
                                       e.stopPropagation();
                                       e.preventDefault();
@@ -741,7 +880,7 @@ export default function TimeSchedulerPage() {
                                       top: 0,
                                       left: 0,
                                       right: 0,
-                                      height: 10,
+                                      height: 8,
                                       cursor: 'ns-resize',
                                       bgcolor: 'rgba(0,0,0,0.12)',
                                       display: 'flex',
@@ -754,66 +893,115 @@ export default function TimeSchedulerPage() {
                                     <GripHorizontal size={12} color={getBlockTextColor(activeBlock, isDarkMode)} />
                                   </Box>
 
-                                  {/* BLOCK HEADER, TITLE & TYPE PILL */}
-                                  <Box mt={0.6}>
-                                    <Box display="flex" alignItems="center" justifyContent="space-between" gap={0.5}>
-                                      <Typography variant="subtitle2" fontWeight={800} noWrap sx={{ fontSize: '0.82rem' }}>
-                                        {activeBlock.title}
-                                      </Typography>
-                                      <IconButton
-                                        size="small"
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          handleDeleteBlock(activeBlock.id);
-                                        }}
-                                        sx={{ color: getBlockTextColor(activeBlock, isDarkMode), p: 0.2 }}
-                                      >
-                                        <Trash2 size={12} />
-                                      </IconButton>
-                                    </Box>
-
-                                    {/* OPTIONAL NON-BOLD NOTE DETAILS */}
-                                    {activeBlock.note && (
+                                  {durationSlots === 1 ? (
+                                    /* COMPACT SINGLE 15-MIN SLOT CONTENT */
+                                    <Box
+                                      display="flex"
+                                      alignItems="center"
+                                      justifyContent="space-between"
+                                      width="100%"
+                                      height="100%"
+                                      sx={{ overflow: 'hidden' }}
+                                    >
                                       <Typography
                                         variant="caption"
-                                        display="block"
+                                        fontWeight={800}
                                         noWrap
-                                        sx={{
-                                          fontSize: '0.72rem',
-                                          fontWeight: 400,
-                                          fontStyle: 'italic',
-                                          opacity: 0.85,
-                                          mt: 0.2,
-                                        }}
+                                        sx={{ fontSize: '0.72rem', lineHeight: 1 }}
                                       >
-                                        {activeBlock.note}
+                                        {activeBlock.title}
                                       </Typography>
-                                    )}
-                                  </Box>
+                                      <Typography
+                                        variant="caption"
+                                        noWrap
+                                        sx={{ fontSize: '0.62rem', opacity: 0.9, fontWeight: 700, ml: 0.5, lineHeight: 1 }}
+                                      >
+                                        {formatTimeDisplay(activeBlock.start_time)}
+                                      </Typography>
+                                    </Box>
+                                  ) : (
+                                    /* MULTI-SLOT 30+ MIN CONTENT */
+                                    <>
+                                      <Box mt={0} pt={0}>
+                                        <Box display="flex" alignItems="center" justifyContent="space-between" gap={0.5}>
+                                          <Typography
+                                            variant="subtitle2"
+                                            fontWeight={800}
+                                            noWrap
+                                            sx={{ fontSize: '0.8rem', lineHeight: 1.15 }}
+                                          >
+                                            {activeBlock.title}
+                                          </Typography>
+                                          <Stack direction="row" alignItems="center" spacing={0.3}>
+                                            {activeBlock.block_type === 'homework' && (
+                                              <Chip
+                                                label="HW"
+                                                size="small"
+                                                sx={{
+                                                  bgcolor: 'rgba(0,0,0,0.3)',
+                                                  color: '#ffffff',
+                                                  height: 15,
+                                                  fontSize: '0.58rem',
+                                                  fontWeight: 900,
+                                                  borderRadius: '8px',
+                                                  '& .MuiChip-label': { px: 0.5 },
+                                                }}
+                                              />
+                                            )}
+                                            <IconButton
+                                              className="no-print"
+                                              size="small"
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                handleDeleteBlock(activeBlock.id);
+                                              }}
+                                              sx={{ color: getBlockTextColor(activeBlock, isDarkMode), p: 0.1 }}
+                                            >
+                                              <Trash2 size={11} />
+                                            </IconButton>
+                                          </Stack>
+                                        </Box>
 
-                                  {/* TIME RANGE & CATEGORY CHIP */}
-                                  <Box display="flex" alignItems="center" justifyContent="space-between" mb={0.6}>
-                                    <Typography variant="caption" sx={{ opacity: 0.9, fontSize: '0.68rem', fontWeight: 700 }}>
-                                      {formatTimeDisplay(activeBlock.start_time)} – {formatTimeDisplay(activeBlock.end_time)}
-                                    </Typography>
-                                    {activeBlock.block_type !== 'custom' && (
-                                      <Chip
-                                        label={activeBlock.block_type === 'homework' ? 'Homework' : 'Class'}
-                                        size="small"
-                                        sx={{
-                                          bgcolor: activeBlock.block_type === 'homework' ? 'rgba(0,0,0,0.25)' : 'rgba(255,255,255,0.3)',
-                                          color: getBlockTextColor(activeBlock, isDarkMode),
-                                          height: 18,
-                                          fontSize: '0.62rem',
-                                          fontWeight: 800,
-                                          '& .MuiChip-label': { px: 0.8 },
-                                        }}
-                                      />
-                                    )}
-                                  </Box>
+                                        {activeBlock.note && (
+                                          <Typography
+                                            variant="caption"
+                                            display="block"
+                                            noWrap
+                                            sx={{
+                                              fontSize: '0.7rem',
+                                              fontWeight: 400,
+                                              fontStyle: 'italic',
+                                              opacity: 0.85,
+                                              mt: 0.1,
+                                              lineHeight: 1.1,
+                                            }}
+                                          >
+                                            {activeBlock.note}
+                                          </Typography>
+                                        )}
+                                      </Box>
+
+                                      <Box display="flex" alignItems="center" justifyContent="space-between" mb={0.1}>
+                                        <Typography
+                                          variant="caption"
+                                          noWrap
+                                          sx={{
+                                            opacity: 0.92,
+                                            fontSize: '0.62rem',
+                                            fontWeight: 700,
+                                            whiteSpace: 'nowrap',
+                                            lineHeight: 1,
+                                          }}
+                                        >
+                                          {formatTimeDisplay(activeBlock.start_time)} – {formatTimeDisplay(activeBlock.end_time)}
+                                        </Typography>
+                                      </Box>
+                                    </>
+                                  )}
 
                                   {/* BOTTOM MOUSE RESIZE HANDLE */}
                                   <Box
+                                    className="no-print resize-handle-bar"
                                     onMouseDown={(e) => {
                                       e.stopPropagation();
                                       e.preventDefault();
@@ -830,7 +1018,7 @@ export default function TimeSchedulerPage() {
                                       bottom: 0,
                                       left: 0,
                                       right: 0,
-                                      height: 10,
+                                      height: 8,
                                       cursor: 'ns-resize',
                                       bgcolor: 'rgba(0,0,0,0.12)',
                                       display: 'flex',
@@ -907,6 +1095,16 @@ export default function TimeSchedulerPage() {
               helperText="Displayed in non-bolded font inside the schedule block."
             />
 
+            {/* CLASS / ZOOM CALL LINK */}
+            <TextField
+              fullWidth
+              label="Class / Zoom Call Link (URL)"
+              placeholder="e.g. https://zoom.us/j/123456789 or school portal link"
+              value={editLink}
+              onChange={(e) => setEditLink(e.target.value)}
+              helperText="Direct URL to join Zoom call or courseware. Populated automatically if configured on subject."
+            />
+
             <Grid container spacing={2}>
               <Grid item xs={6}>
                 <TextField
@@ -959,7 +1157,7 @@ export default function TimeSchedulerPage() {
         </DialogActions>
       </Dialog>
 
-      {/* GLOBAL CSS FOR PRINT MODE: LANDSCAPE 1-PAGE FITTED */}
+      {/* GLOBAL CSS FOR PRINT MODE: PORTRAIT 1-PAGE FITTED */}
       <style jsx global>{`
         .schedule-print-title {
           display: none;
@@ -967,11 +1165,16 @@ export default function TimeSchedulerPage() {
 
         @media print {
           @page {
-            size: landscape;
-            margin: 0.25in;
+            size: letter portrait;
+            margin: 0.2in 0.25in;
+          }
+
+          :root, body, main, .no-print-root {
+            --slot-height: 18px !important;
           }
 
           .no-print,
+          .resize-handle-bar,
           .schedule-palette-col,
           header,
           nav,
@@ -995,10 +1198,10 @@ export default function TimeSchedulerPage() {
 
           .schedule-print-title {
             display: block !important;
-            font-size: 20px !important;
+            font-size: 16px !important;
             font-weight: 800 !important;
             color: #000000 !important;
-            margin-bottom: 12px !important;
+            margin-bottom: 6px !important;
             text-align: center !important;
           }
 
@@ -1016,17 +1219,34 @@ export default function TimeSchedulerPage() {
             margin: 0 !important;
           }
 
-          .schedule-main-card {
+          .schedule-main-card,
+          .schedule-block-paper,
+          .MuiPaper-root {
+            border-radius: 0 !important;
             box-shadow: none !important;
+          }
+
+          .schedule-main-card {
             border: 1.5px solid #000000 !important;
             background-color: #ffffff !important;
-            padding: 8px !important;
+            padding: 2px !important;
             width: 100% !important;
             overflow: visible !important;
             page-break-after: avoid !important;
             break-after: avoid !important;
             page-break-inside: avoid !important;
             break-inside: avoid !important;
+          }
+
+          .schedule-slot-row {
+            height: 18px !important;
+            margin: 0 !important;
+          }
+
+          .schedule-block-paper {
+            border-width: 1px !important;
+            left: 0 !important;
+            right: 0 !important;
           }
         }
       `}</style>

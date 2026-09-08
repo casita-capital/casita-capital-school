@@ -32,6 +32,9 @@ import {
   ArrowUp,
   ArrowDown,
   Save,
+  Video,
+  ExternalLink,
+  Link as LinkIcon,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { PageHeading } from 'src/components/base/page-heading';
@@ -42,6 +45,7 @@ interface Subject {
   name: string;
   sort_order: number;
   color: string;
+  link?: string | null;
 }
 
 interface Habit {
@@ -61,6 +65,7 @@ export default function SubjectsHabitsPage() {
 
   const [newSubjectName, setNewSubjectName] = useState('');
   const [newSubjectColor, setNewSubjectColor] = useState('#0C74E4');
+  const [newSubjectLink, setNewSubjectLink] = useState('');
   const [newHabitTitle, setNewHabitTitle] = useState('');
   const [saving, setSaving] = useState(false);
 
@@ -68,6 +73,7 @@ export default function SubjectsHabitsPage() {
   const [editingSubject, setEditingSubject] = useState<Subject | null>(null);
   const [editSubjectName, setEditSubjectName] = useState('');
   const [editSubjectColor, setEditSubjectColor] = useState('#0C74E4');
+  const [editSubjectLink, setEditSubjectLink] = useState('');
   const [savingSubjectEdit, setSavingSubjectEdit] = useState(false);
 
   // Edit Habit Modal State
@@ -117,6 +123,7 @@ export default function SubjectsHabitsPage() {
           name: newSubjectName.trim(),
           sort_order: subjects.length + 1,
           color: newSubjectColor,
+          link: newSubjectLink.trim() || null,
         })
         .select('*')
         .single();
@@ -126,6 +133,7 @@ export default function SubjectsHabitsPage() {
       } else if (data) {
         setSubjects((prev) => [...prev, data as Subject]);
         setNewSubjectName('');
+        setNewSubjectLink('');
         toast.success('Subject added!');
       }
     } catch {
@@ -139,6 +147,7 @@ export default function SubjectsHabitsPage() {
     setEditingSubject(sub);
     setEditSubjectName(sub.name);
     setEditSubjectColor(sub.color || '#0C74E4');
+    setEditSubjectLink(sub.link || '');
   };
 
   const handleSaveEditSubject = async () => {
@@ -155,6 +164,7 @@ export default function SubjectsHabitsPage() {
         .update({
           name: editSubjectName.trim(),
           color: editSubjectColor,
+          link: editSubjectLink.trim() || null,
         })
         .eq('id', editingSubject.id);
 
@@ -164,7 +174,12 @@ export default function SubjectsHabitsPage() {
         setSubjects((prev) =>
           prev.map((s) =>
             s.id === editingSubject.id
-              ? { ...s, name: editSubjectName.trim(), color: editSubjectColor }
+              ? {
+                  ...s,
+                  name: editSubjectName.trim(),
+                  color: editSubjectColor,
+                  link: editSubjectLink.trim() || null,
+                }
               : s
           )
         );
@@ -451,53 +466,64 @@ export default function SubjectsHabitsPage() {
               {activeTab === 'subjects' ? (
                 <Box>
                   {/* Form: Add New Subject */}
-                  <Stack direction="row" spacing={2} mb={3} alignItems="center">
-                    <TextField
-                      fullWidth
-                      size="small"
-                      label="New Subject Name"
-                      placeholder="e.g. Foreign Language, Computer Science"
-                      value={newSubjectName}
-                      onChange={(e) => setNewSubjectName(e.target.value)}
-                    />
-
-                    {/* Color Input */}
-                    <Box display="flex" alignItems="center" gap={1}>
-                      <Typography variant="caption" fontWeight={600}>
-                        Color:
-                      </Typography>
-                      <input
-                        type="color"
-                        value={newSubjectColor}
-                        onChange={(e) => setNewSubjectColor(e.target.value)}
-                        style={{
-                          width: 36,
-                          height: 36,
-                          padding: 0,
-                          border: 'none',
-                          borderRadius: '50%',
-                          cursor: 'pointer',
-                        }}
+                  <Stack spacing={2} mb={3}>
+                    <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems="center">
+                      <TextField
+                        fullWidth
+                        size="small"
+                        label="New Subject Name"
+                        placeholder="e.g. Foreign Language, Computer Science, Math"
+                        value={newSubjectName}
+                        onChange={(e) => setNewSubjectName(e.target.value)}
                       />
-                    </Box>
 
-                    <Button
-                      variant="contained"
-                      color="primary"
-                      onClick={handleAddSubject}
-                      disabled={saving || !newSubjectName.trim()}
-                      startIcon={<Plus size={16} />}
-                      sx={{ fontWeight: 700, whiteSpace: 'nowrap' }}
-                    >
-                      Add Subject
-                    </Button>
+                      <TextField
+                        fullWidth
+                        size="small"
+                        label="Class / Zoom Link (URL)"
+                        placeholder="e.g. https://zoom.us/j/123456789 or school portal URL"
+                        value={newSubjectLink}
+                        onChange={(e) => setNewSubjectLink(e.target.value)}
+                      />
+
+                      {/* Color Input */}
+                      <Box display="flex" alignItems="center" gap={1}>
+                        <Typography variant="caption" fontWeight={600}>
+                          Color:
+                        </Typography>
+                        <input
+                          type="color"
+                          value={newSubjectColor}
+                          onChange={(e) => setNewSubjectColor(e.target.value)}
+                          style={{
+                            width: 36,
+                            height: 36,
+                            padding: 0,
+                            border: 'none',
+                            borderRadius: '50%',
+                            cursor: 'pointer',
+                          }}
+                        />
+                      </Box>
+
+                      <Button
+                        variant="contained"
+                        color="primary"
+                        onClick={handleAddSubject}
+                        disabled={saving || !newSubjectName.trim()}
+                        startIcon={<Plus size={16} />}
+                        sx={{ fontWeight: 700, whiteSpace: 'nowrap' }}
+                      >
+                        Add Subject
+                      </Button>
+                    </Stack>
                   </Stack>
 
                   <Typography variant="subtitle2" fontWeight={700} mb={1.5}>
                     Draggable Subjects List (1–{subjects.length})
                   </Typography>
                   <Typography variant="caption" color="text.secondary" mb={2} display="block">
-                    Drag items or use the up/down arrows to re-order. Click the edit icon to rename a subject without deleting associated data.
+                    Drag items or use the up/down arrows to re-order. Assigning a Zoom or courseware link here automatically populates it on all calendar slots for this class.
                   </Typography>
 
                   {/* SINGLE COLUMN DRAGGABLE SUBJECTS LIST */}
@@ -526,7 +552,7 @@ export default function SubjectsHabitsPage() {
                           },
                         }}
                       >
-                        <Stack direction="row" alignItems="center" spacing={2} flexGrow={1}>
+                        <Stack direction="row" alignItems="center" spacing={2} flexGrow={1} flexWrap="wrap">
                           <Tooltip title="Drag to reorder">
                             <Box sx={{ color: 'text.secondary', display: 'flex', cursor: 'grab' }}>
                               <GripVertical size={20} />
@@ -564,6 +590,28 @@ export default function SubjectsHabitsPage() {
                           <Typography variant="subtitle1" fontWeight={700}>
                             {s.name}
                           </Typography>
+
+                          {/* Class / Zoom Link Badge if present */}
+                          {s.link && (
+                            <Chip
+                              icon={s.link.includes('zoom.us') ? <Video size={13} color="#ffffff" /> : <LinkIcon size={13} color="#ffffff" />}
+                              label={s.link.includes('zoom.us') ? 'Zoom Call Configured' : 'Class Link Configured'}
+                              size="small"
+                              component="a"
+                              href={s.link}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              clickable
+                              sx={{
+                                bgcolor: s.link.includes('zoom.us') ? '#2D8CFF' : '#10B981',
+                                color: '#ffffff !important',
+                                fontWeight: 800,
+                                fontSize: '0.68rem',
+                                height: 22,
+                                '& .MuiChip-label': { color: '#ffffff !important' },
+                              }}
+                            />
+                          )}
                         </Stack>
 
                         <Stack direction="row" alignItems="center" spacing={1}>
@@ -742,7 +790,7 @@ export default function SubjectsHabitsPage() {
       </Grid>
 
       {/* EDIT SUBJECT MODAL */}
-      <Dialog open={Boolean(editingSubject)} onClose={() => setEditingSubject(null)} maxWidth="xs" fullWidth>
+      <Dialog open={Boolean(editingSubject)} onClose={() => setEditingSubject(null)} maxWidth="sm" fullWidth>
         <DialogTitle fontWeight={700}>Edit Subject</DialogTitle>
         <DialogContent dividers>
           <Stack spacing={2.5} pt={1}>
@@ -753,6 +801,16 @@ export default function SubjectsHabitsPage() {
               onChange={(e) => setEditSubjectName(e.target.value)}
               required
             />
+
+            <TextField
+              fullWidth
+              label="Class / Zoom Call Link (URL)"
+              placeholder="e.g. https://zoom.us/j/123456789 or courseware link"
+              value={editSubjectLink}
+              onChange={(e) => setEditSubjectLink(e.target.value)}
+              helperText="This link will automatically appear on all calendar blocks assigned to this class."
+            />
+
             <Box display="flex" alignItems="center" justifyContent="space-between">
               <Typography variant="subtitle2" fontWeight={700}>
                 Subject Accent Color

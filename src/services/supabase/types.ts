@@ -126,6 +126,7 @@ export interface Database {
           name: string;
           sort_order: number;
           color: string;
+          link: string | null;
           created_at: string;
         };
         Insert: {
@@ -133,6 +134,7 @@ export interface Database {
           name: string;
           sort_order?: number;
           color?: string;
+          link?: string | null;
           created_at?: string;
         };
         Update: {
@@ -140,6 +142,7 @@ export interface Database {
           name?: string;
           sort_order?: number;
           color?: string;
+          link?: string | null;
           created_at?: string;
         };
       };
@@ -343,6 +346,7 @@ export interface Database {
           subject_id: string | null;
           color: string | null;
           note: string | null;
+          link: string | null;
           created_by: string | null;
           updated_by: string | null;
           created_at: string;
@@ -358,6 +362,7 @@ export interface Database {
           subject_id?: string | null;
           color?: string | null;
           note?: string | null;
+          link?: string | null;
           created_by?: string | null;
           updated_by?: string | null;
           created_at?: string;
@@ -373,6 +378,7 @@ export interface Database {
           subject_id?: string | null;
           color?: string | null;
           note?: string | null;
+          link?: string | null;
           created_by?: string | null;
           updated_by?: string | null;
           created_at?: string;
