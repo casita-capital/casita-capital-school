@@ -212,7 +212,7 @@ export default function MasterCalendarPage() {
   const getMonday = (d: Date) => {
     const date = new Date(d);
     const day = date.getDay(); // 0 = Sun, 1 = Mon, ..., 6 = Sat
-    const diff = date.getDate() - day + (day === 0 ? -6 : 1); // adjust when day is sunday
+    const diff = date.getDate() - day + 1; // In a Sunday-to-Saturday row, Sunday is index 0 and Monday is +1
     return new Date(date.setDate(diff));
   };
 

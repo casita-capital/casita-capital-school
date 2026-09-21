@@ -133,6 +133,24 @@ const DEFAULT_HABITS: Habit[] = [
   { id: 'hab-7', title: 'Vitamin 7', sort_order: 7 },
 ];
 
+function formatDateStr(d: Date): string {
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function getCurrentWeekMonday(): string {
+  const now = new Date();
+  const day = now.getDay(); // 0 = Sun, 1 = Mon, ..., 6 = Sat
+  // For a school weekly planner: on Sunday, prepare for / default to the upcoming school week starting tomorrow (Monday).
+  // Monday through Saturday belong to the school week that began on Monday.
+  const diff = day === 0 ? 1 : 1 - day;
+  const monday = new Date(now);
+  monday.setDate(now.getDate() + diff);
+  return formatDateStr(monday);
+}
+
 function PlannerContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -140,8 +158,16 @@ function PlannerContent() {
   const supabase = createClient();
   const { branding } = useSchoolSettings();
 
-  const initialWeek = searchParams.get('week') || '2026-09-14';
+  const weekParam = searchParams.get('week');
+  const initialWeek = weekParam || getCurrentWeekMonday();
   const [weekStartDate, setWeekStartDate] = useState<string>(initialWeek);
+
+  // Sync if URL search param changes
+  useEffect(() => {
+    if (weekParam && weekParam !== weekStartDate) {
+      setWeekStartDate(weekParam);
+    }
+  }, [weekParam, weekStartDate]);
 
   const [loading, setLoading] = useState(true);
   const [subjects, setSubjects] = useState<Subject[]>([]);
@@ -238,7 +264,7 @@ function PlannerContent() {
       const startDate = monStr;
       const endDateObj = new Date(monStr + 'T00:00:00');
       endDateObj.setDate(endDateObj.getDate() + 6);
-      const endDate = endDateObj.toISOString().split('T')[0];
+      const endDate = formatDateStr(endDateObj);
 
       // 3. Fetch Parent Notes for this week
       const { data: noteData } = await supabase
@@ -338,7 +364,7 @@ function PlannerContent() {
     await handleSaveSettings(plannerSettings);
     const cur = new Date(weekStartDate + 'T00:00:00');
     cur.setDate(cur.getDate() - 7);
-    const newStr = cur.toISOString().split('T')[0];
+    const newStr = formatDateStr(cur);
     setWeekStartDate(newStr);
     router.replace(`/calendar/planner?week=${newStr}`);
   };
@@ -347,9 +373,16 @@ function PlannerContent() {
     await handleSaveSettings(plannerSettings);
     const cur = new Date(weekStartDate + 'T00:00:00');
     cur.setDate(cur.getDate() + 7);
-    const newStr = cur.toISOString().split('T')[0];
+    const newStr = formatDateStr(cur);
     setWeekStartDate(newStr);
     router.replace(`/calendar/planner?week=${newStr}`);
+  };
+
+  const handleCurrentWeek = async () => {
+    await handleSaveSettings(plannerSettings);
+    const currentMon = getCurrentWeekMonday();
+    setWeekStartDate(currentMon);
+    router.replace(`/calendar/planner?week=${currentMon}`);
   };
 
   const handleOpenCellEditor = (subject: Subject, dateStr: string) => {
@@ -645,7 +678,12 @@ function PlannerContent() {
     }),
     0
   );
-  const syncedAllDayMinHeight = maxAllDayItemCount > 1 ? `${maxAllDayItemCount * 24 + 10}px` : '32px';
+  const syncedAllDayMinHeight =
+    maxAllDayItemCount === 0
+      ? '16px'
+      : maxAllDayItemCount === 1
+      ? '20px'
+      : `${maxAllDayItemCount * 13 + 4}px`;
 
   return (
     <Box
@@ -689,16 +727,26 @@ function PlannerContent() {
         <Card elevation={2} sx={{ p: 2, borderRadius: 3 }}>
           <Stack direction={{ xs: 'column', sm: 'row' }} alignItems="center" justifyContent="space-between" spacing={2}>
             <Stack direction="row" alignItems="center" spacing={1}>
-              <IconButton onClick={handlePrevWeek} color="primary">
+              <IconButton onClick={handlePrevWeek} color="primary" title="Previous Week">
                 <ChevronLeft size={22} />
               </IconButton>
               <Typography variant="h5" fontWeight={700} sx={{ minWidth: 260, textAlign: 'center' }}>
                 WEEK OF: {weekStartDate}
               </Typography>
-
-              <IconButton onClick={handleNextWeek} color="primary">
+              <IconButton onClick={handleNextWeek} color="primary" title="Next Week">
                 <ChevronRight size={22} />
               </IconButton>
+              {weekStartDate !== getCurrentWeekMonday() && (
+                <Button
+                  variant="outlined"
+                  size="small"
+                  color="primary"
+                  onClick={handleCurrentWeek}
+                  sx={{ ml: 1, textTransform: 'none', fontWeight: 600, py: 0.25, px: 1.25 }}
+                >
+                  This Week
+                </Button>
+              )}
             </Stack>
 
             <Typography variant="caption" color="text.secondary">
@@ -757,37 +805,46 @@ function PlannerContent() {
                   </th>
                 ))}
               </tr>
-            </thead>
-            <tbody>
               {/* DEDICATED ALL-DAY EVENTS ROW FOR HOLIDAYS & DAILY TASKS */}
-              <tr className="all-day-events-row">
-                <td className="all-day-label-cell" style={{ minHeight: syncedAllDayMinHeight }}>
+              <tr className="all-day-events-row" style={{ height: syncedAllDayMinHeight }}>
+                <td className="all-day-label-cell">
                   HOLIDAYS &amp; TASKS
                 </td>
                 {page1Days.map((d) => {
                   const dayHolidays = holidays.filter((h) => h.holiday_date === d.dateStr);
                   const dayTasks = tasksList.filter((t) => t.due_date === d.dateStr);
-                  const hasEvents = dayHolidays.length > 0 || dayTasks.length > 0;
+                  const dayGoogleEvents = googleEvents.filter((g) => g.event_date === d.dateStr);
+                  const hasEvents = dayHolidays.length > 0 || dayTasks.length > 0 || dayGoogleEvents.length > 0;
 
                   return (
-                    <td key={d.dateStr} className="all-day-events-cell" style={{ minHeight: syncedAllDayMinHeight }}>
-                      {dayHolidays.map((h) => (
-                        <div key={h.id} className="holiday-banner-top" style={{ backgroundColor: branding.holidays.color }}>
-                          <ItemIcon name={branding.holidays.icon} size={11} color="#ffffff" style={{ marginRight: 4, display: 'inline' }} />
-                          {h.title}
-                        </div>
-                      ))}
-                      {dayTasks.map((t) => (
-                        <div key={t.id} className="task-banner-top" style={{ backgroundColor: branding.tasks.color }}>
-                          <ItemIcon name={branding.tasks.icon} size={11} color="#ffffff" style={{ marginRight: 4, display: 'inline' }} />
-                          {t.status === 'completed' ? '✓' : '☐'} {t.title}
-                        </div>
-                      ))}
-                      {!hasEvents && <div className="all-day-empty">—</div>}
+                    <td key={d.dateStr} className="all-day-events-cell" style={{ height: syncedAllDayMinHeight }}>
+                      <div className="all-day-items-wrapper" style={{ minHeight: syncedAllDayMinHeight }}>
+                        {dayHolidays.map((h) => (
+                          <div key={h.id} className="holiday-banner-top" style={{ backgroundColor: branding.holidays.color }} title={h.title}>
+                            <ItemIcon name={branding.holidays.icon} size={10} color="#ffffff" style={{ marginRight: 3, flexShrink: 0 }} />
+                            <span className="banner-text">{h.title}</span>
+                          </div>
+                        ))}
+                        {dayGoogleEvents.map((g) => (
+                          <div key={g.id} className="task-banner-top" style={{ backgroundColor: g.color || '#4285F4' }} title={g.title}>
+                            <ItemIcon name="Calendar" size={10} color="#ffffff" style={{ marginRight: 3, flexShrink: 0 }} />
+                            <span className="banner-text">{g.title}</span>
+                          </div>
+                        ))}
+                        {dayTasks.map((t) => (
+                          <div key={t.id} className="task-banner-top" style={{ backgroundColor: branding.tasks.color }} title={t.title}>
+                            <ItemIcon name={branding.tasks.icon} size={10} color="#ffffff" style={{ marginRight: 3, flexShrink: 0 }} />
+                            <span className="banner-text">{t.status === 'completed' ? '✓' : '☐'} {t.title}</span>
+                          </div>
+                        ))}
+                        {!hasEvents && <div className="all-day-empty">—</div>}
+                      </div>
                     </td>
                   );
                 })}
               </tr>
+            </thead>
+            <tbody>
 
               {displaySubjects.map((subject) => (
                 <tr key={subject.id}>
@@ -867,11 +924,9 @@ function PlannerContent() {
                       </th>
                     ))}
                   </tr>
-                </thead>
-                <tbody>
                   {/* DEDICATED ALL-DAY EVENTS ROW FOR HOLIDAYS & DAILY TASKS */}
-                  <tr className="all-day-events-row">
-                    <td className="all-day-label-cell" style={{ minHeight: syncedAllDayMinHeight }}>
+                  <tr className="all-day-events-row" style={{ height: syncedAllDayMinHeight }}>
+                    <td className="all-day-label-cell">
                       HOLIDAYS &amp; TASKS
                     </td>
                     {page2Days.map((d) => {
@@ -881,30 +936,34 @@ function PlannerContent() {
                       const hasEvents = dayHolidays.length > 0 || dayTasks.length > 0 || dayGoogleEvents.length > 0;
 
                       return (
-                        <td key={d.dateStr} className="all-day-events-cell" style={{ minHeight: syncedAllDayMinHeight }}>
-                          {dayHolidays.map((h) => (
-                            <div key={h.id} className="holiday-banner-top" style={{ backgroundColor: branding.holidays.color }}>
-                              <ItemIcon name={branding.holidays.icon} size={11} color="#ffffff" style={{ marginRight: 4, display: 'inline' }} />
-                              {h.title}
-                            </div>
-                          ))}
-                          {dayGoogleEvents.map((g) => (
-                            <div key={g.id} className="task-banner-top" style={{ backgroundColor: g.color || '#4285F4' }}>
-                              <ItemIcon name="Calendar" size={11} color="#ffffff" style={{ marginRight: 4, display: 'inline' }} />
-                              {g.title}
-                            </div>
-                          ))}
-                          {dayTasks.map((t) => (
-                            <div key={t.id} className="task-banner-top" style={{ backgroundColor: branding.tasks.color }}>
-                              <ItemIcon name={branding.tasks.icon} size={11} color="#ffffff" style={{ marginRight: 4, display: 'inline' }} />
-                              {t.status === 'completed' ? '✓' : '☐'} {t.title}
-                            </div>
-                          ))}
-                          {!hasEvents && <div className="all-day-empty">—</div>}
+                        <td key={d.dateStr} className="all-day-events-cell" style={{ height: syncedAllDayMinHeight }}>
+                          <div className="all-day-items-wrapper" style={{ minHeight: syncedAllDayMinHeight }}>
+                            {dayHolidays.map((h) => (
+                              <div key={h.id} className="holiday-banner-top" style={{ backgroundColor: branding.holidays.color }} title={h.title}>
+                                <ItemIcon name={branding.holidays.icon} size={10} color="#ffffff" style={{ marginRight: 3, flexShrink: 0 }} />
+                                <span className="banner-text">{h.title}</span>
+                              </div>
+                            ))}
+                            {dayGoogleEvents.map((g) => (
+                              <div key={g.id} className="task-banner-top" style={{ backgroundColor: g.color || '#4285F4' }} title={g.title}>
+                                <ItemIcon name="Calendar" size={10} color="#ffffff" style={{ marginRight: 3, flexShrink: 0 }} />
+                                <span className="banner-text">{g.title}</span>
+                              </div>
+                            ))}
+                            {dayTasks.map((t) => (
+                              <div key={t.id} className="task-banner-top" style={{ backgroundColor: branding.tasks.color }} title={t.title}>
+                                <ItemIcon name={branding.tasks.icon} size={10} color="#ffffff" style={{ marginRight: 3, flexShrink: 0 }} />
+                                <span className="banner-text">{t.status === 'completed' ? '✓' : '☐'} {t.title}</span>
+                              </div>
+                            ))}
+                            {!hasEvents && <div className="all-day-empty">—</div>}
+                          </div>
                         </td>
                       );
                     })}
                   </tr>
+                </thead>
+                <tbody>
 
                   {displaySubjects.map((subject) => (
                     <tr key={subject.id}>
@@ -1464,63 +1523,90 @@ function PlannerContent() {
           max-width: 135px !important;
           background-color: #edf2f7;
           text-align: center;
-          font-size: 10px;
+          font-size: 8.5px;
           font-weight: 800;
-          padding: 6px 4px !important;
+          padding: 1px 4px !important;
           color: #2b6cb0;
           vertical-align: middle !important;
+          line-height: 1.1;
         }
 
         .all-day-events-cell {
-          min-height: 28px;
-          padding: 6px 8px !important;
-          vertical-align: top;
-          font-size: 11px;
+          padding: 1px 4px !important;
+          vertical-align: middle !important;
+          font-size: 9px;
           background-color: #f7f9fc;
+        }
+
+        .all-day-items-wrapper {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 2px 4px;
+          align-items: center;
+          width: 100%;
         }
 
         .holiday-banner-top {
           background-color: #d32f2f;
           color: #ffffff;
           font-weight: bold;
-          font-size: 11px;
-          padding: 2px 6px;
-          border-radius: 4px;
-          margin-bottom: 3px;
-          display: inline-block;
-          margin-right: 4px;
+          font-size: 8.5px;
+          padding: 1px 4px;
+          border-radius: 3px;
+          margin-bottom: 0;
+          display: inline-flex;
+          align-items: center;
+          max-width: 100%;
+          overflow: hidden;
+          white-space: nowrap;
+          line-height: 1.15;
+          box-sizing: border-box;
         }
 
         .task-banner-top {
           background-color: #2e7d32;
           color: #ffffff;
           font-weight: bold;
-          font-size: 10.5px;
-          padding: 2px 6px;
-          border-radius: 4px;
-          margin-bottom: 3px;
-          display: inline-block;
-          margin-right: 4px;
+          font-size: 8.5px;
+          padding: 1px 4px;
+          border-radius: 3px;
+          margin-bottom: 0;
+          display: inline-flex;
+          align-items: center;
+          max-width: 100%;
+          overflow: hidden;
+          white-space: nowrap;
+          line-height: 1.15;
+          box-sizing: border-box;
+        }
+
+        .banner-text {
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
         }
 
         .all-day-empty {
           color: #a0aec0;
-          font-size: 11px;
+          font-size: 8.5px;
           text-align: center;
+          width: 100%;
+          line-height: 1;
         }
 
         .parent-note-item {
           color: #1a1a1a;
           font-weight: 600;
-          font-size: 11.5px;
-          margin-bottom: 3px;
+          font-size: 11px;
+          line-height: 1.3;
+          margin-bottom: 2px;
           word-break: break-word;
         }
 
         .school-assignment-item {
           color: #0C74E4;
           font-weight: 700;
-          font-size: 11px;
+          font-size: 10.5px;
           margin-bottom: 2px;
           word-break: break-word;
         }
@@ -1653,7 +1739,7 @@ function PlannerContent() {
         @media print {
           @page {
             size: letter portrait;
-            margin: 0.3in 0.35in;
+            margin: 0.22in 0.28in;
           }
 
           html, body, div, main, section, article, .planner-print-root {
@@ -1669,7 +1755,7 @@ function PlannerContent() {
           body {
             background: #ffffff !important;
             color: #000000 !important;
-            font-size: 11px !important;
+            font-size: 10px !important;
           }
 
           .planner-print-root {
@@ -1684,8 +1770,8 @@ function PlannerContent() {
             padding: 0 !important;
             margin: 0 !important;
             width: 100% !important;
-            height: 9.9in !important;
-            max-height: 9.9in !important;
+            height: 10.45in !important;
+            max-height: 10.45in !important;
             display: flex !important;
             flex-direction: column !important;
             break-after: page !important;
@@ -1705,12 +1791,24 @@ function PlannerContent() {
           }
 
           .planner-header {
-            height: 40px !important;
-            min-height: 40px !important;
-            max-height: 40px !important;
-            margin-bottom: 10px !important;
-            padding: 0 8px !important;
+            height: 32px !important;
+            min-height: 32px !important;
+            max-height: 32px !important;
+            margin-bottom: 6px !important;
+            padding: 0 6px !important;
             flex-shrink: 0 !important;
+          }
+
+          .planner-header span:first-of-type {
+            font-size: 18px !important;
+          }
+
+          .planner-header span:last-of-type {
+            font-size: 32px !important;
+          }
+
+          .week-header-text {
+            font-size: 12px !important;
           }
 
           .planner-table {
@@ -1724,24 +1822,99 @@ function PlannerContent() {
 
           .planner-table th,
           .planner-table td {
-            padding: 4px 6px !important;
+            padding: 2px 4px !important;
           }
 
           .day-header-col {
-            padding: 6px 4px !important;
-            font-size: 11px !important;
+            padding: 3px 4px !important;
+            font-size: 10px !important;
+          }
+
+          .subject-header-col {
+            padding: 3px 4px !important;
+            font-size: 10px !important;
           }
 
           .subject-name-cell {
-            font-size: 11.5px !important;
-            padding: 4px 6px !important;
+            font-size: 11px !important;
+            padding: 2px 4px !important;
           }
 
           .assignment-cell {
-            min-height: 40px !important;
+            min-height: 28px !important;
             height: auto !important;
-            padding: 4px 5px !important;
-            font-size: 11px !important;
+            padding: 2px 4px !important;
+            font-size: 10.5px !important;
+            line-height: 1.25 !important;
+          }
+
+          .all-day-events-row {
+            background-color: #f7f9fc !important;
+          }
+
+          .all-day-label-cell {
+            font-size: 8px !important;
+            padding: 1px 3px !important;
+            vertical-align: middle !important;
+          }
+
+          .all-day-events-cell {
+            padding: 1px 3px !important;
+            vertical-align: middle !important;
+          }
+
+          .all-day-items-wrapper {
+            display: flex !important;
+            flex-wrap: wrap !important;
+            gap: 1px 3px !important;
+            align-items: center !important;
+            width: 100% !important;
+          }
+
+          .holiday-banner-top {
+            background-color: #ffffff !important;
+            color: #000000 !important;
+            border: 1.5px solid #000000 !important;
+            font-weight: 800 !important;
+            font-size: 8px !important;
+            padding: 1px 3px !important;
+            margin-bottom: 0 !important;
+            line-height: 1.15 !important;
+            display: inline-flex !important;
+            align-items: center !important;
+            white-space: nowrap !important;
+            max-width: 100% !important;
+            overflow: hidden !important;
+          }
+
+          .task-banner-top {
+            background-color: #ffffff !important;
+            color: #000000 !important;
+            border: 1px solid #333333 !important;
+            font-weight: 700 !important;
+            font-size: 8px !important;
+            padding: 1px 3px !important;
+            margin-bottom: 0 !important;
+            line-height: 1.15 !important;
+            display: inline-flex !important;
+            align-items: center !important;
+            white-space: nowrap !important;
+            max-width: 100% !important;
+            overflow: hidden !important;
+          }
+
+          .all-day-empty {
+            color: #777777 !important;
+            font-size: 8px !important;
+            text-align: center !important;
+            width: 100% !important;
+            line-height: 1 !important;
+          }
+
+          .banner-text {
+            overflow: hidden !important;
+            text-overflow: ellipsis !important;
+            white-space: nowrap !important;
           }
 
           .page2-container {
@@ -1764,29 +1937,60 @@ function PlannerContent() {
           }
 
           .parent-note-item {
-            margin-bottom: 2px !important;
+            margin-bottom: 1px !important;
+            font-size: 10.5px !important;
+            line-height: 1.25 !important;
+          }
+
+          .formatted-parent-note-block {
+            font-size: 10.5px !important;
+            margin-bottom: 1px !important;
+            padding-bottom: 0 !important;
+          }
+
+          .formatted-parent-note-block .note-header-title {
             font-size: 10.5px !important;
           }
 
-          .school-assignment-item {
-            margin-bottom: 2px !important;
+          .formatted-parent-note-block .note-checkbox-icon {
             font-size: 10.5px !important;
+            padding-top: 0 !important;
+          }
+
+          .formatted-parent-note-block > div {
+            margin-top: 1px !important;
+            margin-bottom: 1px !important;
+            line-height: 1.25 !important;
+          }
+
+          .school-assignment-item {
+            margin-bottom: 1px !important;
+            font-size: 10.5px !important;
+            line-height: 1.25 !important;
             color: #000000 !important;
             font-weight: 700 !important;
           }
 
           .sidebar-section {
-            margin-bottom: 6px !important;
+            margin-bottom: 4px !important;
+          }
+
+          .sidebar-header-badge {
+            font-size: 10px !important;
+            padding: 1px 3px !important;
+            margin-bottom: 2px !important;
           }
 
           .sidebar-textarea-next-month {
             flex: 1 !important;
-            min-height: 65px !important;
+            min-height: 60px !important;
+            font-size: 10px !important;
           }
 
           .sidebar-textarea-notes {
             flex: 1.2 !important;
-            min-height: 85px !important;
+            min-height: 75px !important;
+            font-size: 10px !important;
           }
 
           .todo-list {
@@ -1797,6 +2001,11 @@ function PlannerContent() {
             gap: 4px !important;
           }
 
+          .checkbox-square {
+            width: 10px !important;
+            height: 10px !important;
+          }
+
           .sidebar-input {
             font-size: 10px !important;
             border-bottom: 1px solid #999999 !important;
@@ -1805,24 +2014,21 @@ function PlannerContent() {
           .sidebar-textarea {
             font-size: 10px !important;
             border: 1px solid #999999 !important;
+            padding: 3px !important;
           }
 
-          .holiday-banner-top {
-            background-color: #ffffff !important;
-            color: #000000 !important;
-            border: 1.5px solid #000000 !important;
-            font-weight: 800 !important;
-            font-size: 10px !important;
-            padding: 1px 4px !important;
+          .habits-table {
+            font-size: 9.5px !important;
           }
 
-          .task-banner-top {
-            background-color: #ffffff !important;
-            color: #000000 !important;
-            border: 1px solid #333333 !important;
-            font-weight: 700 !important;
-            font-size: 10px !important;
-            padding: 1px 4px !important;
+          .habits-table th,
+          .habits-table td {
+            padding: 1px 0 !important;
+          }
+
+          .bubble-circle {
+            width: 8px !important;
+            height: 8px !important;
           }
         }
       `}</style>
