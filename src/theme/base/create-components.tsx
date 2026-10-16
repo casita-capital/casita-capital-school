@@ -204,12 +204,16 @@ export const createComponents = (): Components => {
           '& .MuiSwitch-thumb': {
             width: 14,
             height: 14,
+            backgroundColor: '#ffffff',
+            boxShadow: '0 1px 2px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(0, 0, 0, 0.08)',
           },
 
           '& .MuiSwitch-switchBase': {
             padding: 2,
+            color: '#ffffff',
             '&.Mui-checked': {
               transform: 'translateX(12px)',
+              color: '#ffffff !important',
             },
           },
         },
@@ -233,8 +237,10 @@ export const createComponents = (): Components => {
           },
           '& .MuiSwitch-switchBase': {
             padding: 3,
+            color: '#ffffff',
             '&.Mui-checked': {
               transform: 'translateX(20px)',
+              color: '#ffffff !important',
 
               '& + .MuiSwitch-track': {
                 opacity: 1,
@@ -245,6 +251,8 @@ export const createComponents = (): Components => {
             width: 18,
             height: 18,
             borderRadius: 32,
+            backgroundColor: '#ffffff',
+            boxShadow: '0 1px 3px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(0, 0, 0, 0.08)',
             transition: muiTheme.transitions.create(['width', 'translateX'], {
               duration: 150,
             }),
@@ -252,6 +260,7 @@ export const createComponents = (): Components => {
           '& .MuiSwitch-track': {
             borderRadius: 32,
             opacity: 1,
+            backgroundColor: 'rgba(120, 130, 145, 0.45)',
             transition: muiTheme.transitions.create(['background-color'], {
               duration: 150,
             }),

@@ -14,6 +14,8 @@ import {
   FormControlLabel,
   Grid,
   IconButton,
+  Menu,
+  MenuItem,
   Stack,
   TextField,
   Typography,
@@ -29,6 +31,7 @@ import {
   CheckSquare,
   Sparkles,
   Edit3,
+  Menu as MenuIcon,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { PageHeading } from 'src/components/base/page-heading';
@@ -83,7 +86,10 @@ export default function MasterCalendarPage() {
   const { schoolName, branding } = useSchoolSettings();
 
   const [loading, setLoading] = useState(true);
-  const [currentDate, setCurrentDate] = useState<Date>(new Date(2026, 8, 1)); // Sept 2026 default
+  const [currentDate, setCurrentDate] = useState<Date>(() => {
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth(), 1);
+  });
   const [holidays, setHolidays] = useState<Holiday[]>([]);
   const [parentNotes, setParentNotes] = useState<ParentNote[]>([]);
   const [schoolAssignments, setSchoolAssignments] = useState<SchoolAssignment[]>([]);
@@ -96,6 +102,7 @@ export default function MasterCalendarPage() {
   const [showSchoolAssignments, setShowSchoolAssignments] = useState(true);
   const [showTasks, setShowTasks] = useState(true);
   const [showGoogleCalendars, setShowGoogleCalendars] = useState(true);
+  const [layersMenuAnchorEl, setLayersMenuAnchorEl] = useState<null | HTMLElement>(null);
 
   const year = currentDate.getFullYear();
   const month = currentDate.getMonth();
@@ -263,103 +270,219 @@ export default function MasterCalendarPage() {
     );
   }
 
+  const activeLayersCount = [
+    showHolidays,
+    showParentNotes,
+    showSchoolAssignments,
+    showTasks,
+    showGoogleCalendars,
+  ].filter(Boolean).length;
+
   return (
     <Box>
-      {/* Top Header & Page Controls */}
-      <Box className="no-print">
-        <PageHeading
-          heading={`${monthNames[month]} ${year} — Master School Calendar`}
-          caption={`Printable 1-page portrait overview for ${schoolName}. Toggle items, print, or click 'Edit Week' to open the 2-page Weekly Planner.`}
-          actions={
-            <Stack direction="row" spacing={1.5}>
-              <Button
-                variant="outlined"
-                color="primary"
-                onClick={handlePrint}
-                startIcon={<Printer size={18} />}
-                sx={{ fontWeight: 700 }}
+      {/* UNIFIED TOP HEADER & CONTROLS (Hidden during PDF print) */}
+      <Box className="no-print" mb={3}>
+        <Card
+          elevation={0}
+          sx={{
+            p: { xs: 2, sm: 2.5 },
+            borderRadius: 2.5,
+            border: '1px solid',
+            borderColor: 'divider',
+          }}
+        >
+          <Stack
+            direction={{ xs: 'column', sm: 'row' }}
+            alignItems={{ xs: 'stretch', sm: 'center' }}
+            justifyContent="space-between"
+            spacing={2}
+          >
+            {/* Left: Month Title + Inline Stepper */}
+            <Stack direction="row" alignItems="center" spacing={1.5} flexWrap="wrap" useFlexGap>
+              <Typography variant="h4" fontWeight={800} letterSpacing="-0.02em" sx={{ minWidth: 185 }}>
+                {monthNames[month]} {year}
+              </Typography>
+
+              <Box
+                sx={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  bgcolor: 'action.hover',
+                  border: '1px solid',
+                  borderColor: 'divider',
+                  borderRadius: 2,
+                  p: 0.4,
+                }}
               >
-                Print Month Overview
-              </Button>
+                <IconButton
+                  size="small"
+                  onClick={handlePrevMonth}
+                  title="Previous Month"
+                  sx={{ borderRadius: 1.5, p: 0.6 }}
+                >
+                  <ChevronLeft size={18} />
+                </IconButton>
+                <Button
+                  size="small"
+                  color="inherit"
+                  onClick={() => {
+                    const now = new Date();
+                    setCurrentDate(new Date(now.getFullYear(), now.getMonth(), 1));
+                  }}
+                  sx={{
+                    textTransform: 'none',
+                    fontWeight: 700,
+                    fontSize: '0.78rem',
+                    px: 1.25,
+                    py: 0.3,
+                    minWidth: 'auto',
+                  }}
+                >
+                  Today
+                </Button>
+                <IconButton
+                  size="small"
+                  onClick={handleNextMonth}
+                  title="Next Month"
+                  sx={{ borderRadius: 1.5, p: 0.6 }}
+                >
+                  <ChevronRight size={18} />
+                </IconButton>
+              </Box>
+            </Stack>
+
+            {/* Right: Print Month + 3-Line Layers & View Menu */}
+            <Stack direction="row" spacing={1.25} alignItems="center">
               <Button
                 variant="contained"
                 color="primary"
-                onClick={() => router.push('/calendar/planner')}
-                startIcon={<CalendarIcon size={18} />}
-                sx={{ fontWeight: 700 }}
+                onClick={handlePrint}
+                startIcon={<Printer size={17} />}
+                sx={{
+                  fontWeight: 700,
+                  textTransform: 'none',
+                  borderRadius: 2,
+                  px: 2.25,
+                  py: 0.9,
+                }}
               >
-                Open Weekly Binder Planner &rarr;
+                Print Month
               </Button>
-            </Stack>
-          }
-        />
 
-        {/* Filter controls bar */}
-        <Card elevation={2} sx={{ mb: 4, p: 2, borderRadius: 3 }}>
-          <Stack direction={{ xs: 'column', lg: 'row' }} alignItems="center" justifyContent="space-between" spacing={2}>
-            <Stack direction="row" alignItems="center" spacing={1}>
-              <IconButton onClick={handlePrevMonth} color="primary">
-                <ChevronLeft size={22} />
-              </IconButton>
-              <Typography variant="h4" fontWeight={700} sx={{ minWidth: 200, textAlign: 'center' }}>
-                {monthNames[month]} {year}
-              </Typography>
-              <IconButton onClick={handleNextMonth} color="primary">
-                <ChevronRight size={22} />
-              </IconButton>
-            </Stack>
+              <Button
+                variant="outlined"
+                color="inherit"
+                startIcon={<MenuIcon size={17} />}
+                onClick={(e) => setLayersMenuAnchorEl(e.currentTarget)}
+                sx={{
+                  fontWeight: 700,
+                  textTransform: 'none',
+                  borderRadius: 2,
+                  px: 1.75,
+                  py: 0.9,
+                  borderColor: 'divider',
+                  bgcolor: 'background.paper',
+                  '&:hover': {
+                    borderColor: 'primary.main',
+                    bgcolor: 'action.hover',
+                  },
+                }}
+              >
+                Layers &amp; View ({activeLayersCount}/5)
+              </Button>
 
-            <Stack direction="row" spacing={2} flexWrap="wrap" alignItems="center">
-              <FormControlLabel
-                control={
-                  <Checkbox
-                    checked={showHolidays}
-                    onChange={(e) => setShowHolidays(e.target.checked)}
-                    color="primary"
-                  />
-                }
-                label={<Typography variant="body2" fontWeight={600}>Holidays</Typography>}
-              />
-              <FormControlLabel
-                control={
-                  <Checkbox
-                    checked={showParentNotes}
-                    onChange={(e) => setShowParentNotes(e.target.checked)}
-                    color="primary"
-                  />
-                }
-                label={<Typography variant="body2" fontWeight={600}>Parent Notes</Typography>}
-              />
-              <FormControlLabel
-                control={
-                  <Checkbox
-                    checked={showSchoolAssignments}
-                    onChange={(e) => setShowSchoolAssignments(e.target.checked)}
-                    color="primary"
-                  />
-                }
-                label={<Typography variant="body2" fontWeight={600}>School Assignments</Typography>}
-              />
-              <FormControlLabel
-                control={
-                  <Checkbox
-                    checked={showTasks}
-                    onChange={(e) => setShowTasks(e.target.checked)}
-                    color="primary"
-                  />
-                }
-                label={<Typography variant="body2" fontWeight={600}>To-Do Tasks</Typography>}
-              />
-              <FormControlLabel
-                control={
-                  <Checkbox
-                    checked={showGoogleCalendars}
-                    onChange={(e) => setShowGoogleCalendars(e.target.checked)}
-                    color="primary"
-                  />
-                }
-                label={<Typography variant="body2" fontWeight={600} color="primary.main">Google Calendars</Typography>}
-              />
+              <Menu
+                anchorEl={layersMenuAnchorEl}
+                open={Boolean(layersMenuAnchorEl)}
+                onClose={() => setLayersMenuAnchorEl(null)}
+                anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+                transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+                PaperProps={{
+                  sx: {
+                    mt: 1,
+                    minWidth: 250,
+                    borderRadius: 2.5,
+                    p: 0.75,
+                    border: '1px solid',
+                    borderColor: 'divider',
+                    boxShadow: 8,
+                  },
+                }}
+              >
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
+                  fontWeight={700}
+                  sx={{ px: 1.5, py: 0.75, display: 'block', textTransform: 'none' }}
+                >
+                  Visible Calendar Layers
+                </Typography>
+
+                <MenuItem
+                  onClick={() => setShowHolidays((prev) => !prev)}
+                  sx={{ borderRadius: 1.5, py: 0.5, justifyContent: 'space-between' }}
+                >
+                  <Typography variant="body2" fontWeight={600}>
+                    Holidays
+                  </Typography>
+                  <Checkbox checked={showHolidays} size="small" color="primary" sx={{ p: 0.5 }} />
+                </MenuItem>
+
+                <MenuItem
+                  onClick={() => setShowParentNotes((prev) => !prev)}
+                  sx={{ borderRadius: 1.5, py: 0.5, justifyContent: 'space-between' }}
+                >
+                  <Typography variant="body2" fontWeight={600}>
+                    Parent Notes
+                  </Typography>
+                  <Checkbox checked={showParentNotes} size="small" color="primary" sx={{ p: 0.5 }} />
+                </MenuItem>
+
+                <MenuItem
+                  onClick={() => setShowSchoolAssignments((prev) => !prev)}
+                  sx={{ borderRadius: 1.5, py: 0.5, justifyContent: 'space-between' }}
+                >
+                  <Typography variant="body2" fontWeight={600}>
+                    School Assignments
+                  </Typography>
+                  <Checkbox checked={showSchoolAssignments} size="small" color="primary" sx={{ p: 0.5 }} />
+                </MenuItem>
+
+                <MenuItem
+                  onClick={() => setShowTasks((prev) => !prev)}
+                  sx={{ borderRadius: 1.5, py: 0.5, justifyContent: 'space-between' }}
+                >
+                  <Typography variant="body2" fontWeight={600}>
+                    To-Do Tasks
+                  </Typography>
+                  <Checkbox checked={showTasks} size="small" color="primary" sx={{ p: 0.5 }} />
+                </MenuItem>
+
+                <MenuItem
+                  onClick={() => setShowGoogleCalendars((prev) => !prev)}
+                  sx={{ borderRadius: 1.5, py: 0.5, justifyContent: 'space-between' }}
+                >
+                  <Typography variant="body2" fontWeight={600} color="primary.main">
+                    Google Calendars
+                  </Typography>
+                  <Checkbox checked={showGoogleCalendars} size="small" color="primary" sx={{ p: 0.5 }} />
+                </MenuItem>
+
+                <Divider sx={{ my: 0.75 }} />
+
+                <MenuItem
+                  onClick={() => {
+                    setLayersMenuAnchorEl(null);
+                    router.push('/calendar/planner');
+                  }}
+                  sx={{ borderRadius: 1.5, py: 1, gap: 1.25, color: 'primary.main' }}
+                >
+                  <CalendarIcon size={16} />
+                  <Typography variant="body2" fontWeight={700}>
+                    Open Weekly Binder Planner →
+                  </Typography>
+                </MenuItem>
+              </Menu>
             </Stack>
           </Stack>
         </Card>

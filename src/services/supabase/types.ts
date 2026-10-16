@@ -127,6 +127,7 @@ export interface Database {
           sort_order: number;
           color: string;
           link: string | null;
+          recurring_config: Json | null;
           created_at: string;
         };
         Insert: {
@@ -135,6 +136,7 @@ export interface Database {
           sort_order?: number;
           color?: string;
           link?: string | null;
+          recurring_config?: Json | null;
           created_at?: string;
         };
         Update: {
@@ -143,7 +145,49 @@ export interface Database {
           sort_order?: number;
           color?: string;
           link?: string | null;
+          recurring_config?: Json | null;
           created_at?: string;
+        };
+      };
+      math_syllabus: {
+        Row: {
+          id: string;
+          day_number: number;
+          semester: number;
+          workbook: string;
+          textbook: string;
+          topic: string;
+          materials: string;
+          fast_facts: string;
+          notes: string;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          day_number: number;
+          semester?: number;
+          workbook?: string;
+          textbook?: string;
+          topic?: string;
+          materials?: string;
+          fast_facts?: string;
+          notes?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          day_number?: number;
+          semester?: number;
+          workbook?: string;
+          textbook?: string;
+          topic?: string;
+          materials?: string;
+          fast_facts?: string;
+          notes?: string;
+          created_at?: string;
+          updated_at?: string;
         };
       };
       parental_assignments: {
@@ -308,6 +352,7 @@ export interface Database {
           priorities: Json;
           for_next_month: string;
           notes: string;
+          subject_overrides?: Json;
           schedule_start_hour?: number;
           schedule_end_hour?: number;
           created_at: string;
@@ -319,6 +364,7 @@ export interface Database {
           priorities?: Json;
           for_next_month?: string;
           notes?: string;
+          subject_overrides?: Json;
           schedule_start_hour?: number;
           schedule_end_hour?: number;
           created_at?: string;
@@ -330,6 +376,7 @@ export interface Database {
           priorities?: Json;
           for_next_month?: string;
           notes?: string;
+          subject_overrides?: Json;
           schedule_start_hour?: number;
           schedule_end_hour?: number;
           created_at?: string;

@@ -7,5 +7,7 @@ export interface MenuItem {
   icon?: ReactNode;
   badge?: string;
   badgeTooltip?: string;
+  section?: 'daily' | 'setup';
   sub?: MenuItem[];
 }
+
