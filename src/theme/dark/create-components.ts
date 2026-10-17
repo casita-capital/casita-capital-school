@@ -16,22 +16,32 @@ export const createComponents = ({ palette }: ComponentsConfig): Components => {
         root: {
           backgroundImage: 'none !important',
           backgroundColor: lighten(palette.neutral![900], 0.035),
+          color: palette.text!.primary,
+        },
+      },
+    },
+    MuiModal: {
+      styleOverrides: {
+        root: {
+          color: palette.text!.primary,
         },
       },
     },
     MuiPopover: {
       styleOverrides: {
         paper: {
-          backgroundColor: alpha(lighten(palette.neutral![900], 0.035), 0.88),
+          backgroundColor: alpha(lighten(palette.neutral![900], 0.035), 0.96),
           backdropFilter: 'blur(18px)',
+          color: palette.text!.primary,
         },
       },
     },
     MuiDrawer: {
       styleOverrides: {
         paper: {
-          backgroundColor: alpha(lighten(palette.neutral![900], 0.035), 0.88),
+          backgroundColor: alpha(lighten(palette.neutral![900], 0.035), 0.96),
           backdropFilter: 'blur(18px)',
+          color: palette.text!.primary,
         },
       },
     },
@@ -60,14 +70,21 @@ export const createComponents = ({ palette }: ComponentsConfig): Components => {
       styleOverrides: {
         root: {
           borderBottomColor: palette.divider,
+          color: palette.text!.primary,
+        },
+        stickyHeader: {
+          backgroundColor: lighten(palette.neutral![900], 0.06),
+          color: palette.neutral![25],
+          borderBottomColor: palette.divider,
         },
       },
     },
     MuiTableHead: {
       styleOverrides: {
         root: {
+          backgroundColor: lighten(palette.neutral![900], 0.06),
           [`& .${tableCellClasses.root}`]: {
-            backgroundColor: alpha(palette.neutral![100], 0.04),
+            backgroundColor: lighten(palette.neutral![900], 0.06),
             color: palette.neutral![25],
             borderBottomColor: palette.divider,
           },
@@ -83,16 +100,51 @@ export const createComponents = ({ palette }: ComponentsConfig): Components => {
         },
       },
     },
+    MuiInputBase: {
+      styleOverrides: {
+        root: {
+          color: palette.text!.primary,
+        },
+        input: {
+          color: palette.text!.primary,
+          '&::placeholder': {
+            color: palette.neutral![400],
+            opacity: 0.8,
+          },
+        },
+      },
+    },
+    MuiFormLabel: {
+      styleOverrides: {
+        root: {
+          color: palette.neutral![300],
+          '&.Mui-focused': {
+            color: (palette.primary as PaletteColor).main,
+          },
+        },
+      },
+    },
+    MuiInputLabel: {
+      styleOverrides: {
+        root: {
+          color: palette.neutral![300],
+          '&.Mui-focused': {
+            color: (palette.primary as PaletteColor).main,
+          },
+        },
+      },
+    },
     MuiFilledInput: {
       styleOverrides: {
         root: {
-          backgroundColor: alpha(palette.neutral![800], 0.16),
+          backgroundColor: alpha(palette.neutral![800], 0.24),
           boxShadow: `${alpha(palette.neutral![900], 0.64)} 0 1px 3px`,
-          borderColor: palette.neutral![800],
+          borderColor: palette.neutral![700],
+          color: palette.text!.primary,
 
           '&:hover': {
             backgroundColor: palette.background!.paper,
-            borderColor: palette.neutral![700],
+            borderColor: palette.neutral![600],
           },
           '&.Mui-focused': {
             backgroundColor: palette.background!.paper,
@@ -105,22 +157,35 @@ export const createComponents = ({ palette }: ComponentsConfig): Components => {
             boxShadow: `${alpha(palette.neutral![900], 0.3)} 0 1px 3px`,
           },
         },
+        input: {
+          color: palette.text!.primary,
+        },
       },
     },
     MuiOutlinedInput: {
       styleOverrides: {
         root: {
           boxShadow: `${alpha(palette.neutral![900], 0.64)} 0 1px 3px`,
-          backgroundColor: palette.background!.paper,
+          backgroundColor: alpha(palette.neutral![900], 0.6),
+          color: palette.text!.primary,
 
           '&:hover': {
             '.MuiOutlinedInput-notchedOutline': {
-              borderColor: palette.neutral![700],
+              borderColor: palette.neutral![500],
+            },
+          },
+          '&.Mui-focused': {
+            backgroundColor: alpha(palette.neutral![900], 0.8),
+            '.MuiOutlinedInput-notchedOutline': {
+              borderColor: (palette.primary as PaletteColor).main,
             },
           },
         },
+        input: {
+          color: palette.text!.primary,
+        },
         notchedOutline: {
-          borderColor: palette.neutral![800],
+          borderColor: palette.neutral![700],
         },
       },
     },
@@ -194,6 +259,20 @@ export const createComponents = ({ palette }: ComponentsConfig): Components => {
     },
     MuiCssBaseline: {
       styleOverrides: {
+        html: {
+          colorScheme: 'dark',
+        },
+        body: {
+          backgroundColor: palette.background!.default,
+          color: palette.text!.primary,
+        },
+        'input, textarea, select': {
+          color: palette.text!.primary,
+        },
+        option: {
+          backgroundColor: lighten(palette.neutral![900], 0.035),
+          color: palette.text!.primary,
+        },
         '#nprogress .bar': {
           backgroundColor: (palette.primary as PaletteColor).main,
         },

@@ -4,6 +4,7 @@ import type { FC, ReactNode } from 'react';
 import { createContext, useContext, useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import { createClient } from 'src/services/supabase/client';
+import type { Json } from 'src/services/supabase/types';
 
 const STORAGE_KEY = 'school_app_school_name';
 const BRANDING_STORAGE_KEY = 'school_app_system_branding';
@@ -20,6 +21,7 @@ export interface SystemBrandingSettings {
   assignments: ItemBranding;
   tasks: ItemBranding;
   notes: ItemBranding;
+  parentNotes: ItemBranding;
   holidays: ItemBranding;
 }
 
@@ -27,8 +29,27 @@ export const DEFAULT_BRANDING: SystemBrandingSettings = {
   assignments: { color: '#0C74E4', icon: 'FileText' },
   tasks: { color: '#2E7D32', icon: 'CheckSquare' },
   notes: { color: '#D97706', icon: 'Edit3' },
+  parentNotes: { color: '#8B5CF6', icon: 'User' },
   holidays: { color: '#D32F2F', icon: 'Sparkles' },
 };
+
+function isItemBranding(val: unknown): val is ItemBranding {
+  if (!val || typeof val !== 'object') return false;
+  const rec = val as Record<string, unknown>;
+  return typeof rec.color === 'string' && typeof rec.icon === 'string';
+}
+
+export function normalizeSystemBranding(raw: unknown): SystemBrandingSettings {
+  if (!raw || typeof raw !== 'object') return DEFAULT_BRANDING;
+  const rec = raw as Record<string, unknown>;
+  return {
+    assignments: isItemBranding(rec.assignments) ? rec.assignments : DEFAULT_BRANDING.assignments,
+    tasks: isItemBranding(rec.tasks) ? rec.tasks : DEFAULT_BRANDING.tasks,
+    notes: isItemBranding(rec.notes) ? rec.notes : DEFAULT_BRANDING.notes,
+    parentNotes: isItemBranding(rec.parentNotes) ? rec.parentNotes : DEFAULT_BRANDING.parentNotes,
+    holidays: isItemBranding(rec.holidays) ? rec.holidays : DEFAULT_BRANDING.holidays,
+  };
+}
 
 interface SchoolSettingsContextValue {
   schoolName: string;
@@ -70,7 +91,8 @@ export const SchoolSettingsProvider: FC<{ children: ReactNode }> = ({ children }
     const cachedBranding = localStorage.getItem(BRANDING_STORAGE_KEY);
     if (cachedBranding) {
       try {
-        setBranding(JSON.parse(cachedBranding));
+        const parsed: unknown = JSON.parse(cachedBranding);
+        setBranding(normalizeSystemBranding(parsed));
       } catch {
         // Fallback
       }
@@ -79,10 +101,13 @@ export const SchoolSettingsProvider: FC<{ children: ReactNode }> = ({ children }
     const cachedHours = localStorage.getItem(SCHEDULE_HOURS_STORAGE_KEY);
     if (cachedHours) {
       try {
-        const parsed = JSON.parse(cachedHours);
-        if (typeof parsed.start === 'number' && typeof parsed.end === 'number') {
-          setScheduleStartHour(parsed.start);
-          setScheduleEndHour(parsed.end);
+        const parsed: unknown = JSON.parse(cachedHours);
+        if (parsed && typeof parsed === 'object') {
+          const rec = parsed as Record<string, unknown>;
+          if (typeof rec.start === 'number' && typeof rec.end === 'number') {
+            setScheduleStartHour(rec.start);
+            setScheduleEndHour(rec.end);
+          }
         }
       } catch {
         // Fallback
@@ -111,11 +136,9 @@ export const SchoolSettingsProvider: FC<{ children: ReactNode }> = ({ children }
 
         if (brandData) {
           if (brandData.todos) {
-            const parsed = brandData.todos as unknown as SystemBrandingSettings;
-            if (parsed.assignments && parsed.tasks && parsed.notes && parsed.holidays) {
-              setBranding(parsed);
-              localStorage.setItem(BRANDING_STORAGE_KEY, JSON.stringify(parsed));
-            }
+            const normalized = normalizeSystemBranding(brandData.todos);
+            setBranding(normalized);
+            localStorage.setItem(BRANDING_STORAGE_KEY, JSON.stringify(normalized));
           }
           if (typeof brandData.schedule_start_hour === 'number') {
             setScheduleStartHour(brandData.schedule_start_hour);
@@ -149,6 +172,10 @@ export const SchoolSettingsProvider: FC<{ children: ReactNode }> = ({ children }
           },
           { onConflict: 'week_start_date' }
         );
+      await supabase
+        .from('transcript_settings')
+        .update({ school_name: trimmed, updated_at: new Date().toISOString() })
+        .not('id', 'is', null);
       toast.success('School name updated successfully!');
     } catch {
       toast.error('Saved locally. Failed to sync to cloud.');
@@ -156,8 +183,9 @@ export const SchoolSettingsProvider: FC<{ children: ReactNode }> = ({ children }
   };
 
   const updateItemBranding = async (newBranding: SystemBrandingSettings) => {
-    setBranding(newBranding);
-    localStorage.setItem(BRANDING_STORAGE_KEY, JSON.stringify(newBranding));
+    const normalized = normalizeSystemBranding(newBranding);
+    setBranding(normalized);
+    localStorage.setItem(BRANDING_STORAGE_KEY, JSON.stringify(normalized));
 
     try {
       await supabase
@@ -165,7 +193,7 @@ export const SchoolSettingsProvider: FC<{ children: ReactNode }> = ({ children }
         .upsert(
           {
             week_start_date: 'GLOBAL_SYSTEM_BRANDING',
-            todos: newBranding as any,
+            todos: normalized as unknown as Json,
           },
           { onConflict: 'week_start_date' }
         );

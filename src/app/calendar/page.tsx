@@ -38,7 +38,10 @@ import { PageHeading } from 'src/components/base/page-heading';
 import { createClient } from 'src/services/supabase/client';
 import { useSchoolSettings } from 'src/contexts/school-settings';
 import { ItemIcon } from 'src/components/base/item-icon';
-import { FormattedParentNote } from 'src/components/base/formatted-parent-note';
+import {
+  FormattedParentNote,
+  getPlannerNoteCategory,
+} from 'src/components/base/formatted-parent-note';
 
 interface Holiday {
   id: string;
@@ -56,11 +59,19 @@ interface ParentNote {
   description: string;
 }
 
+interface SubjectItem {
+  id: string;
+  name: string;
+  color: string;
+}
+
 interface SchoolAssignment {
   id: string;
   title: string;
   due_date: string;
   category: string;
+  subject_id?: string | null;
+  workflow_status?: string | null;
 }
 
 interface TaskItem {
@@ -90,6 +101,7 @@ export default function MasterCalendarPage() {
     const now = new Date();
     return new Date(now.getFullYear(), now.getMonth(), 1);
   });
+  const [subjects, setSubjects] = useState<SubjectItem[]>([]);
   const [holidays, setHolidays] = useState<Holiday[]>([]);
   const [parentNotes, setParentNotes] = useState<ParentNote[]>([]);
   const [schoolAssignments, setSchoolAssignments] = useState<SchoolAssignment[]>([]);
@@ -98,6 +110,7 @@ export default function MasterCalendarPage() {
 
   // Filter toggles for printable monthly overview
   const [showHolidays, setShowHolidays] = useState(true);
+  const [showSchoolWork, setShowSchoolWork] = useState(true);
   const [showParentNotes, setShowParentNotes] = useState(true);
   const [showSchoolAssignments, setShowSchoolAssignments] = useState(true);
   const [showTasks, setShowTasks] = useState(true);
@@ -131,6 +144,16 @@ export default function MasterCalendarPage() {
 
   async function loadCalendarData() {
     try {
+      // 0. Fetch Subjects
+      const { data: subjectData } = await supabase
+        .from('subjects')
+        .select('id, name, color')
+        .order('sort_order', { ascending: true });
+
+      if (subjectData) {
+        setSubjects(subjectData as SubjectItem[]);
+      }
+
       // 1. Fetch Holidays
       const { data: holidayData } = await supabase
         .from('holidays')
@@ -272,6 +295,7 @@ export default function MasterCalendarPage() {
 
   const activeLayersCount = [
     showHolidays,
+    showSchoolWork,
     showParentNotes,
     showSchoolAssignments,
     showTasks,
@@ -388,7 +412,7 @@ export default function MasterCalendarPage() {
                   },
                 }}
               >
-                Layers &amp; View ({activeLayersCount}/5)
+                Layers &amp; View ({activeLayersCount}/6)
               </Button>
 
               <Menu
@@ -426,6 +450,16 @@ export default function MasterCalendarPage() {
                     Holidays
                   </Typography>
                   <Checkbox checked={showHolidays} size="small" color="primary" sx={{ p: 0.5 }} />
+                </MenuItem>
+
+                <MenuItem
+                  onClick={() => setShowSchoolWork((prev) => !prev)}
+                  sx={{ borderRadius: 1.5, py: 0.5, justifyContent: 'space-between' }}
+                >
+                  <Typography variant="body2" fontWeight={600}>
+                    School Work
+                  </Typography>
+                  <Checkbox checked={showSchoolWork} size="small" color="primary" sx={{ p: 0.5 }} />
                 </MenuItem>
 
                 <MenuItem
@@ -634,8 +668,19 @@ export default function MasterCalendarPage() {
 
                   const dateStr = formatDateStr(dateObj);
                   const dayHolidays = showHolidays ? holidays.filter((h) => h.holiday_date === dateStr) : [];
-                  const dayNotes = showParentNotes ? parentNotes.filter((n) => n.note_date === dateStr) : [];
-                  const daySchoolAssignments = showSchoolAssignments ? schoolAssignments.filter((a) => a.due_date === dateStr) : [];
+                  const dayNotes = parentNotes.filter((n) => {
+                    if (n.note_date !== dateStr) return false;
+                    const cat = getPlannerNoteCategory(n.title, n.description);
+                    return cat === 'parent_note' ? showParentNotes : showSchoolWork;
+                  });
+                  const daySchoolAssignments = showSchoolAssignments
+                    ? schoolAssignments.filter(
+                        (a) =>
+                          a.due_date === dateStr &&
+                          a.workflow_status !== 'staged' &&
+                          a.workflow_status !== 'ignored'
+                      )
+                    : [];
                   const dayTasks = showTasks ? tasksList.filter((t) => t.due_date === dateStr) : [];
                   const dayGoogleEvents = showGoogleCalendars ? googleEvents.filter((g) => g.event_date === dateStr) : [];
                   const isWeekend = dateObj.getDay() === 0 || dateObj.getDay() === 6;
@@ -716,25 +761,58 @@ export default function MasterCalendarPage() {
                           />
                         ))}
 
-                        {/* Parent Notes */}
+                        {/* School Work & Parent Notes */}
                         {dayNotes.map((n) => (
-                          <Box key={n.id} className="note-item-text" sx={{ color: branding.notes.color }}>
+                          <Box key={n.id} className="note-item-text">
                             <FormattedParentNote
+                              title={n.title}
                               description={n.description}
                               color={branding.notes.color}
                               iconName={branding.notes.icon}
+                              parentNoteColor={branding.parentNotes.color}
+                              parentNoteIconName={branding.parentNotes.icon}
                               interactive={false}
                             />
                           </Box>
                         ))}
 
                         {/* School Assignments */}
-                        {daySchoolAssignments.map((a) => (
-                          <Typography key={a.id} variant="caption" display="flex" alignItems="center" gap={0.5} noWrap className="assignment-item-text" sx={{ color: branding.assignments.color, fontWeight: 700, fontSize: '0.68rem' }}>
-                            <ItemIcon name={branding.assignments.icon} size={11} color={branding.assignments.color} />
-                            <span>[{a.category.toUpperCase()}] {a.title}</span>
-                          </Typography>
-                        ))}
+                        {daySchoolAssignments.map((a) => {
+                          const subj = subjects.find((s) => s.id === a.subject_id);
+                          const cleanTitle = a.title.trim();
+                          const cleanCat = a.category.trim();
+                          const hasSubjectInTitle =
+                            subj !== undefined &&
+                            cleanTitle.toLowerCase().includes(subj.name.trim().toLowerCase());
+
+                          let formattedAssignmentLabel = cleanTitle;
+                          if (subj && !hasSubjectInTitle) {
+                            if (cleanTitle.toLowerCase() === cleanCat.toLowerCase()) {
+                              formattedAssignmentLabel = `${subj.name} ${cleanTitle}`;
+                            } else {
+                              formattedAssignmentLabel = `${subj.name}: ${cleanTitle}`;
+                            }
+                          }
+
+                          const fullText = `[${cleanCat.toUpperCase()}] ${formattedAssignmentLabel}`;
+
+                          return (
+                            <Typography
+                              key={a.id}
+                              variant="caption"
+                              display="flex"
+                              alignItems="center"
+                              gap={0.5}
+                              noWrap
+                              title={fullText}
+                              className="assignment-item-text"
+                              sx={{ color: branding.assignments.color, fontWeight: 700, fontSize: '0.68rem' }}
+                            >
+                              <ItemIcon name={branding.assignments.icon} size={11} color={branding.assignments.color} />
+                              <span>{fullText}</span>
+                            </Typography>
+                          );
+                        })}
 
                         {/* Tasks */}
                         {dayTasks.map((t) => (

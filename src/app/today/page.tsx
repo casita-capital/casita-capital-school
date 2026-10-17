@@ -494,7 +494,7 @@ export default function PublicTodaySchedulePage() {
                   bgcolor: isDarkMode ? '#1e293b' : '#f1f5f9',
                   position: 'sticky',
                   top: 0,
-                  zIndex: 25,
+                  zIndex: 35,
                 }}
               >
                 <Box width={100} flexShrink={0}>
@@ -927,7 +927,7 @@ export default function PublicTodaySchedulePage() {
 
               <DialogActions sx={{ p: 2, px: 3, borderTop: 1, borderColor: 'divider' }}>
                 <Button
-                  variant="contained"
+                  variant="outlined"
                   color="inherit"
                   onClick={() => setViewingBlock(null)}
                   sx={{ fontWeight: 800, px: 3 }}

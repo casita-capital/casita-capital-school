@@ -18,6 +18,7 @@ import {
   Menu,
   MenuItem,
   Paper,
+  Select,
   Stack,
   Switch,
   Table,
@@ -44,6 +45,14 @@ import {
   Calendar as CalendarIcon,
   Wand2,
   Menu as MenuIcon,
+  Globe,
+  RefreshCw,
+  Link2,
+  FileText,
+  KeyRound,
+  CloudDownload,
+  Trash2,
+  X,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { PageHeading } from 'src/components/base/page-heading';
@@ -51,29 +60,56 @@ import { createClient } from 'src/services/supabase/client';
 import { Json } from 'src/services/supabase/types';
 import { FormattedParentNote } from 'src/components/base/formatted-parent-note';
 import {
+  ApiSyllabusAutoPopulateConfig,
+  ApiSyllabusWeek,
+  ApiWeekdayRule,
+  ApiWeekdaySplitSource,
   DAY_KEYS,
   DAY_LABELS,
   DayKey,
   MathSyllabusDay,
   CourseSyllabusData,
+  PortalIntegrationCourseMapping,
   SubjectRecurringConfig,
+  createDefaultApiAutoPopulateConfig,
   createDefaultMathConfig,
+  formatApiWeekBlockForWeekday,
   generateSubjectWeekNotesStructured,
+  getActiveCourseSyllabus,
+  getOfficialCourseSubtitle,
+  getSubjectCourseSyllabi,
   parseRecurringConfig,
   resolveSubjectCountersForWeek,
+  resolveSyllabusDaySupplies,
 } from 'src/utils/recurring-planner';
 import type {
   ExtractedSyllabusDayItem,
   ParsedSyllabusReviewPayload,
 } from 'src/app/api/automations/parse-syllabus/route';
 
+const API_SPLIT_SOURCE_OPTIONS: Array<{ value: ApiWeekdaySplitSource; label: string }> = [
+  { value: 'none', label: 'None (Blank / Custom Only)' },
+  { value: 'full_week', label: 'Full Week Schedule' },
+  { value: 'day_1', label: 'Day 1 Portion' },
+  { value: 'day_2', label: 'Day 2 Portion' },
+  { value: 'day_3', label: 'Day 3 Portion' },
+  { value: 'day_4', label: 'Day 4 Portion' },
+  { value: 'day_5', label: 'Day 5 Portion' },
+  { value: 'day_4_and_5', label: 'Days 4 & 5 Combined' },
+  { value: 'read_only', label: 'Read Line Only' },
+  { value: 'memorize_only', label: 'Memorize Line Only' },
+  { value: 'complete_and_do', label: 'Complete & Do Lines' },
+];
+
 interface Subject {
   id: string;
   name: string;
   sort_order: number;
   color: string;
+  course_code?: string;
   link?: string | null;
   recurring_config?: Json | null;
+  grading_config?: Json | null;
 }
 
 function AutomationsContent() {
@@ -97,7 +133,7 @@ function AutomationsContent() {
   const [recurringSubject, setRecurringSubject] = useState<Subject | null>(null);
   const [recurringDraft, setRecurringDraft] = useState<SubjectRecurringConfig | null>(null);
   const [activeRecurringDay, setActiveRecurringDay] = useState<DayKey>('monday');
-  const [previewWeekDate, setPreviewWeekDate] = useState<string>('2026-10-19');
+  const [previewWeekDate, setPreviewWeekDate] = useState<string>('2026-10-12');
   const [savingRecurring, setSavingRecurring] = useState(false);
 
   // Syllabus Filter & Edit State
@@ -118,6 +154,27 @@ function AutomationsContent() {
   const [importSyllabusRows, setImportSyllabusRows] = useState<boolean>(true);
   const [applyingAiAutomation, setApplyingAiAutomation] = useState(false);
 
+  // API Portal Integration & Course Matcher State (Memoria Academy)
+  const [apiModalOpen, setApiModalOpen] = useState(false);
+  const [portalLoginUrl, setPortalLoginUrl] = useState<string>('https://www.memoriaacademy.com/my-account/');
+  const [moodleBaseUrl, setMoodleBaseUrl] = useState<string>('https://mpoa.memoriapress.com');
+  const [apiUsername, setApiUsername] = useState<string>('audrey.womble');
+  const [apiPassword, setApiPassword] = useState<string>('rascallovesme!');
+  const [showApiPassword, setShowApiPassword] = useState(false);
+  const [apiStudentName, setApiStudentName] = useState<string>('Audrey Womble');
+  const [apiLastSyncedAt, setApiLastSyncedAt] = useState<string>('');
+  const [apiCourseMappings, setApiCourseMappings] = useState<PortalIntegrationCourseMapping[]>([]);
+  const [discoveringCourses, setDiscoveringCourses] = useState(false);
+  const [syncingPortal, setSyncingPortal] = useState(false);
+
+  // API Syllabus Auto-Populate & Week Override State
+  const [previewSyllabusWeekNum, setPreviewSyllabusWeekNum] = useState<number>(6);
+  const [savingAutoPopulate, setSavingAutoPopulate] = useState(false);
+  const [editingApiWeek, setEditingApiWeek] = useState<ApiSyllabusWeek | null>(null);
+  const [editingApiWeekText, setEditingApiWeekText] = useState<string>('');
+  const [savingApiWeekText, setSavingApiWeekText] = useState(false);
+  const [scienceUnitFilter, setScienceUnitFilter] = useState<string>('all');
+
   async function loadData() {
     try {
       const { data: subData } = await supabase
@@ -137,6 +194,36 @@ function AutomationsContent() {
       if (sylData) {
         setSyllabusDays(sylData as MathSyllabusDay[]);
       }
+
+      // Also load saved API integration config
+      const intRes = await fetch('/api/memoria/sync');
+      const intJson: unknown = await intRes.json().catch(() => null);
+      if (
+        intJson &&
+        typeof intJson === 'object' &&
+        'integration' in intJson &&
+        intJson.integration &&
+        typeof intJson.integration === 'object'
+      ) {
+        const pi = intJson.integration as {
+          portal_login_url?: string;
+          moodle_base_url?: string;
+          username?: string;
+          password?: string;
+          student_fullname?: string;
+          last_synced_at?: string;
+          course_mappings?: PortalIntegrationCourseMapping[];
+        };
+        if (pi.portal_login_url) setPortalLoginUrl(pi.portal_login_url);
+        if (pi.moodle_base_url) setMoodleBaseUrl(pi.moodle_base_url);
+        if (pi.username) setApiUsername(pi.username);
+        if (pi.password) setApiPassword(pi.password);
+        if (pi.student_fullname) setApiStudentName(pi.student_fullname);
+        if (pi.last_synced_at) setApiLastSyncedAt(pi.last_synced_at);
+        if (Array.isArray(pi.course_mappings) && pi.course_mappings.length > 0) {
+          setApiCourseMappings(pi.course_mappings);
+        }
+      }
     } catch {
       toast.error('Failed to load automations and syllabus data');
     } finally {
@@ -155,6 +242,8 @@ function AutomationsContent() {
       setActiveTab(tabParam);
     } else if (tabParam === 'upload') {
       setUploadModalOpen(true);
+    } else if (tabParam === 'api') {
+      setApiModalOpen(true);
     }
     const subjectIdParam = searchParams.get('subject');
     if (subjectIdParam && subjects.length > 0 && !recurringSubject) {
@@ -413,6 +502,65 @@ function AutomationsContent() {
     }
   };
 
+  const handleSwitchSubjectActiveSyllabus = async (sub: Subject, syllabusId: string) => {
+    const cfg = parseRecurringConfig(sub.recurring_config, sub.name);
+    const syllabi = getSubjectCourseSyllabi(cfg);
+    const nextActive = syllabi.find((s) => s.id === syllabusId);
+    if (!nextActive) return;
+
+    const nextCfg: SubjectRecurringConfig = {
+      ...cfg,
+      active_syllabus_id: syllabusId,
+      course_syllabus: nextActive,
+      course_syllabi: syllabi,
+    };
+    const jsonCfg = JSON.parse(JSON.stringify(nextCfg)) as Json;
+    const { error } = await supabase
+      .from('subjects')
+      .update({ recurring_config: jsonCfg })
+      .eq('id', sub.id);
+    if (error) {
+      toast.error(`Failed to switch syllabus: ${error.message}`);
+      return;
+    }
+    setSubjects((prev) =>
+      prev.map((s) => (s.id === sub.id ? { ...s, recurring_config: jsonCfg } : s))
+    );
+    setScienceUnitFilter('all');
+    toast.success(`Switched ${sub.name} active syllabus to "${nextActive.course_title}"!`);
+  };
+
+  const handleDeleteSubjectSyllabus = async (sub: Subject, syllabusId: string) => {
+    const cfg = parseRecurringConfig(sub.recurring_config, sub.name);
+    const syllabi = getSubjectCourseSyllabi(cfg);
+    if (syllabi.length <= 1) {
+      toast.error('At least one syllabus must remain in the subject library.');
+      return;
+    }
+    const remaining = syllabi.filter((s) => s.id !== syllabusId);
+    const nextActive =
+      remaining.find((s) => s.id === cfg.active_syllabus_id) || remaining[0];
+    const nextCfg: SubjectRecurringConfig = {
+      ...cfg,
+      active_syllabus_id: nextActive.id,
+      course_syllabus: nextActive,
+      course_syllabi: remaining,
+    };
+    const jsonCfg = JSON.parse(JSON.stringify(nextCfg)) as Json;
+    const { error } = await supabase
+      .from('subjects')
+      .update({ recurring_config: jsonCfg })
+      .eq('id', sub.id);
+    if (error) {
+      toast.error(`Failed to remove syllabus: ${error.message}`);
+      return;
+    }
+    setSubjects((prev) =>
+      prev.map((s) => (s.id === sub.id ? { ...s, recurring_config: jsonCfg } : s))
+    );
+    toast.success(`Removed syllabus from ${sub.name}. Active: "${nextActive.course_title}"`);
+  };
+
   const handleApplyAiAutomation = async () => {
     if (!aiReview) return;
     setApplyingAiAutomation(true);
@@ -420,15 +568,32 @@ function AutomationsContent() {
     try {
       let targetSubject: Subject | null = null;
 
-      const buildRecurringWithSyllabus = (subName: string): SubjectRecurringConfig => {
+      const buildRecurringWithSyllabus = (
+        subName: string,
+        existingConfig?: SubjectRecurringConfig
+      ): SubjectRecurringConfig => {
+        const title = aiReview.course_title || `${subName} Syllabus`;
+        const slugId =
+          title
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-')
+            .replace(/(^-|-$)/g, '') || `syllabus-${Date.now()}`;
+
         const courseSyllabusPayload: CourseSyllabusData = {
-          course_title: aiReview.course_title || `${subName} Syllabus`,
+          id: slugId,
+          course_title: title,
+          official_course_name: title,
+          source_type: 'manual_upload',
+          uploaded_file_name: uploadingFile?.name || `${title}.pdf`,
           teacher_name: aiReview.teacher_name || '',
           summary: aiReview.summary || '',
           uploaded_at: new Date().toISOString(),
           days: aiReview.syllabus_days.map((d) => ({
-            id: `syl-day-${d.day_number}`,
+            id: `${slugId}-day-${d.day_number}`,
             day_number: d.day_number,
+            week_number: d.week_number ?? Math.ceil(d.day_number / 3),
+            unit: d.unit || '',
+            activity: d.activity || '',
             semester: d.semester,
             workbook: d.workbook,
             textbook: d.textbook,
@@ -438,9 +603,31 @@ function AutomationsContent() {
             notes: d.notes,
           })),
         };
+
+        const existingSyllabi = existingConfig ? getSubjectCourseSyllabi(existingConfig) : [];
+        const updatedSyllabi = [...existingSyllabi];
+        const matchIdx = updatedSyllabi.findIndex(
+          (s) =>
+            s.id === slugId ||
+            s.course_title.toLowerCase() === courseSyllabusPayload.course_title.toLowerCase()
+        );
+        if (matchIdx >= 0) {
+          updatedSyllabi[matchIdx] = courseSyllabusPayload;
+        } else {
+          updatedSyllabi.push(courseSyllabusPayload);
+        }
+
+        // Preserve existing 3-class-per-week recurring day templates if the subject already uses {class_num}
+        const existingUsesClassNum = existingConfig
+          ? DAY_KEYS.some((dk) => existingConfig.days[dk].template.includes('{class_num}'))
+          : false;
+
         return {
-          ...aiReview.recurring_config,
+          ...(existingUsesClassNum && existingConfig ? existingConfig : aiReview.recurring_config),
+          enabled: true,
+          active_syllabus_id: courseSyllabusPayload.id,
           course_syllabus: courseSyllabusPayload,
+          course_syllabi: updatedSyllabi,
         };
       };
 
@@ -477,7 +664,8 @@ function AutomationsContent() {
           return;
         }
 
-        const configToSave = buildRecurringWithSyllabus(existing.name);
+        const existingParsedCfg = parseRecurringConfig(existing.recurring_config, existing.name);
+        const configToSave = buildRecurringWithSyllabus(existing.name, existingParsedCfg);
         const { error: updateErr } = await supabase
           .from('subjects')
           .update({
@@ -545,6 +733,210 @@ function AutomationsContent() {
     }
   };
 
+  // ---------------------------------------------------------------------------
+  // MEMORIA ACADEMY API INTEGRATION & SYLLABUS AUTO-POPULATE HANDLERS
+  // ---------------------------------------------------------------------------
+  const handleDiscoverPortalCourses = async () => {
+    setDiscoveringCourses(true);
+    try {
+      const res = await fetch('/api/memoria/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'discover_courses',
+          portal_login_url: portalLoginUrl,
+          moodle_base_url: moodleBaseUrl,
+          username: apiUsername,
+          password: apiPassword,
+          course_mappings: apiCourseMappings,
+        }),
+      });
+      const data = (await res.json()) as {
+        ok?: boolean;
+        error?: string;
+        student_fullname?: string;
+        course_mappings?: PortalIntegrationCourseMapping[];
+      };
+      if (!res.ok || !data.ok) {
+        toast.error(data.error || 'Failed to authenticate with Memoria Academy portal');
+        return;
+      }
+      if (data.student_fullname) {
+        setApiStudentName(data.student_fullname);
+      }
+      if (Array.isArray(data.course_mappings)) {
+        setApiCourseMappings(data.course_mappings);
+      }
+      toast.success(
+        `Connected as ${data.student_fullname || apiUsername}! Found ${
+          data.course_mappings?.length || 0
+        } enrolled courses.`
+      );
+    } catch {
+      toast.error('Failed to connect to Memoria Academy portal');
+    } finally {
+      setDiscoveringCourses(false);
+    }
+  };
+
+  const handleSyncPortalCourses = async (closeModalOnSuccess = true) => {
+    setSyncingPortal(true);
+    try {
+      const res = await fetch('/api/memoria/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'sync_courses',
+          portal_login_url: portalLoginUrl,
+          moodle_base_url: moodleBaseUrl,
+          username: apiUsername,
+          password: apiPassword,
+          course_mappings: apiCourseMappings,
+        }),
+      });
+      const data = (await res.json()) as {
+        ok?: boolean;
+        error?: string;
+        synced_at?: string;
+        student_fullname?: string;
+        synced_courses?: Array<{
+          moodle_course_id: number;
+          official_course_name: string;
+          subject_id: string;
+          subject_name: string;
+          weeks_count: number;
+          graded_items_count: number;
+          course_total_percentage: number | null;
+        }>;
+      };
+      if (!res.ok || !data.ok) {
+        toast.error(data.error || 'Failed to sync courses from Memoria Academy');
+        return;
+      }
+
+      if (data.synced_at) setApiLastSyncedAt(data.synced_at);
+      if (data.student_fullname) setApiStudentName(data.student_fullname);
+
+      await loadData();
+
+      const syncedList = data.synced_courses || [];
+      toast.success(
+        `Synced ${syncedList.length} Memoria Academy courses (${syncedList
+          .map((c) => `${c.official_course_name}: ${c.weeks_count} wks`)
+          .join(', ')})!`
+      );
+
+      if (closeModalOnSuccess) {
+        setApiModalOpen(false);
+        if (syncedList.length > 0) {
+          setActiveTab('syllabus');
+          setActiveSyllabusSubTab(syncedList[0].subject_id);
+        }
+      }
+    } catch {
+      toast.error('Failed to sync Memoria Academy courses');
+    } finally {
+      setSyncingPortal(false);
+    }
+  };
+
+  const handleUpdateSubjectApiAutoPopulate = async (
+    sub: Subject,
+    updaterOrValue:
+      | ApiSyllabusAutoPopulateConfig
+      | ((prev: ApiSyllabusAutoPopulateConfig) => ApiSyllabusAutoPopulateConfig),
+    showToast: boolean | string = false
+  ) => {
+    const rec = parseRecurringConfig(sub.recurring_config, sub.name);
+    if (!rec.course_syllabus) return;
+    const currentAuto =
+      rec.course_syllabus.api_auto_populate ||
+      createDefaultApiAutoPopulateConfig(sub.name, rec.course_syllabus.course_title);
+    const nextAuto =
+      typeof updaterOrValue === 'function' ? updaterOrValue(currentAuto) : updaterOrValue;
+
+    const nextRec: SubjectRecurringConfig = {
+      ...rec,
+      enabled: nextAuto.enabled ? true : rec.enabled,
+      course_syllabus: {
+        ...rec.course_syllabus,
+        api_auto_populate: nextAuto,
+      },
+    };
+
+    setSubjects((prev) =>
+      prev.map((item) =>
+        item.id === sub.id ? { ...item, recurring_config: nextRec as unknown as Json } : item
+      )
+    );
+
+    if (showToast) setSavingAutoPopulate(true);
+    try {
+      const { error } = await supabase
+        .from('subjects')
+        .update({ recurring_config: nextRec as unknown as Json })
+        .eq('id', sub.id);
+      if (error) {
+        toast.error(`Failed to save Auto-Populate settings: ${error.message}`);
+      } else if (showToast) {
+        toast.success(
+          typeof showToast === 'string'
+            ? showToast
+            : `Saved Auto-Populate rules for ${sub.name}!`
+        );
+      }
+    } finally {
+      if (showToast) setSavingAutoPopulate(false);
+    }
+  };
+
+  const handleSaveApiWeekOverrideText = async () => {
+    const sub = subjects.find((s) => s.id === activeSyllabusSubTab);
+    if (!editingApiWeek || !sub) return;
+    const rec = parseRecurringConfig(sub.recurring_config, sub.name);
+    if (!rec.course_syllabus?.weeks) return;
+
+    setSavingApiWeekText(true);
+    try {
+      const trimmed = editingApiWeekText.trim();
+      const updatedWeeks = rec.course_syllabus.weeks.map((w) => {
+        if (w.week_number !== editingApiWeek.week_number) return w;
+        return {
+          ...w,
+          custom_override_text:
+            trimmed && trimmed !== w.raw_summary.trim() ? trimmed : undefined,
+        };
+      });
+
+      const nextRec: SubjectRecurringConfig = {
+        ...rec,
+        course_syllabus: {
+          ...rec.course_syllabus,
+          weeks: updatedWeeks,
+        },
+      };
+
+      const { error } = await supabase
+        .from('subjects')
+        .update({ recurring_config: nextRec as unknown as Json })
+        .eq('id', sub.id);
+
+      if (error) {
+        toast.error(`Failed to update Week ${editingApiWeek.week_number}: ${error.message}`);
+      } else {
+        setSubjects((prev) =>
+          prev.map((item) =>
+            item.id === sub.id ? { ...item, recurring_config: nextRec as unknown as Json } : item
+          )
+        );
+        toast.success(`Updated Week ${editingApiWeek.week_number} schedule text!`);
+        setEditingApiWeek(null);
+      }
+    } finally {
+      setSavingApiWeekText(false);
+    }
+  };
+
   const livePreviewCounters = useMemo(() => {
     if (!recurringDraft) return null;
     return resolveSubjectCountersForWeek(recurringDraft, previewWeekDate, undefined);
@@ -601,11 +993,28 @@ function AutomationsContent() {
               Automations &amp; Course Syllabi
             </Typography>
             <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 500 }}>
-              Toggle recurring weekday templates, manage the 64-day Math syllabus, or import a new syllabus with AI.
+              Toggle recurring weekday templates, manage manually uploaded syllabi, or sync online courses &amp; grades via API.
             </Typography>
           </Box>
 
           <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+            <Button
+              variant="outlined"
+              size="small"
+              startIcon={<CheckCircle2 size={15} />}
+              onClick={() => router.push('/gradebook')}
+              sx={{
+                fontWeight: 700,
+                textTransform: 'none',
+                borderRadius: 2,
+                px: 1.75,
+                py: 0.75,
+                borderColor: 'divider',
+                color: 'text.primary',
+              }}
+            >
+              Staging &amp; Gradebook Rules
+            </Button>
             <Button
               variant="outlined"
               size="small"
@@ -622,6 +1031,22 @@ function AutomationsContent() {
               }}
             >
               Subjects &amp; Habits
+            </Button>
+            <Button
+              variant="outlined"
+              color="secondary"
+              size="small"
+              startIcon={<CloudDownload size={15} />}
+              onClick={() => setApiModalOpen(true)}
+              sx={{
+                fontWeight: 700,
+                textTransform: 'none',
+                borderRadius: 2,
+                px: 1.75,
+                py: 0.75,
+              }}
+            >
+              API Integration (Memoria Academy)
             </Button>
             <Button
               variant="contained"
@@ -704,6 +1129,13 @@ function AutomationsContent() {
               <Stack spacing={1.25}>
                 {subjects.map((sub) => {
                   const recConfig = parseRecurringConfig(sub.recurring_config, sub.name);
+                  const officialCourseName = getOfficialCourseSubtitle(recConfig);
+                  const isApiSynced =
+                    recConfig.course_syllabus?.source_type === 'api_sync' &&
+                    Array.isArray(recConfig.course_syllabus?.weeks) &&
+                    recConfig.course_syllabus.weeks.length > 0;
+                  const apiAutoPop = recConfig.course_syllabus?.api_auto_populate;
+
                   const activeDayKeys =
                     recConfig.mode === 'math_syllabus'
                       ? DAY_KEYS.filter((dk) => {
@@ -712,6 +1144,17 @@ function AutomationsContent() {
                             (mc.fast_facts_enabled && mc.fast_facts_days.includes(dk)) ||
                             (mc.attend_class_enabled && mc.attend_class_days.includes(dk)) ||
                             (mc.homework_enabled && (dk === 'monday' || dk === 'wednesday')) ||
+                            recConfig.days[dk].enabled
+                          );
+                        })
+                      : isApiSynced && apiAutoPop?.enabled
+                      ? DAY_KEYS.filter((dk) => {
+                          const rule = apiAutoPop.weekday_rules[dk];
+                          return (
+                            (rule &&
+                              (rule.api_source !== 'none' ||
+                                rule.attend_class ||
+                                Boolean(rule.custom_additional_lines.trim()))) ||
                             recConfig.days[dk].enabled
                           );
                         })
@@ -740,14 +1183,33 @@ function AutomationsContent() {
                         spacing={1.5}
                       >
                         <Stack direction="row" spacing={1.5} alignItems="center" flexWrap="wrap" flexGrow={1}>
-                          <Typography variant="subtitle1" fontWeight={700} sx={{ minWidth: 150 }}>
-                            {sub.name}
-                          </Typography>
+                          <Box sx={{ minWidth: 165 }}>
+                            <Typography variant="subtitle1" fontWeight={700} sx={{ lineHeight: 1.2 }}>
+                              {sub.name}
+                            </Typography>
+                            {officialCourseName && (
+                              <Typography
+                                variant="caption"
+                                sx={{
+                                  fontStyle: 'italic',
+                                  color: 'text.secondary',
+                                  fontWeight: 500,
+                                  display: 'block',
+                                  fontSize: '0.72rem',
+                                  mt: 0.15,
+                                }}
+                              >
+                                {officialCourseName}
+                              </Typography>
+                            )}
+                          </Box>
 
                           <Chip
                             icon={
                               recConfig.mode === 'math_syllabus' ? (
                                 <Calculator size={12} />
+                              ) : isApiSynced ? (
+                                <CloudDownload size={12} />
                               ) : (
                                 <Repeat size={12} />
                               )
@@ -755,12 +1217,27 @@ function AutomationsContent() {
                             label={
                               recConfig.mode === 'math_syllabus'
                                 ? '64-Day Syllabus'
+                                : isApiSynced
+                                ? `API Sync'd (${recConfig.course_syllabus?.weeks?.length || 0} Wks)`
                                 : 'Weekly Template'
                             }
                             size="small"
-                            color={recConfig.mode === 'math_syllabus' ? 'secondary' : 'primary'}
+                            color={
+                              recConfig.mode === 'math_syllabus'
+                                ? 'secondary'
+                                : isApiSynced
+                                ? 'info'
+                                : 'primary'
+                            }
                             variant="outlined"
-                            onClick={() => handleOpenRecurringModal(sub)}
+                            onClick={() => {
+                              if (isApiSynced) {
+                                setActiveTab('syllabus');
+                                setActiveSyllabusSubTab(sub.id);
+                              } else {
+                                handleOpenRecurringModal(sub);
+                              }
+                            }}
                             sx={{ fontWeight: 600, fontSize: '0.7rem', height: 24, cursor: 'pointer' }}
                           />
 
@@ -918,7 +1395,7 @@ function AutomationsContent() {
           )}
 
           {/* =============================================================== */}
-          {/* TAB 2: SYLLABI (WITH SUB-TABS PER UPLOADED SYLLABUS)            */}
+          {/* TAB 2: SYLLABI (NESTED MANUALLY UPLOADED & API SYNC'D SYLLABI)  */}
           {/* =============================================================== */}
           {activeTab === 'syllabus' && (
             <Box>
@@ -926,7 +1403,7 @@ function AutomationsContent() {
               <Box
                 sx={{
                   mb: 3,
-                  p: 1,
+                  p: 1.25,
                   borderRadius: 2,
                   bgcolor: alpha(theme.palette.primary.main, 0.03),
                   border: '1px solid',
@@ -941,7 +1418,7 @@ function AutomationsContent() {
                 <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
                   <Button
                     size="small"
-                    variant={activeSyllabusSubTab === 'math' ? 'contained' : 'text'}
+                    variant={activeSyllabusSubTab === 'math' ? 'contained' : 'outlined'}
                     color="primary"
                     startIcon={<Calculator size={15} />}
                     onClick={() => setActiveSyllabusSubTab('math')}
@@ -949,12 +1426,30 @@ function AutomationsContent() {
                       fontWeight: 700,
                       textTransform: 'none',
                       borderRadius: 1.5,
-                      px: 1.75,
+                      px: 1.5,
                       py: 0.65,
                       boxShadow: 'none',
+                      bgcolor: activeSyllabusSubTab === 'math' ? 'primary.main' : 'background.paper',
                     }}
                   >
-                    Math — Dimensions Math 5 ({syllabusDays.length} Days)
+                    <Stack direction="row" spacing={0.75} alignItems="center">
+                      <span>Math — Dimensions Math 5 ({syllabusDays.length} Days)</span>
+                      <Chip
+                        label="Manual Upload"
+                        size="small"
+                        sx={{
+                          height: 18,
+                          fontSize: '0.62rem',
+                          fontWeight: 800,
+                          bgcolor:
+                            activeSyllabusSubTab === 'math'
+                              ? 'rgba(255,255,255,0.22)'
+                              : alpha(theme.palette.warning.main, 0.14),
+                          color:
+                            activeSyllabusSubTab === 'math' ? '#FFFFFF' : theme.palette.warning.dark,
+                        }}
+                      />
+                    </Stack>
                   </Button>
 
                   {subjects
@@ -966,11 +1461,18 @@ function AutomationsContent() {
                       const cfg = parseRecurringConfig(sub.recurring_config, sub.name);
                       const syl = cfg.course_syllabus;
                       const isSubSelected = activeSyllabusSubTab === sub.id;
+                      const isApi = syl?.source_type === 'api_sync';
+                      const countLabel =
+                        isApi && syl?.weeks?.length
+                          ? `${syl.weeks.length} Wks`
+                          : syl?.days?.length
+                          ? `${syl.days.length} Days`
+                          : '';
                       return (
                         <Button
                           key={sub.id}
                           size="small"
-                          variant={isSubSelected ? 'contained' : 'text'}
+                          variant={isSubSelected ? 'contained' : 'outlined'}
                           color="primary"
                           startIcon={
                             <Box
@@ -987,33 +1489,75 @@ function AutomationsContent() {
                             fontWeight: 700,
                             textTransform: 'none',
                             borderRadius: 1.5,
-                            px: 1.75,
+                            px: 1.5,
                             py: 0.65,
                             boxShadow: 'none',
+                            bgcolor: isSubSelected ? 'primary.main' : 'background.paper',
                           }}
                         >
-                          {sub.name}
-                          {syl?.days?.length ? ` (${syl.days.length} Days)` : ''}
+                          <Stack direction="row" spacing={0.75} alignItems="center">
+                            <span>
+                              {sub.name}
+                              {syl?.official_course_name ? ` — ${syl.official_course_name}` : ''}
+                              {countLabel ? ` (${countLabel})` : ''}
+                            </span>
+                            <Chip
+                              label={isApi ? "API Sync'd" : 'Manual Upload'}
+                              size="small"
+                              sx={{
+                                height: 18,
+                                fontSize: '0.62rem',
+                                fontWeight: 800,
+                                bgcolor: isSubSelected
+                                  ? 'rgba(255,255,255,0.22)'
+                                  : isApi
+                                  ? alpha(theme.palette.info.main, 0.14)
+                                  : alpha(theme.palette.warning.main, 0.14),
+                                color: isSubSelected
+                                  ? '#FFFFFF'
+                                  : isApi
+                                  ? theme.palette.info.dark
+                                  : theme.palette.warning.dark,
+                              }}
+                            />
+                          </Stack>
                         </Button>
                       );
                     })}
                 </Stack>
 
-                <Button
-                  size="small"
-                  variant="outlined"
-                  color="primary"
-                  startIcon={<Wand2 size={14} />}
-                  onClick={() => setUploadModalOpen(true)}
-                  sx={{
-                    fontWeight: 700,
-                    textTransform: 'none',
-                    borderRadius: 1.5,
-                    bgcolor: 'background.paper',
-                  }}
-                >
-                  + Upload Syllabus (AI)
-                </Button>
+                <Stack direction="row" spacing={1} alignItems="center">
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    color="secondary"
+                    startIcon={<CloudDownload size={14} />}
+                    onClick={() => setApiModalOpen(true)}
+                    sx={{
+                      fontWeight: 700,
+                      textTransform: 'none',
+                      borderRadius: 1.5,
+                      bgcolor: 'background.paper',
+                    }}
+                  >
+                    API Portal Sync
+                  </Button>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    color="primary"
+                    startIcon={<Wand2 size={14} />}
+                    onClick={() => setUploadModalOpen(true)}
+                    sx={{
+                      fontWeight: 700,
+                      textTransform: 'none',
+                      borderRadius: 1.5,
+                      bgcolor: 'background.paper',
+                    }}
+                  >
+                    + Upload Syllabus (AI)
+                  </Button>
+                </Stack>
               </Box>
 
               {activeSyllabusSubTab === 'math' ? (
@@ -1026,9 +1570,26 @@ function AutomationsContent() {
                     mb={3}
                   >
                     <Box>
-                      <Typography variant="h6" fontWeight={800}>
-                        Dimensions Math® Level 5 (5A &amp; 5B) Syllabus
-                      </Typography>
+                      <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" mb={0.5}>
+                        <Typography variant="h6" fontWeight={800}>
+                          Dimensions Math® Level 5 (5A &amp; 5B) Syllabus
+                        </Typography>
+                        <Chip
+                          icon={<Upload size={12} />}
+                          label="Manually Uploaded"
+                          size="small"
+                          color="warning"
+                          variant="outlined"
+                          sx={{ fontWeight: 800, fontSize: '0.68rem', height: 22 }}
+                        />
+                        <Chip
+                          icon={<FileSpreadsheet size={12} />}
+                          label="Source Doc: Dimensions Math 5A & 5B Syllabus (Amanda Holiday).pdf"
+                          size="small"
+                          variant="outlined"
+                          sx={{ fontWeight: 600, fontSize: '0.68rem', height: 22 }}
+                        />
+                      </Stack>
                       <Typography variant="caption" color="text.secondary">
                         All {syllabusDays.length} days from Amanda Holiday&apos;s Fall (5A: Days 1–32) and Spring (5B: Days 33–64) syllabus. Click edit on any day to customize workbook pages, materials, or notes.
                       </Typography>
@@ -1132,11 +1693,29 @@ function AutomationsContent() {
                   const selectedSub = subjects.find((s) => s.id === activeSyllabusSubTab);
                   if (!selectedSub) return null;
                   const subCfg = parseRecurringConfig(selectedSub.recurring_config, selectedSub.name);
-                  const courseSyl = subCfg.course_syllabus;
+                  const subjectSyllabi = getSubjectCourseSyllabi(subCfg);
+                  const courseSyl = getActiveCourseSyllabus(subCfg);
                   if (!courseSyl) return null;
+
+                  const isApiSyllabus =
+                    courseSyl.source_type === 'api_sync' &&
+                    Array.isArray(courseSyl.weeks) &&
+                    courseSyl.weeks.length > 0;
+                  const apiWeeks = courseSyl.weeks || [];
+                  const apiAutoPop =
+                    courseSyl.api_auto_populate ||
+                    createDefaultApiAutoPopulateConfig(
+                      selectedSub.name,
+                      courseSyl.official_course_name || courseSyl.course_title
+                    );
+                  const selectedPreviewWeekObj =
+                    apiWeeks.find((w) => w.week_number === previewSyllabusWeekNum) ||
+                    apiWeeks[0] ||
+                    null;
 
                   return (
                     <Box>
+                      {/* Syllabus Header with Source Badge */}
                       <Stack
                         direction={{ xs: 'column', md: 'row' }}
                         justifyContent="space-between"
@@ -1145,7 +1724,7 @@ function AutomationsContent() {
                         mb={2.5}
                       >
                         <Box>
-                          <Stack direction="row" spacing={1} alignItems="center">
+                          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" mb={0.5}>
                             <Box
                               sx={{
                                 width: 12,
@@ -1155,81 +1734,969 @@ function AutomationsContent() {
                               }}
                             />
                             <Typography variant="h6" fontWeight={800}>
-                              {courseSyl.course_title || `${selectedSub.name} Syllabus`}
+                              {selectedSub.name} — {courseSyl.official_course_name || courseSyl.course_title}
                             </Typography>
+                            {isApiSyllabus ? (
+                              <>
+                                <Chip
+                                  icon={<CloudDownload size={12} />}
+                                  label="API Sync'd (Memoria Academy)"
+                                  size="small"
+                                  color="info"
+                                  variant="outlined"
+                                  sx={{ fontWeight: 800, fontSize: '0.68rem', height: 22 }}
+                                />
+                                {courseSyl.moodle_course_shortname && (
+                                  <Chip
+                                    label={`Code: ${courseSyl.moodle_course_shortname}`}
+                                    size="small"
+                                    variant="outlined"
+                                    sx={{ fontWeight: 700, fontSize: '0.68rem', height: 22 }}
+                                  />
+                                )}
+                              </>
+                            ) : (
+                              <>
+                                <Chip
+                                  icon={<Upload size={12} />}
+                                  label="Manually Uploaded"
+                                  size="small"
+                                  color="warning"
+                                  variant="outlined"
+                                  sx={{ fontWeight: 800, fontSize: '0.68rem', height: 22 }}
+                                />
+                                <Chip
+                                  icon={<FileSpreadsheet size={12} />}
+                                  label={`Source Doc: ${courseSyl.uploaded_file_name || `${courseSyl.course_title}.pdf`}`}
+                                  size="small"
+                                  variant="outlined"
+                                  sx={{ fontWeight: 600, fontSize: '0.68rem', height: 22 }}
+                                />
+                                {subjectSyllabi.length > 1 && (
+                                  <Chip
+                                    label={`${subjectSyllabi.length} Syllabi in Library`}
+                                    size="small"
+                                    color="success"
+                                    variant="outlined"
+                                    sx={{ fontWeight: 800, fontSize: '0.68rem', height: 22 }}
+                                  />
+                                )}
+                              </>
+                            )}
                           </Stack>
                           <Typography variant="caption" color="text.secondary" display="block">
                             {courseSyl.teacher_name ? `Instructor: ${courseSyl.teacher_name} • ` : ''}
-                            {courseSyl.summary || 'Uploaded course syllabus'}
+                            {courseSyl.summary || 'Course syllabus'}
+                            {courseSyl.last_synced_at
+                              ? ` • Last Synced: ${new Date(courseSyl.last_synced_at).toLocaleString()}`
+                              : ''}
                           </Typography>
                         </Box>
-                        <Stack direction="row" spacing={1}>
-                          <Button
-                            size="small"
-                            variant="outlined"
-                            startIcon={<Edit3 size={14} />}
-                            onClick={() => handleOpenRecurringModal(selectedSub)}
-                            sx={{ fontWeight: 700, textTransform: 'none' }}
-                          >
-                            Edit Automation Rules
-                          </Button>
-                          <Button
-                            size="small"
-                            variant="contained"
-                            color="secondary"
-                            startIcon={<Wand2 size={14} />}
-                            onClick={() => {
-                              setSelectedUploadSubjectId(selectedSub.id);
-                              setUploadModalOpen(true);
-                            }}
-                            sx={{ fontWeight: 700, textTransform: 'none' }}
-                          >
-                            Re-Upload Syllabus
-                          </Button>
+
+                        <Stack direction="row" spacing={1} flexWrap="wrap">
+                          {isApiSyllabus ? (
+                            <>
+                              <Button
+                                size="small"
+                                variant="outlined"
+                                startIcon={<RefreshCw size={14} />}
+                                disabled={syncingPortal}
+                                onClick={() => handleSyncPortalCourses(false)}
+                                sx={{ fontWeight: 700, textTransform: 'none' }}
+                              >
+                                {syncingPortal ? 'Syncing Portal...' : 'Sync Portal Now'}
+                              </Button>
+                              <Button
+                                size="small"
+                                variant="outlined"
+                                color="secondary"
+                                startIcon={<Link2 size={14} />}
+                                onClick={() => setApiModalOpen(true)}
+                                sx={{ fontWeight: 700, textTransform: 'none' }}
+                              >
+                                Portal Credentials &amp; Mapping
+                              </Button>
+                            </>
+                          ) : (
+                            <>
+                              <Button
+                                size="small"
+                                variant="outlined"
+                                startIcon={<Edit3 size={14} />}
+                                onClick={() => handleOpenRecurringModal(selectedSub)}
+                                sx={{ fontWeight: 700, textTransform: 'none' }}
+                              >
+                                Edit Automation Rules
+                              </Button>
+                              <Button
+                                size="small"
+                                variant="contained"
+                                color="secondary"
+                                startIcon={<Wand2 size={14} />}
+                                onClick={() => {
+                                  setSelectedUploadSubjectId(selectedSub.id);
+                                  setUploadModalOpen(true);
+                                }}
+                                sx={{ fontWeight: 700, textTransform: 'none' }}
+                              >
+                                + Upload Another Syllabus for {selectedSub.name}
+                              </Button>
+                            </>
+                          )}
                         </Stack>
                       </Stack>
 
-                      {courseSyl.days.length > 0 ? (
-                        <TableContainer component={Paper} variant="outlined" sx={{ maxHeight: 640, borderRadius: 2 }}>
-                          <Table stickyHeader size="small">
-                            <TableHead>
-                              <TableRow>
-                                <TableCell sx={{ fontWeight: 800, width: 85 }}>Day / Wk</TableCell>
-                                <TableCell sx={{ fontWeight: 800, width: 95 }}>Sem</TableCell>
-                                <TableCell sx={{ fontWeight: 800, width: 160 }}>Homework / Workbook</TableCell>
-                                <TableCell sx={{ fontWeight: 800, width: 140 }}>Reading / Textbook</TableCell>
-                                <TableCell sx={{ fontWeight: 800 }}>Topic / Lesson</TableCell>
-                                <TableCell sx={{ fontWeight: 800 }}>Materials</TableCell>
-                                <TableCell sx={{ fontWeight: 800 }}>Notes</TableCell>
-                              </TableRow>
-                            </TableHead>
-                            <TableBody>
-                              {courseSyl.days.map((day) => (
-                                <TableRow key={day.day_number} hover>
-                                  <TableCell sx={{ fontWeight: 700 }}>#{day.day_number}</TableCell>
-                                  <TableCell>
-                                    <Chip
-                                      label={day.semester === 1 ? 'Fall' : 'Spring'}
-                                      size="small"
-                                      color={day.semester === 1 ? 'primary' : 'secondary'}
-                                      variant="outlined"
-                                      sx={{ fontWeight: 700, fontSize: '0.68rem' }}
+                      {/* Multi-Syllabus Library Bar for subjects like Science */}
+                      {!isApiSyllabus && subjectSyllabi.length > 0 && (
+                        <Paper
+                          variant="outlined"
+                          sx={{
+                            p: 1.75,
+                            mb: 2.5,
+                            borderRadius: 2,
+                            bgcolor: 'background.default',
+                          }}
+                        >
+                          <Stack
+                            direction={{ xs: 'column', sm: 'row' }}
+                            justifyContent="space-between"
+                            alignItems={{ xs: 'flex-start', sm: 'center' }}
+                            spacing={1.5}
+                          >
+                            <Box>
+                              <Typography variant="caption" fontWeight={800} color="text.secondary">
+                                {selectedSub.name.toUpperCase()} SYLLABI LIBRARY ({subjectSyllabi.length} STORED) — SELECT ACTIVE SYLLABUS FOR WEEKLY PLANNER:
+                              </Typography>
+                              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap mt={0.75}>
+                                {subjectSyllabi.map((sylItem, idx) => {
+                                  const sylId = sylItem.id || `syllabus-${idx + 1}`;
+                                  const isActiveSyl =
+                                    (courseSyl.id && courseSyl.id === sylId) ||
+                                    courseSyl.course_title === sylItem.course_title;
+                                  return (
+                                    <Stack key={sylId} direction="row" spacing={0.5} alignItems="center">
+                                      <Button
+                                        size="small"
+                                        variant={isActiveSyl ? 'contained' : 'outlined'}
+                                        color={isActiveSyl ? 'success' : 'inherit'}
+                                        startIcon={isActiveSyl ? <CheckCircle2 size={14} /> : <BookOpen size={14} />}
+                                        onClick={() => handleSwitchSubjectActiveSyllabus(selectedSub, sylId)}
+                                        sx={{
+                                          fontWeight: 700,
+                                          textTransform: 'none',
+                                          borderRadius: 1.5,
+                                        }}
+                                      >
+                                        {sylItem.course_title} ({sylItem.days.length} classes)
+                                      </Button>
+                                      {subjectSyllabi.length > 1 && (
+                                        <IconButton
+                                          size="small"
+                                          color="error"
+                                          title={`Remove ${sylItem.course_title}`}
+                                          onClick={() => handleDeleteSubjectSyllabus(selectedSub, sylId)}
+                                        >
+                                          <Trash2 size={14} />
+                                        </IconButton>
+                                      )}
+                                    </Stack>
+                                  );
+                                })}
+                              </Stack>
+                            </Box>
+                          </Stack>
+                        </Paper>
+                      )}
+
+                      {isApiSyllabus ? (
+                        <Stack spacing={3}>
+                          {/* =================================================== */}
+                          {/* AUTO-POPULATE INTO WEEKLY PLANNER SECTION           */}
+                          {/* =================================================== */}
+                          <Paper
+                            variant="outlined"
+                            sx={{
+                              p: 2.5,
+                              borderRadius: 2.5,
+                              borderColor: apiAutoPop.enabled
+                                ? alpha(theme.palette.primary.main, 0.45)
+                                : 'divider',
+                              bgcolor: apiAutoPop.enabled
+                                ? alpha(theme.palette.primary.main, 0.02)
+                                : 'background.default',
+                            }}
+                          >
+                            <Stack
+                              direction={{ xs: 'column', md: 'row' }}
+                              justifyContent="space-between"
+                              alignItems={{ xs: 'flex-start', md: 'center' }}
+                              spacing={2}
+                              mb={2}
+                            >
+                              <Box>
+                                <Stack direction="row" spacing={1} alignItems="center">
+                                  <Sparkles size={16} color={theme.palette.primary.main} />
+                                  <Typography variant="subtitle1" fontWeight={800}>
+                                    Auto-Populate Weekly Schedule into Planner
+                                  </Typography>
+                                  <Chip
+                                    label={apiAutoPop.enabled ? 'AUTO-POPULATE ON' : 'PAUSED'}
+                                    size="small"
+                                    color={apiAutoPop.enabled ? 'success' : 'default'}
+                                    sx={{ fontWeight: 800, fontSize: '0.66rem', height: 20 }}
+                                  />
+                                </Stack>
+                                <Typography variant="caption" color="text.secondary">
+                                  Choose how each week&apos;s online schedule from Memoria Academy is split across Monday–Friday when you select a Week # in the Weekly Planner.
+                                </Typography>
+                              </Box>
+
+                              <Stack direction="row" spacing={2} alignItems="center" flexWrap="wrap">
+                                <Stack direction="row" spacing={1} alignItems="center">
+                                  <Typography variant="caption" fontWeight={700} color="text.secondary">
+                                    Place Weekly Quiz/Assignment On:
+                                  </Typography>
+                                  <TextField
+                                    select
+                                    SelectProps={{ native: true }}
+                                    size="small"
+                                    value={apiAutoPop.quiz_assignment_target_day}
+                                    onChange={(e) => {
+                                      const nextAuto: ApiSyllabusAutoPopulateConfig = {
+                                        ...apiAutoPop,
+                                        quiz_assignment_target_day: e.target.value as DayKey,
+                                      };
+                                      void handleUpdateSubjectApiAutoPopulate(selectedSub, nextAuto);
+                                    }}
+                                    sx={{ minWidth: 120 }}
+                                  >
+                                    {DAY_KEYS.map((dk) => (
+                                      <option key={dk} value={dk}>
+                                        {DAY_LABELS[dk]}
+                                      </option>
+                                    ))}
+                                  </TextField>
+                                </Stack>
+
+                                <FormControlLabel
+                                  control={
+                                    <Switch
+                                      checked={apiAutoPop.enabled}
+                                      onChange={(e) => {
+                                        const nextAuto: ApiSyllabusAutoPopulateConfig = {
+                                          ...apiAutoPop,
+                                          enabled: e.target.checked,
+                                        };
+                                        void handleUpdateSubjectApiAutoPopulate(
+                                          selectedSub,
+                                          nextAuto,
+                                          `Auto-populate ${e.target.checked ? 'enabled' : 'paused'} for ${selectedSub.name}`
+                                        );
+                                      }}
+                                      color="success"
                                     />
+                                  }
+                                  label={
+                                    <Typography variant="body2" fontWeight={700}>
+                                      {apiAutoPop.enabled ? 'Enabled' : 'Disabled'}
+                                    </Typography>
+                                  }
+                                />
+                              </Stack>
+                            </Stack>
+
+                            {/* 5-Day Weekday Split Configuration Grid */}
+                            <Grid container spacing={1.5} sx={{ mb: 2.5 }}>
+                              {DAY_KEYS.map((dk) => {
+                                const rule = apiAutoPop.weekday_rules[dk];
+                                const isQuizDay = apiAutoPop.quiz_assignment_target_day === dk;
+                                return (
+                                  <Grid item xs={12} sm={6} md={2.4} key={dk}>
+                                    <Paper
+                                      variant="outlined"
+                                      sx={{
+                                        p: 1.5,
+                                        borderRadius: 2,
+                                        height: '100%',
+                                        bgcolor: 'background.paper',
+                                        borderColor:
+                                          rule.api_source !== 'none' ||
+                                          rule.attend_class ||
+                                          Boolean(rule.custom_additional_lines.trim())
+                                            ? alpha(theme.palette.primary.main, 0.4)
+                                            : 'divider',
+                                      }}
+                                    >
+                                      <Stack
+                                        direction="row"
+                                        justifyContent="space-between"
+                                        alignItems="center"
+                                        mb={1}
+                                      >
+                                        <Typography variant="caption" fontWeight={800} sx={{ textTransform: 'uppercase' }}>
+                                          {DAY_LABELS[dk]}
+                                        </Typography>
+                                        {isQuizDay && (
+                                          <Chip
+                                            label="Quiz Day"
+                                            size="small"
+                                            color="secondary"
+                                            sx={{ height: 18, fontSize: '0.6rem', fontWeight: 800 }}
+                                          />
+                                        )}
+                                      </Stack>
+
+                                      <Stack spacing={1}>
+                                        <Box>
+                                          <Typography
+                                            variant="caption"
+                                            color="text.secondary"
+                                            fontWeight={700}
+                                            display="block"
+                                            mb={0.35}
+                                            sx={{ fontSize: '0.66rem' }}
+                                          >
+                                            API Schedule Portion
+                                          </Typography>
+                                          <TextField
+                                            select
+                                            SelectProps={{ native: true }}
+                                            fullWidth
+                                            size="small"
+                                            value={rule.api_source}
+                                            onChange={(e) => {
+                                              const nextSrc = e.target.value as ApiWeekdaySplitSource;
+                                              const nextAuto: ApiSyllabusAutoPopulateConfig = {
+                                                ...apiAutoPop,
+                                                weekday_rules: {
+                                                  ...apiAutoPop.weekday_rules,
+                                                  [dk]: {
+                                                    ...rule,
+                                                    enabled:
+                                                      nextSrc !== 'none' ||
+                                                      rule.attend_class ||
+                                                      Boolean(rule.custom_additional_lines.trim()),
+                                                    api_source: nextSrc,
+                                                  },
+                                                },
+                                              };
+                                              void handleUpdateSubjectApiAutoPopulate(selectedSub, nextAuto);
+                                            }}
+                                          >
+                                            {API_SPLIT_SOURCE_OPTIONS.map((opt) => (
+                                              <option key={opt.value} value={opt.value}>
+                                                {opt.label}
+                                              </option>
+                                            ))}
+                                          </TextField>
+                                        </Box>
+
+                                        <FormControlLabel
+                                          sx={{ m: 0 }}
+                                          control={
+                                            <Checkbox
+                                              size="small"
+                                              checked={rule.attend_class}
+                                              onChange={(e) => {
+                                                const nextAuto: ApiSyllabusAutoPopulateConfig = {
+                                                  ...apiAutoPop,
+                                                  weekday_rules: {
+                                                    ...apiAutoPop.weekday_rules,
+                                                    [dk]: {
+                                                      ...rule,
+                                                      enabled: e.target.checked ? true : rule.enabled,
+                                                      attend_class: e.target.checked,
+                                                    },
+                                                  },
+                                                };
+                                                void handleUpdateSubjectApiAutoPopulate(selectedSub, nextAuto);
+                                              }}
+                                              sx={{ p: 0.4 }}
+                                            />
+                                          }
+                                          label={
+                                            <Typography variant="caption" fontWeight={700} sx={{ fontSize: '0.7rem' }}>
+                                              Include &ldquo;Attend Class&rdquo; Header
+                                            </Typography>
+                                          }
+                                        />
+
+                                        <FormControlLabel
+                                          sx={{ m: 0 }}
+                                          control={
+                                            <Checkbox
+                                              size="small"
+                                              checked={rule.format_as_checkboxes}
+                                              onChange={(e) => {
+                                                const nextAuto: ApiSyllabusAutoPopulateConfig = {
+                                                  ...apiAutoPop,
+                                                  weekday_rules: {
+                                                    ...apiAutoPop.weekday_rules,
+                                                    [dk]: {
+                                                      ...rule,
+                                                      format_as_checkboxes: e.target.checked,
+                                                    },
+                                                  },
+                                                };
+                                                void handleUpdateSubjectApiAutoPopulate(selectedSub, nextAuto);
+                                              }}
+                                              sx={{ p: 0.4 }}
+                                            />
+                                          }
+                                          label={
+                                            <Typography variant="caption" sx={{ fontSize: '0.7rem' }}>
+                                              Format API lines as checkboxes
+                                            </Typography>
+                                          }
+                                        />
+
+                                        <TextField
+                                          size="small"
+                                          fullWidth
+                                          multiline
+                                          minRows={2}
+                                          label="Additional Recurring Lines"
+                                          placeholder="- [ ] Memory Work"
+                                          defaultValue={rule.custom_additional_lines}
+                                          onBlur={(e) => {
+                                            if (e.target.value === rule.custom_additional_lines) return;
+                                            const nextAuto: ApiSyllabusAutoPopulateConfig = {
+                                              ...apiAutoPop,
+                                              weekday_rules: {
+                                                ...apiAutoPop.weekday_rules,
+                                                [dk]: {
+                                                  ...rule,
+                                                  enabled:
+                                                    Boolean(e.target.value.trim()) ||
+                                                    rule.api_source !== 'none' ||
+                                                    rule.attend_class,
+                                                  custom_additional_lines: e.target.value,
+                                                },
+                                              },
+                                            };
+                                            void handleUpdateSubjectApiAutoPopulate(selectedSub, nextAuto);
+                                          }}
+                                          InputProps={{ sx: { fontSize: '0.72rem' } }}
+                                          InputLabelProps={{ sx: { fontSize: '0.72rem' } }}
+                                        />
+                                      </Stack>
+                                    </Paper>
+                                  </Grid>
+                                );
+                              })}
+                            </Grid>
+
+                            {/* Live Week Preview inside Auto-Populate Card */}
+                            {selectedPreviewWeekObj && (
+                              <Box
+                                sx={{
+                                  p: 2,
+                                  borderRadius: 2,
+                                  bgcolor: 'background.paper',
+                                  border: '1px solid',
+                                  borderColor: 'divider',
+                                }}
+                              >
+                                <Stack
+                                  direction={{ xs: 'column', sm: 'row' }}
+                                  justifyContent="space-between"
+                                  alignItems={{ xs: 'flex-start', sm: 'center' }}
+                                  spacing={1.5}
+                                  mb={1.5}
+                                >
+                                  <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+                                    <Typography variant="caption" fontWeight={800} color="primary.main" sx={{ textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                                      Live Weekly Planner Preview:
+                                    </Typography>
+                                    <TextField
+                                      select
+                                      SelectProps={{ native: true }}
+                                      size="small"
+                                      value={selectedPreviewWeekObj.week_number}
+                                      onChange={(e) => setPreviewSyllabusWeekNum(Number(e.target.value))}
+                                      sx={{ minWidth: 160 }}
+                                    >
+                                      {apiWeeks.map((w) => (
+                                        <option key={w.week_number} value={w.week_number}>
+                                          {w.section_title}
+                                        </option>
+                                      ))}
+                                    </TextField>
+                                  </Stack>
+
+                                  {selectedPreviewWeekObj.linked_assessments.length > 0 && (
+                                    <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap">
+                                      <Typography variant="caption" fontWeight={700} color="text.secondary">
+                                        Linked Assessments ({DAY_LABELS[apiAutoPop.quiz_assignment_target_day]}):
+                                      </Typography>
+                                      {selectedPreviewWeekObj.linked_assessments.map((la) => (
+                                        <Chip
+                                          key={la.cmid}
+                                          label={`${la.name}${la.percentage_formatted ? ` • ${la.percentage_formatted}` : ''}`}
+                                          size="small"
+                                          color={la.status_label === 'graded' ? 'success' : 'secondary'}
+                                          variant="outlined"
+                                          sx={{ fontWeight: 700, fontSize: '0.68rem', height: 22 }}
+                                        />
+                                      ))}
+                                    </Stack>
+                                  )}
+                                </Stack>
+
+                                <Grid container spacing={1.25}>
+                                  {DAY_KEYS.map((dk) => {
+                                    const previewBlock = formatApiWeekBlockForWeekday(
+                                      selectedPreviewWeekObj,
+                                      apiAutoPop.weekday_rules[dk],
+                                      {
+                                        week: selectedPreviewWeekObj.week_number,
+                                        class_num: selectedPreviewWeekObj.week_number,
+                                        lesson: selectedPreviewWeekObj.week_number,
+                                        prev_lesson: Math.max(1, selectedPreviewWeekObj.week_number - 1),
+                                      }
+                                    );
+                                    const previewText = [previewBlock.title, previewBlock.description]
+                                      .filter(Boolean)
+                                      .join('\n');
+                                    const isTargetQuizDay =
+                                      apiAutoPop.quiz_assignment_target_day === dk &&
+                                      selectedPreviewWeekObj.linked_assessments.length > 0;
+                                    return (
+                                      <Grid item xs={12} sm={6} md={2.4} key={dk}>
+                                        <Box
+                                          sx={{
+                                            p: 1.25,
+                                            borderRadius: 1.5,
+                                            bgcolor: previewText || isTargetQuizDay
+                                              ? alpha(theme.palette.primary.main, 0.035)
+                                              : 'background.default',
+                                            border: '1px dashed',
+                                            borderColor: previewText || isTargetQuizDay
+                                              ? alpha(theme.palette.primary.main, 0.35)
+                                              : 'divider',
+                                            minHeight: 96,
+                                          }}
+                                        >
+                                          <Typography
+                                            variant="caption"
+                                            fontWeight={800}
+                                            color="text.secondary"
+                                            display="block"
+                                            mb={0.5}
+                                            sx={{ fontSize: '0.66rem', textTransform: 'uppercase' }}
+                                          >
+                                            {DAY_LABELS[dk]}
+                                          </Typography>
+                                          {previewText ? (
+                                            <Typography
+                                              variant="caption"
+                                              component="pre"
+                                              sx={{
+                                                whiteSpace: 'pre-wrap',
+                                                fontFamily: 'inherit',
+                                                fontSize: '0.71rem',
+                                                lineHeight: 1.4,
+                                                m: 0,
+                                              }}
+                                            >
+                                              {previewText}
+                                            </Typography>
+                                          ) : (
+                                            <Typography variant="caption" color="text.disabled" sx={{ fontStyle: 'italic' }}>
+                                              No schedule text
+                                            </Typography>
+                                          )}
+                                          {isTargetQuizDay && (
+                                            <Stack spacing={0.5} mt={1}>
+                                              {selectedPreviewWeekObj.linked_assessments.map((la) => (
+                                                <Chip
+                                                  key={la.cmid}
+                                                  label={`Quiz/Assn: ${la.name}`}
+                                                  size="small"
+                                                  color="secondary"
+                                                  sx={{
+                                                    height: 'auto',
+                                                    py: 0.25,
+                                                    fontSize: '0.65rem',
+                                                    fontWeight: 700,
+                                                    '& .MuiChip-label': { whiteSpace: 'normal' },
+                                                  }}
+                                                />
+                                              ))}
+                                            </Stack>
+                                          )}
+                                        </Box>
+                                      </Grid>
+                                    );
+                                  })}
+                                </Grid>
+                              </Box>
+                            )}
+                          </Paper>
+
+                          {/* =================================================== */}
+                          {/* WEEKLY API SCHEDULE & LINKED ASSESSMENTS TABLE      */}
+                          {/* =================================================== */}
+                          <TableContainer component={Paper} variant="outlined" sx={{ maxHeight: 640, borderRadius: 2 }}>
+                            <Table stickyHeader size="small">
+                              <TableHead>
+                                <TableRow>
+                                  <TableCell sx={{ fontWeight: 800, width: 110 }}>Week #</TableCell>
+                                  <TableCell sx={{ fontWeight: 800, width: 145 }}>Section Title</TableCell>
+                                  <TableCell sx={{ fontWeight: 800 }}>Online Weekly Assignment (API Return)</TableCell>
+                                  <TableCell sx={{ fontWeight: 800, width: 290 }}>Linked Quizzes &amp; Grades</TableCell>
+                                  <TableCell sx={{ fontWeight: 800, width: 90 }} align="right">
+                                    Actions
                                   </TableCell>
-                                  <TableCell sx={{ fontWeight: 700, color: 'primary.main' }}>
-                                    {day.workbook || '—'}
-                                  </TableCell>
-                                  <TableCell sx={{ fontSize: '0.78rem' }}>{day.textbook || '—'}</TableCell>
-                                  <TableCell sx={{ fontSize: '0.8rem', fontWeight: 600 }}>{day.topic}</TableCell>
-                                  <TableCell sx={{ fontSize: '0.76rem', color: 'text.secondary' }}>
-                                    {day.materials || '—'}
-                                  </TableCell>
-                                  <TableCell sx={{ fontSize: '0.76rem' }}>{day.notes || day.fast_facts || '—'}</TableCell>
                                 </TableRow>
-                              ))}
-                            </TableBody>
-                          </Table>
-                        </TableContainer>
+                              </TableHead>
+                              <TableBody>
+                                {apiWeeks.map((wk) => {
+                                  const effectiveText =
+                                    wk.custom_override_text && wk.custom_override_text.trim().length > 0
+                                      ? wk.custom_override_text
+                                      : wk.raw_summary;
+                                  return (
+                                    <TableRow
+                                      key={wk.week_number}
+                                      hover
+                                      selected={wk.week_number === previewSyllabusWeekNum}
+                                    >
+                                      <TableCell sx={{ fontWeight: 800, verticalAlign: 'top' }}>
+                                        <Stack spacing={0.5} alignItems="flex-start">
+                                          <span>Week {wk.week_number}</span>
+                                          {wk.custom_override_text && (
+                                            <Chip
+                                              label="Edited"
+                                              size="small"
+                                              color="warning"
+                                              variant="outlined"
+                                              sx={{ height: 18, fontSize: '0.6rem', fontWeight: 700 }}
+                                            />
+                                          )}
+                                        </Stack>
+                                      </TableCell>
+                                      <TableCell sx={{ fontSize: '0.76rem', color: 'text.secondary', verticalAlign: 'top' }}>
+                                        {wk.section_title || '—'}
+                                      </TableCell>
+                                      <TableCell sx={{ verticalAlign: 'top' }}>
+                                        <Typography
+                                          variant="body2"
+                                          component="pre"
+                                          sx={{
+                                            whiteSpace: 'pre-wrap',
+                                            fontFamily: 'inherit',
+                                            fontSize: '0.78rem',
+                                            lineHeight: 1.45,
+                                            m: 0,
+                                          }}
+                                        >
+                                          {effectiveText || '—'}
+                                        </Typography>
+                                      </TableCell>
+                                      <TableCell sx={{ verticalAlign: 'top' }}>
+                                        {wk.linked_assessments.length > 0 ? (
+                                          <Stack spacing={0.75}>
+                                            {wk.linked_assessments.map((la) => (
+                                              <Paper
+                                                key={la.cmid}
+                                                variant="outlined"
+                                                sx={{
+                                                  p: 0.85,
+                                                  borderRadius: 1.5,
+                                                  bgcolor:
+                                                    la.status_label === 'graded'
+                                                      ? alpha(theme.palette.success.main, 0.05)
+                                                      : 'background.default',
+                                                }}
+                                              >
+                                                <Stack
+                                                  direction="row"
+                                                  justifyContent="space-between"
+                                                  alignItems="center"
+                                                  spacing={1}
+                                                >
+                                                  <Typography variant="caption" fontWeight={700} sx={{ lineHeight: 1.25 }}>
+                                                    {la.name}
+                                                  </Typography>
+                                                  {la.percentage_formatted ? (
+                                                    <Chip
+                                                      label={la.percentage_formatted}
+                                                      size="small"
+                                                      color="success"
+                                                      sx={{ height: 20, fontSize: '0.68rem', fontWeight: 800 }}
+                                                    />
+                                                  ) : (
+                                                    <Chip
+                                                      label="Upcoming"
+                                                      size="small"
+                                                      variant="outlined"
+                                                      sx={{ height: 19, fontSize: '0.64rem', fontWeight: 600 }}
+                                                    />
+                                                  )}
+                                                </Stack>
+                                                <Typography
+                                                  variant="caption"
+                                                  color="text.secondary"
+                                                  display="block"
+                                                  sx={{ fontSize: '0.66rem', mt: 0.25 }}
+                                                >
+                                                  {la.moodle_category}
+                                                  {la.grade_raw !== null && la.grade_raw !== undefined
+                                                    ? ` • Score: ${la.grade_raw}/${la.grade_max}`
+                                                    : ''}
+                                                  {la.weight_formatted ? ` • Wt: ${la.weight_formatted}` : ''}
+                                                </Typography>
+                                              </Paper>
+                                            ))}
+                                          </Stack>
+                                        ) : (
+                                          <Typography variant="caption" color="text.disabled">
+                                            —
+                                          </Typography>
+                                        )}
+                                      </TableCell>
+                                      <TableCell align="right" sx={{ verticalAlign: 'top' }}>
+                                        <Stack direction="row" spacing={0.5} justifyContent="flex-end">
+                                          <Button
+                                            size="small"
+                                            variant="text"
+                                            onClick={() => setPreviewSyllabusWeekNum(wk.week_number)}
+                                            sx={{ minWidth: 0, px: 0.75, fontSize: '0.7rem', fontWeight: 700 }}
+                                          >
+                                            Preview
+                                          </Button>
+                                          <IconButton
+                                            size="small"
+                                            color="primary"
+                                            onClick={() => {
+                                              setEditingApiWeek(wk);
+                                              setEditingApiWeekText(
+                                                wk.custom_override_text && wk.custom_override_text.trim().length > 0
+                                                  ? wk.custom_override_text
+                                                  : wk.raw_summary
+                                              );
+                                            }}
+                                          >
+                                            <Edit3 size={15} />
+                                          </IconButton>
+                                        </Stack>
+                                      </TableCell>
+                                    </TableRow>
+                                  );
+                                })}
+                              </TableBody>
+                            </Table>
+                          </TableContainer>
+                        </Stack>
+                      ) : courseSyl.days.length > 0 ? (
+                        (() => {
+                          const isClassSchedule = courseSyl.days.some((d) =>
+                            Boolean(d.week_number || d.unit || d.activity)
+                          );
+                          const uniqueUnits = Array.from(
+                            new Set(
+                              courseSyl.days
+                                .map((d) => d.unit?.trim())
+                                .filter((u): u is string => Boolean(u))
+                            )
+                          );
+                          const filteredClassDays =
+                            scienceUnitFilter === 'all'
+                              ? courseSyl.days
+                              : courseSyl.days.filter((d) => d.unit === scienceUnitFilter);
+
+                          if (isClassSchedule) {
+                            return (
+                              <Stack spacing={2}>
+                                {uniqueUnits.length > 0 && (
+                                  <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap alignItems="center">
+                                    <Typography variant="caption" fontWeight={800} color="text.secondary" mr={0.5}>
+                                      FILTER BY UNIT:
+                                    </Typography>
+                                    <Button
+                                      size="small"
+                                      variant={scienceUnitFilter === 'all' ? 'contained' : 'outlined'}
+                                      onClick={() => setScienceUnitFilter('all')}
+                                      sx={{ fontWeight: 700, textTransform: 'none', borderRadius: 1.5 }}
+                                    >
+                                      All Units ({courseSyl.days.length} Classes)
+                                    </Button>
+                                    {uniqueUnits.map((unitName) => {
+                                      const count = courseSyl.days.filter((d) => d.unit === unitName).length;
+                                      return (
+                                        <Button
+                                          key={unitName}
+                                          size="small"
+                                          variant={scienceUnitFilter === unitName ? 'contained' : 'outlined'}
+                                          onClick={() => setScienceUnitFilter(unitName)}
+                                          sx={{ fontWeight: 700, textTransform: 'none', borderRadius: 1.5 }}
+                                        >
+                                          {unitName} ({count})
+                                        </Button>
+                                      );
+                                    })}
+                                  </Stack>
+                                )}
+
+                                <TableContainer component={Paper} variant="outlined" sx={{ maxHeight: 680, borderRadius: 2 }}>
+                                  <Table stickyHeader size="small">
+                                    <TableHead>
+                                      <TableRow>
+                                        <TableCell sx={{ fontWeight: 800, width: 85 }}>Week</TableCell>
+                                        <TableCell sx={{ fontWeight: 800, width: 95 }}>Class</TableCell>
+                                        <TableCell sx={{ fontWeight: 800, width: 155 }}>Unit</TableCell>
+                                        <TableCell sx={{ fontWeight: 800 }}>Class Topic</TableCell>
+                                        <TableCell sx={{ fontWeight: 800, width: 250 }}>Hands-On Activity / Lab</TableCell>
+                                        <TableCell sx={{ fontWeight: 800, width: 280 }}>Supplies Needed</TableCell>
+                                      </TableRow>
+                                    </TableHead>
+                                    <TableBody>
+                                      {filteredClassDays.map((day) => {
+                                        const wkNum = day.week_number ?? Math.ceil(day.day_number / 3);
+                                        const dayOfWeekIdx = (day.day_number - 1) % 3;
+                                        const weekdayShort =
+                                          dayOfWeekIdx === 0 ? 'Mon' : dayOfWeekIdx === 1 ? 'Tue' : 'Wed';
+                                        const daySupplies = resolveSyllabusDaySupplies(day);
+                                        return (
+                                          <TableRow key={day.day_number} hover>
+                                            <TableCell sx={{ fontWeight: 800 }}>
+                                              Week {wkNum}
+                                            </TableCell>
+                                            <TableCell sx={{ fontWeight: 700, color: 'primary.main' }}>
+                                              Class {day.day_number}{' '}
+                                              <Typography
+                                                component="span"
+                                                variant="caption"
+                                                color="text.secondary"
+                                                sx={{ fontWeight: 600 }}
+                                              >
+                                                ({weekdayShort})
+                                              </Typography>
+                                            </TableCell>
+                                            <TableCell>
+                                              {day.unit ? (
+                                                <Chip
+                                                  label={day.unit}
+                                                  size="small"
+                                                  color={
+                                                    day.unit === 'Chemistry'
+                                                      ? 'primary'
+                                                      : day.unit === 'Physics'
+                                                      ? 'secondary'
+                                                      : day.unit.includes('Astronomy')
+                                                      ? 'info'
+                                                      : 'default'
+                                                  }
+                                                  variant="outlined"
+                                                  sx={{ fontWeight: 700, fontSize: '0.68rem' }}
+                                                />
+                                              ) : (
+                                                '—'
+                                              )}
+                                            </TableCell>
+                                            <TableCell sx={{ fontSize: '0.82rem', fontWeight: 600 }}>
+                                              {day.topic}
+                                            </TableCell>
+                                            <TableCell sx={{ fontSize: '0.78rem' }}>
+                                              {day.activity ? (
+                                                <Chip
+                                                  label={`Activity (${weekdayShort}): ${day.activity}`}
+                                                  size="small"
+                                                  color="success"
+                                                  variant="outlined"
+                                                  sx={{
+                                                    fontWeight: 700,
+                                                    fontSize: '0.7rem',
+                                                    height: 'auto',
+                                                    py: 0.35,
+                                                    '& .MuiChip-label': {
+                                                      whiteSpace: 'normal',
+                                                    },
+                                                  }}
+                                                />
+                                              ) : (
+                                                <Typography variant="caption" color="text.disabled">
+                                                  —
+                                                </Typography>
+                                              )}
+                                            </TableCell>
+                                            <TableCell sx={{ fontSize: '0.74rem' }}>
+                                              {daySupplies.length > 0 ? (
+                                                <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
+                                                  {daySupplies.map((sup, sIdx) => (
+                                                    <Chip
+                                                      key={`${day.day_number}-sup-${sIdx}`}
+                                                      size="small"
+                                                      label={sup}
+                                                      sx={{
+                                                        height: 19,
+                                                        fontSize: '0.66rem',
+                                                        fontWeight: 600,
+                                                        bgcolor: alpha(theme.palette.success.main, 0.1),
+                                                      }}
+                                                    />
+                                                  ))}
+                                                </Stack>
+                                              ) : (
+                                                <Typography variant="caption" color="text.disabled">
+                                                  —
+                                                </Typography>
+                                              )}
+                                            </TableCell>
+                                          </TableRow>
+                                        );
+                                      })}
+                                    </TableBody>
+                                  </Table>
+                                </TableContainer>
+                              </Stack>
+                            );
+                          }
+
+                          return (
+                            <TableContainer component={Paper} variant="outlined" sx={{ maxHeight: 640, borderRadius: 2 }}>
+                              <Table stickyHeader size="small">
+                                <TableHead>
+                                  <TableRow>
+                                    <TableCell sx={{ fontWeight: 800, width: 85 }}>Day / Wk</TableCell>
+                                    <TableCell sx={{ fontWeight: 800, width: 95 }}>Sem</TableCell>
+                                    <TableCell sx={{ fontWeight: 800, width: 160 }}>Homework / Workbook</TableCell>
+                                    <TableCell sx={{ fontWeight: 800, width: 140 }}>Reading / Textbook</TableCell>
+                                    <TableCell sx={{ fontWeight: 800 }}>Topic / Lesson</TableCell>
+                                    <TableCell sx={{ fontWeight: 800 }}>Materials</TableCell>
+                                    <TableCell sx={{ fontWeight: 800 }}>Notes</TableCell>
+                                  </TableRow>
+                                </TableHead>
+                                <TableBody>
+                                  {courseSyl.days.map((day) => (
+                                    <TableRow key={day.day_number} hover>
+                                      <TableCell sx={{ fontWeight: 700 }}>#{day.day_number}</TableCell>
+                                      <TableCell>
+                                        <Chip
+                                          label={day.semester === 1 ? 'Fall' : 'Spring'}
+                                          size="small"
+                                          color={day.semester === 1 ? 'primary' : 'secondary'}
+                                          variant="outlined"
+                                          sx={{ fontWeight: 700, fontSize: '0.68rem' }}
+                                        />
+                                      </TableCell>
+                                      <TableCell sx={{ fontWeight: 700, color: 'primary.main' }}>
+                                        {day.workbook || '—'}
+                                      </TableCell>
+                                      <TableCell sx={{ fontSize: '0.78rem' }}>{day.textbook || '—'}</TableCell>
+                                      <TableCell sx={{ fontSize: '0.8rem', fontWeight: 600 }}>{day.topic}</TableCell>
+                                      <TableCell sx={{ fontSize: '0.76rem', color: 'text.secondary' }}>
+                                        {day.materials || '—'}
+                                      </TableCell>
+                                      <TableCell sx={{ fontSize: '0.76rem' }}>{day.notes || day.fast_facts || '—'}</TableCell>
+                                    </TableRow>
+                                  ))}
+                                </TableBody>
+                              </Table>
+                            </TableContainer>
+                          );
+                        })()
                       ) : (
                         <Paper variant="outlined" sx={{ p: 3, borderRadius: 2, bgcolor: 'background.default' }}>
                           <Typography variant="subtitle2" fontWeight={700} gutterBottom>
@@ -2164,7 +3631,7 @@ function AutomationsContent() {
                                 <FormattedParentNote
                                   title={dayItem.title}
                                   description={dayItem.description}
-                                  color="#1E293B"
+                                  color={theme.palette.text.primary}
                                   iconName="FileText"
                                   interactive={false}
                                 />
@@ -2862,6 +4329,448 @@ function AutomationsContent() {
                     : 'Create / Apply Automation'}
                 </Button>
               </Stack>
+            </Box>
+          </Paper>
+        </Box>
+      )}
+
+      {/* ===================================================================== */}
+      {/* API PORTAL INTEGRATION & COURSE MATCHER MODAL                         */}
+      {/* ===================================================================== */}
+      {apiModalOpen && (
+        <Box
+          onClick={() => {
+            if (!discoveringCourses && !syncingPortal) setApiModalOpen(false);
+          }}
+          sx={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 1450,
+            bgcolor: 'rgba(0, 0, 0, 0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            p: 2,
+          }}
+        >
+          <Paper
+            elevation={12}
+            onClick={(e) => e.stopPropagation()}
+            sx={{
+              width: '100%',
+              maxWidth: 940,
+              maxHeight: '90vh',
+              borderRadius: 3,
+              display: 'flex',
+              flexDirection: 'column',
+              overflow: 'hidden',
+            }}
+          >
+            {/* Header */}
+            <Box
+              px={3}
+              py={2}
+              sx={{
+                borderBottom: 1,
+                borderColor: 'divider',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+              }}
+            >
+              <Stack direction="row" spacing={1.5} alignItems="center">
+                <CloudDownload size={22} color={theme.palette.secondary.main} />
+                <Box>
+                  <Typography variant="h6" fontWeight={800}>
+                    Online Portal API Integration — Memoria Academy
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Update student portal login credentials, fetch online courses, and match each API course to a subject in your planner.
+                  </Typography>
+                </Box>
+              </Stack>
+              <IconButton
+                size="small"
+                disabled={discoveringCourses || syncingPortal}
+                onClick={() => setApiModalOpen(false)}
+              >
+                <X size={20} />
+              </IconButton>
+            </Box>
+
+            {/* Body */}
+            <Box sx={{ p: 3, overflowY: 'auto', flexGrow: 1 }}>
+              <Stack spacing={3}>
+                {/* 1. Credentials Card */}
+                <Paper variant="outlined" sx={{ p: 2.5, borderRadius: 2 }}>
+                  <Stack
+                    direction={{ xs: 'column', sm: 'row' }}
+                    justifyContent="space-between"
+                    alignItems={{ xs: 'flex-start', sm: 'center' }}
+                    spacing={1.5}
+                    mb={2}
+                  >
+                    <Box>
+                      <Typography variant="subtitle1" fontWeight={800}>
+                        1. Student Portal Login &amp; Endpoints
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        Authenticates directly with Memoria Academy&apos;s student portal API (`mpoa.memoriapress.com`) to pull weekly schedules, quizzes, and grades.
+                      </Typography>
+                    </Box>
+                    {apiLastSyncedAt && (
+                      <Chip
+                        label={`Last Synced: ${new Date(apiLastSyncedAt).toLocaleString()}`}
+                        size="small"
+                        color="success"
+                        variant="outlined"
+                        sx={{ fontWeight: 700, fontSize: '0.7rem' }}
+                      />
+                    )}
+                  </Stack>
+
+                  <Grid container spacing={2} alignItems="center">
+                    <Grid item xs={12} sm={6}>
+                      <TextField
+                        fullWidth
+                        size="small"
+                        label="Account Login Page URL"
+                        value={portalLoginUrl}
+                        onChange={(e) => setPortalLoginUrl(e.target.value)}
+                      />
+                    </Grid>
+                    <Grid item xs={12} sm={6}>
+                      <TextField
+                        fullWidth
+                        size="small"
+                        label="Student Portal API Base URL (Moodle)"
+                        value={moodleBaseUrl}
+                        onChange={(e) => setMoodleBaseUrl(e.target.value)}
+                      />
+                    </Grid>
+                    <Grid item xs={12} sm={5}>
+                      <TextField
+                        fullWidth
+                        size="small"
+                        label="Portal Username"
+                        value={apiUsername}
+                        onChange={(e) => setApiUsername(e.target.value)}
+                      />
+                    </Grid>
+                    <Grid item xs={12} sm={4}>
+                      <TextField
+                        fullWidth
+                        size="small"
+                        type={showApiPassword ? 'text' : 'password'}
+                        label="Portal Password"
+                        value={apiPassword}
+                        onChange={(e) => setApiPassword(e.target.value)}
+                        InputProps={{
+                          endAdornment: (
+                            <Button
+                              size="small"
+                              onClick={() => setShowApiPassword((prev) => !prev)}
+                              sx={{ minWidth: 0, px: 1, fontSize: '0.7rem', fontWeight: 700 }}
+                            >
+                              {showApiPassword ? 'Hide' : 'Show'}
+                            </Button>
+                          ),
+                        }}
+                      />
+                    </Grid>
+                    <Grid item xs={12} sm={3}>
+                      <Button
+                        fullWidth
+                        variant="outlined"
+                        color="primary"
+                        startIcon={
+                          discoveringCourses ? <CircularProgress size={14} /> : <RefreshCw size={15} />
+                        }
+                        disabled={discoveringCourses || syncingPortal}
+                        onClick={handleDiscoverPortalCourses}
+                        sx={{ fontWeight: 700, textTransform: 'none', py: 0.9 }}
+                      >
+                        {discoveringCourses ? 'Fetching...' : 'Fetch API Courses'}
+                      </Button>
+                    </Grid>
+                  </Grid>
+                </Paper>
+
+                {/* 2. Course Matcher Table */}
+                <Paper variant="outlined" sx={{ p: 2.5, borderRadius: 2 }}>
+                  <Stack
+                    direction={{ xs: 'column', sm: 'row' }}
+                    justifyContent="space-between"
+                    alignItems={{ xs: 'flex-start', sm: 'center' }}
+                    spacing={1}
+                    mb={2}
+                  >
+                    <Box>
+                      <Typography variant="subtitle1" fontWeight={800}>
+                        2. Match Returned API Courses to Subjects
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        Matched courses will display their official course name in italics underneath the subject name in the Weekly Planner and sync their 34-week syllabus &amp; grades.
+                      </Typography>
+                    </Box>
+                    {apiStudentName && (
+                      <Chip
+                        label={`Student: ${apiStudentName}`}
+                        size="small"
+                        color="primary"
+                        variant="outlined"
+                        sx={{ fontWeight: 700 }}
+                      />
+                    )}
+                  </Stack>
+
+                  <TableContainer component={Paper} variant="outlined" sx={{ borderRadius: 2 }}>
+                    <Table size="small">
+                      <TableHead>
+                        <TableRow>
+                          <TableCell sx={{ fontWeight: 800 }}>Official API Course Name</TableCell>
+                          <TableCell sx={{ fontWeight: 800, width: 150 }}>Course Code</TableCell>
+                          <TableCell sx={{ fontWeight: 800, width: 290 }}>Matched Planner Subject</TableCell>
+                          <TableCell sx={{ fontWeight: 800, width: 130 }} align="center">
+                            Sync Status
+                          </TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {apiCourseMappings.map((mapping) => {
+                          const isIgnored = mapping.ignored || !mapping.subject_id;
+                          return (
+                            <TableRow key={mapping.moodle_course_id} hover>
+                              <TableCell>
+                                <Typography variant="body2" fontWeight={700}>
+                                  {mapping.course_fullname}
+                                </Typography>
+                                <Typography
+                                  variant="caption"
+                                  color="text.secondary"
+                                  sx={{ fontStyle: 'italic' }}
+                                >
+                                  Moodle ID #{mapping.moodle_course_id}
+                                </Typography>
+                              </TableCell>
+                              <TableCell>
+                                <Chip
+                                  label={mapping.course_shortname}
+                                  size="small"
+                                  variant="outlined"
+                                  sx={{ fontWeight: 700, fontSize: '0.7rem' }}
+                                />
+                              </TableCell>
+                              <TableCell>
+                                <TextField
+                                  select
+                                  SelectProps={{ native: true }}
+                                  fullWidth
+                                  size="small"
+                                  value={isIgnored ? '__ignore__' : mapping.subject_id || '__ignore__'}
+                                  onChange={(e) => {
+                                    const val = e.target.value;
+                                    setApiCourseMappings((prev) =>
+                                      prev.map((m) =>
+                                        m.moodle_course_id === mapping.moodle_course_id
+                                          ? {
+                                              ...m,
+                                              subject_id: val === '__ignore__' ? null : val,
+                                              ignored: val === '__ignore__',
+                                            }
+                                          : m
+                                      )
+                                    );
+                                  }}
+                                >
+                                  <option value="__ignore__">
+                                    — Ignored / Unmapped (Do Not Sync) —
+                                  </option>
+                                  {subjects.map((s) => (
+                                    <option key={s.id} value={s.id}>
+                                      {s.name}
+                                    </option>
+                                  ))}
+                                </TextField>
+                              </TableCell>
+                              <TableCell align="center">
+                                {isIgnored ? (
+                                  <Chip
+                                    label="Ignored"
+                                    size="small"
+                                    variant="outlined"
+                                    sx={{ fontWeight: 700, fontSize: '0.68rem', opacity: 0.7 }}
+                                  />
+                                ) : (
+                                  <Chip
+                                    icon={<CheckCircle2 size={12} />}
+                                    label="Active Sync"
+                                    size="small"
+                                    color="success"
+                                    sx={{ fontWeight: 800, fontSize: '0.68rem' }}
+                                  />
+                                )}
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                </Paper>
+              </Stack>
+            </Box>
+
+            {/* Footer */}
+            <Box
+              px={3}
+              py={2}
+              sx={{
+                borderTop: 1,
+                borderColor: 'divider',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+              }}
+            >
+              <Typography variant="caption" color="text.secondary">
+                Syncing pulls all 34 weeks of schedules, quizzes, teacher feedback, and Moodle gradebook weights.
+              </Typography>
+              <Stack direction="row" spacing={1.5}>
+                <Button
+                  color="inherit"
+                  disabled={discoveringCourses || syncingPortal}
+                  onClick={() => setApiModalOpen(false)}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="contained"
+                  color="primary"
+                  startIcon={
+                    syncingPortal ? <CircularProgress size={15} color="inherit" /> : <CloudDownload size={16} />
+                  }
+                  disabled={discoveringCourses || syncingPortal}
+                  onClick={() => handleSyncPortalCourses(true)}
+                  sx={{ fontWeight: 700 }}
+                >
+                  {syncingPortal
+                    ? 'Syncing Syllabi & Grades...'
+                    : 'Save Mapping & Sync Syllabi + Grades'}
+                </Button>
+              </Stack>
+            </Box>
+          </Paper>
+        </Box>
+      )}
+
+      {/* ===================================================================== */}
+      {/* EDIT API WEEK SCHEDULE OVERRIDE MODAL                                 */}
+      {/* ===================================================================== */}
+      {editingApiWeek && (
+        <Box
+          onClick={() => {
+            if (!savingApiWeekText) setEditingApiWeek(null);
+          }}
+          sx={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 1460,
+            bgcolor: 'rgba(0, 0, 0, 0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            p: 2,
+          }}
+        >
+          <Paper
+            elevation={12}
+            onClick={(e) => e.stopPropagation()}
+            sx={{
+              width: '100%',
+              maxWidth: 640,
+              borderRadius: 3,
+              overflow: 'hidden',
+            }}
+          >
+            <Box
+              px={3}
+              py={2}
+              sx={{
+                borderBottom: 1,
+                borderColor: 'divider',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+              }}
+            >
+              <Box>
+                <Typography variant="h6" fontWeight={800}>
+                  Customize {editingApiWeek.section_title} Schedule Text
+                </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  Edits are preserved across future API syncs.
+                </Typography>
+              </Box>
+              <IconButton size="small" onClick={() => setEditingApiWeek(null)}>
+                <X size={18} />
+              </IconButton>
+            </Box>
+
+            <Box p={3}>
+              <Stack spacing={2}>
+                <TextField
+                  fullWidth
+                  multiline
+                  minRows={7}
+                  maxRows={14}
+                  label="Weekly Assignment Text"
+                  value={editingApiWeekText}
+                  onChange={(e) => setEditingApiWeekText(e.target.value)}
+                />
+                {editingApiWeek.raw_summary && editingApiWeekText !== editingApiWeek.raw_summary && (
+                  <Button
+                    size="small"
+                    variant="text"
+                    color="secondary"
+                    onClick={() => setEditingApiWeekText(editingApiWeek.raw_summary)}
+                    sx={{ alignSelf: 'flex-start', textTransform: 'none', fontWeight: 700 }}
+                  >
+                    Reset to Original API Text
+                  </Button>
+                )}
+              </Stack>
+            </Box>
+
+            <Box
+              px={3}
+              py={2}
+              sx={{
+                borderTop: 1,
+                borderColor: 'divider',
+                display: 'flex',
+                justifyContent: 'flex-end',
+                gap: 1.5,
+              }}
+            >
+              <Button
+                color="inherit"
+                disabled={savingApiWeekText}
+                onClick={() => setEditingApiWeek(null)}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="contained"
+                startIcon={<Save size={16} />}
+                disabled={savingApiWeekText}
+                onClick={() => {
+                  void handleSaveApiWeekOverrideText();
+                }}
+                sx={{ fontWeight: 700 }}
+              >
+                {savingApiWeekText ? 'Saving...' : 'Save Week Text'}
+              </Button>
             </Box>
           </Paper>
         </Box>

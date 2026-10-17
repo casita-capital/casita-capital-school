@@ -11,6 +11,9 @@ import {
 
 export interface ExtractedSyllabusDayItem {
   day_number: number;
+  week_number?: number;
+  unit?: string;
+  activity?: string;
   semester: number;
   workbook: string;
   textbook: string;
@@ -77,6 +80,9 @@ interface GeminiSyllabusResponseRaw {
   };
   syllabus_days?: Array<{
     day_number?: number;
+    week_number?: number;
+    unit?: string;
+    activity?: string;
     semester?: number;
     workbook?: string;
     textbook?: string;
@@ -305,13 +311,16 @@ Analyze the syllabus and determine:
      - "fast_facts": boolean (true if daily fast facts drill applies on this day)
      - "fast_facts_label": string (e.g. "- [ ] Fast Facts")
      - "template": multi-line checklist or bullet instructions for that day (e.g. "Week {week}\\n- [ ] Do 2 workbook pages\\n- [ ] Review vocabulary").
-8. If "recommended_mode" is "math_syllabus" or the document contains numbered syllabus days/lessons:
-   - Populate "syllabus_days" with ALL numbered days found in the document:
-     - "day_number": integer (e.g. 1..32 for Fall/Semester 1, or 33..64 for Spring/Semester 2; if the file is Spring/5B and labels days 1..32, offset or preserve day_number and set "semester": 2)
-     - "semester": 1 for Fall / 5A, 2 for Spring / 5B
+8. If "recommended_mode" is "math_syllabus" OR the document contains numbered syllabus days/classes/lessons (such as a 35-week / 105-class Science schedule with 3 classes per week):
+   - Populate "syllabus_days" with ALL numbered classes or days found in the document:
+     - "day_number": integer (e.g. 1..105 for a 105-class curriculum, or 1..32 for Fall / 33..64 for Spring)
+     - "week_number": integer (e.g. 1..35 corresponding to the week of that class; if 3 classes per week, Classes 1-3 have week_number 1, etc.)
+     - "unit": string (the unit or module name if applicable, e.g. "Introduction", "Chemistry", "Physics", "Astronomy")
+     - "activity": string (any hands-on activity, lab, or experiment listed for that class, without the leading "Activity:" prefix)
+     - "semester": 1 for Fall / Semester 1, 2 for Spring / Semester 2
      - "workbook": workbook homework pages (e.g. "p. 1-4" or "Worksheet")
      - "textbook": textbook pages (e.g. "p. 1-9")
-     - "topic": lesson topic description
+     - "topic": lesson or class topic description
      - "materials": additional class materials to bring
      - "fast_facts": fast facts drill description
      - "notes": any teacher or homework notes
@@ -382,6 +391,9 @@ Return strictly valid JSON matching the schema.`;
             type: 'OBJECT',
             properties: {
               day_number: { type: 'INTEGER' },
+              week_number: { type: 'INTEGER' },
+              unit: { type: 'STRING' },
+              activity: { type: 'STRING' },
               semester: { type: 'INTEGER' },
               workbook: { type: 'STRING' },
               textbook: { type: 'STRING' },
@@ -593,6 +605,12 @@ Return strictly valid JSON matching the schema.`;
     const syllabusDays: ExtractedSyllabusDayItem[] = (rawParsed.syllabus_days || []).map(
       (item, index) => ({
         day_number: item.day_number ?? index + 1,
+        week_number:
+          typeof item.week_number === 'number' && item.week_number > 0
+            ? item.week_number
+            : Math.ceil((item.day_number ?? index + 1) / 3),
+        unit: item.unit ?? '',
+        activity: item.activity ?? '',
         semester: item.semester === 2 ? 2 : 1,
         workbook: item.workbook ?? '',
         textbook: item.textbook ?? '',

@@ -46,25 +46,54 @@ import { createClient } from 'src/services/supabase/client';
 import { Json } from 'src/services/supabase/types';
 import { useSchoolSettings } from 'src/contexts/school-settings';
 import { ItemIcon } from 'src/components/base/item-icon';
-import { FormattedParentNote } from 'src/components/base/formatted-parent-note';
+import {
+  FormattedParentNote,
+  PlannerNoteCategory,
+  encodePlannerNoteFields,
+  getPlannerNoteCategory,
+  stripParentNoteMarker,
+} from 'src/components/base/formatted-parent-note';
 import {
   DAY_KEYS,
+  DAY_LABELS,
   DayKey,
   MathSyllabusDay,
   SubjectWeekOverride,
   WeeklySubjectOverrides,
   generateSubjectWeekNotesStructured,
+  getActiveCourseSyllabus,
+  getOfficialCourseSubtitle,
+  getSubjectCourseSyllabi,
   parseRecurringConfig,
   parseSubjectOverrides,
   resolveSubjectCountersForWeek,
+  resolveSyllabusDaySupplies,
 } from 'src/utils/recurring-planner';
+import {
+  AssignmentTypeConfig,
+  GeneratedRecurringAssignmentCandidate,
+  GradebookAssignment,
+  isAssignmentApiSynced,
+  parseAssignmentMoodleMeta,
+  RecurringAssignmentTemplate,
+  SubjectWithGrading,
+  generateWeekAssignmentsFromTemplatesAndPolicy,
+} from 'src/utils/gradebook-calculator';
+import {
+  ApiGradeOverrideWarningModal,
+  revertApiAssignmentOverride,
+  UnifiedAssignmentModal,
+} from 'src/components/assignments/unified-assignment-modal';
+import { AssignmentTypesManagerModal } from 'src/components/assignments/grading-policy-modals';
 
 interface Subject {
   id: string;
   name: string;
   sort_order: number;
   color: string;
+  link?: string | null;
   recurring_config?: Json | null;
+  grading_config?: Json | null;
 }
 
 interface ParentNote {
@@ -79,18 +108,11 @@ interface ParentNote {
   updated_at?: string;
 }
 
-type AssignmentCategory = 'homework' | 'project' | 'test' | 'quiz' | 'reading' | 'paper';
+type AssignmentCategory = string;
 type AssignmentPriority = 'low' | 'medium' | 'high';
 
-interface SchoolAssignment {
-  id: string;
-  title: string;
-  description: string | null;
-  subject_id: string | null;
-  due_date: string;
+interface SchoolAssignment extends GradebookAssignment {
   priority: AssignmentPriority;
-  category: AssignmentCategory;
-  status: 'pending' | 'in_progress' | 'completed';
 }
 
 interface Holiday {
@@ -160,7 +182,7 @@ function getCurrentWeekMonday(): string {
 }
 
 function isAssignmentCategory(val: string): val is AssignmentCategory {
-  return ['homework', 'project', 'test', 'quiz', 'reading', 'paper'].includes(val);
+  return Boolean(val && val.trim().length > 0);
 }
 
 function isAssignmentPriority(val: string): val is AssignmentPriority {
@@ -173,6 +195,10 @@ function PlannerContent() {
   const theme = useTheme();
   const supabase = createClient();
   const { branding } = useSchoolSettings();
+  const activeUserName =
+    typeof window !== 'undefined'
+      ? localStorage.getItem('school_active_user_name') || 'Blake Womble'
+      : 'Blake Womble';
 
   const weekParam = searchParams.get('week');
   const initialWeek = weekParam || getCurrentWeekMonday();
@@ -189,6 +215,8 @@ function PlannerContent() {
   const [syllabusDays, setSyllabusDays] = useState<MathSyllabusDay[]>([]);
   const [parentNotes, setParentNotes] = useState<ParentNote[]>([]);
   const [schoolAssignments, setSchoolAssignments] = useState<SchoolAssignment[]>([]);
+  const [assignmentTypes, setAssignmentTypes] = useState<AssignmentTypeConfig[]>([]);
+  const [recurringTemplates, setRecurringTemplates] = useState<RecurringAssignmentTemplate[]>([]);
   const [holidays, setHolidays] = useState<Holiday[]>([]);
   const [tasksList, setTasksList] = useState<PlannerTask[]>([]);
   const [googleEvents, setGoogleEvents] = useState<{ id: string; title: string; event_date: string; color: string }[]>([]);
@@ -221,11 +249,12 @@ function PlannerContent() {
   const [pullForNextMonth, setPullForNextMonth] = useState(true);
   const [pullNotes, setPullNotes] = useState(true);
 
-  // Modal State for adding/editing Parent Notes or School Assignment in a cell
+  // Modal State for adding/editing School Work, Parent Notes, or School Assignment in a cell
   const [openCellModal, setOpenCellModal] = useState(false);
   const [selectedSubject, setSelectedSubject] = useState<Subject | null>(null);
   const [selectedDate, setSelectedDate] = useState<string>('');
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
+  const [cellNoteCategory, setCellNoteCategory] = useState<PlannerNoteCategory>('school_work');
   const [cellNoteHeader, setCellNoteHeader] = useState('');
   const [cellNoteDesc, setCellNoteDesc] = useState('');
   const [isFormOpen, setIsFormOpen] = useState(false);
@@ -236,6 +265,36 @@ function PlannerContent() {
   const [assignmentCategory, setAssignmentCategory] = useState<AssignmentCategory>('homework');
   const [assignmentPriority, setAssignmentPriority] = useState<AssignmentPriority>('medium');
   const [savingAssignment, setSavingAssignment] = useState(false);
+
+  // Unified Assignment & Grade Modal + Types Manager state
+  const [openUnifiedModal, setOpenUnifiedModal] = useState(false);
+  const [unifiedEditAssignment, setUnifiedEditAssignment] = useState<GradebookAssignment | null>(null);
+  const [apiWarningAssignment, setApiWarningAssignment] = useState<GradebookAssignment | null>(null);
+  const [unifiedPromotedNote, setUnifiedPromotedNote] = useState<{
+    id: string;
+    title?: string | null;
+    description: string;
+    subject_id: string;
+    note_date: string;
+  } | null>(null);
+  const [openTypesManagerModal, setOpenTypesManagerModal] = useState(false);
+
+  const handleOpenAssignmentFromPlanner = (
+    a: GradebookAssignment,
+    e?: React.MouseEvent
+  ) => {
+    if (e) {
+      e.stopPropagation();
+    }
+    const sub = a.subject_id ? subjects.find((s) => s.id === a.subject_id) : undefined;
+    if (isAssignmentApiSynced(a, sub as SubjectWithGrading | undefined)) {
+      setApiWarningAssignment(a);
+      return;
+    }
+    setUnifiedPromotedNote(null);
+    setUnifiedEditAssignment(a);
+    setOpenUnifiedModal(true);
+  };
 
   const getWeekDates = (monDateStr: string) => {
     const monday = new Date(monDateStr + 'T00:00:00');
@@ -293,6 +352,38 @@ function PlannerContent() {
 
       if (sylData) {
         setSyllabusDays(sylData as MathSyllabusDay[]);
+      }
+
+      // 1c. Fetch Assignment Types & Recurring Assignment Templates
+      const [typesRes, tplRes] = await Promise.all([
+        supabase.from('assignment_types').select('*').order('sort_order', { ascending: true }),
+        supabase
+          .from('recurring_assignment_templates')
+          .select('*')
+          .order('created_at', { ascending: true }),
+      ]);
+      if (typesRes.data) setAssignmentTypes(typesRes.data as AssignmentTypeConfig[]);
+      if (tplRes.data) {
+        const mappedTemplates: RecurringAssignmentTemplate[] = tplRes.data.map((row) => ({
+          id: row.id,
+          subject_id: row.subject_id,
+          title_template: row.title_template,
+          instructions_template: row.instructions_template,
+          assignment_type_slug: row.assignment_type_slug,
+          grading_mode: row.grading_mode,
+          points_possible: Number(row.points_possible),
+          total_problems_default: row.total_problems_default,
+          days_of_week: Array.isArray(row.days_of_week)
+            ? (row.days_of_week.filter(
+                (d): d is DayKey => typeof d === 'string' && DAY_KEYS.includes(d as DayKey)
+              ))
+            : ['friday'],
+          linked_weekly_source: row.linked_weekly_source,
+          auto_behavior: row.auto_behavior,
+          estimated_minutes: row.estimated_minutes,
+          is_active: row.is_active,
+        }));
+        setRecurringTemplates(mappedTemplates);
       }
 
       // 2. Fetch Habits
@@ -443,6 +534,7 @@ function PlannerContent() {
     );
 
     setEditingNoteId(null);
+    setCellNoteCategory('school_work');
     setCellNoteHeader('');
     setCellNoteDesc('');
     setIsFormOpen(squareNotes.length === 0);
@@ -454,14 +546,17 @@ function PlannerContent() {
   };
 
   const handleStartEditNote = (note: ParentNote) => {
+    const detectedCat = getPlannerNoteCategory(note.title, note.description);
     setEditingNoteId(note.id);
-    setCellNoteHeader(note.title || '');
-    setCellNoteDesc(note.description || '');
+    setCellNoteCategory(detectedCat);
+    setCellNoteHeader(stripParentNoteMarker(note.title));
+    setCellNoteDesc(stripParentNoteMarker(note.description));
     setIsFormOpen(true);
   };
 
-  const handleAddNewNoteForm = () => {
+  const handleAddNewNoteForm = (category: PlannerNoteCategory = 'school_work') => {
     setEditingNoteId(null);
+    setCellNoteCategory(category);
     setCellNoteHeader('');
     setCellNoteDesc('');
     setIsFormOpen(true);
@@ -470,7 +565,7 @@ function PlannerContent() {
   const handleSaveCellNote = async () => {
     if (!selectedSubject || !selectedDate) return;
     if (!cellNoteHeader.trim() && !cellNoteDesc.trim()) {
-      toast.error('Please enter a note header or body content');
+      toast.error('Please enter a header or body content');
       return;
     }
 
@@ -480,21 +575,23 @@ function PlannerContent() {
         ? localStorage.getItem('school_active_user_name') || 'Blake Womble'
         : 'Blake Womble';
     const nowIso = new Date().toISOString();
+    const encoded = encodePlannerNoteFields(cellNoteHeader, cellNoteDesc, cellNoteCategory);
+    const labelText = cellNoteCategory === 'parent_note' ? 'Parent note' : 'School work';
 
     try {
       if (editingNoteId) {
         const { error } = await supabase
           .from('parent_notes')
           .update({
-            title: cellNoteHeader.trim() || null,
-            description: cellNoteDesc.trim(),
+            title: encoded.title,
+            description: encoded.description,
             updated_by: activeUserName,
             updated_at: nowIso,
           })
           .eq('id', editingNoteId);
 
         if (error) {
-          toast.error(`Error updating parent note: ${error.message}`);
+          toast.error(`Error updating ${labelText.toLowerCase()}: ${error.message}`);
           return;
         }
 
@@ -503,23 +600,23 @@ function PlannerContent() {
             n.id === editingNoteId
               ? {
                   ...n,
-                  title: cellNoteHeader.trim() || null,
-                  description: cellNoteDesc.trim(),
+                  title: encoded.title,
+                  description: encoded.description,
                   updated_by: activeUserName,
                   updated_at: nowIso,
                 }
               : n
           )
         );
-        toast.success('Parent note updated!');
+        toast.success(`${labelText} updated!`);
       } else {
         const { data, error } = await supabase
           .from('parent_notes')
           .insert({
             subject_id: selectedSubject.id,
             note_date: selectedDate,
-            title: cellNoteHeader.trim() || null,
-            description: cellNoteDesc.trim(),
+            title: encoded.title,
+            description: encoded.description,
             created_by: activeUserName,
             updated_by: activeUserName,
             updated_at: nowIso,
@@ -528,11 +625,11 @@ function PlannerContent() {
           .single();
 
         if (error) {
-          toast.error(`Error adding parent note: ${error.message}`);
+          toast.error(`Error adding ${labelText.toLowerCase()}: ${error.message}`);
           return;
         } else if (data) {
           setParentNotes((prev) => [...prev, data as ParentNote]);
-          toast.success('Parent note added!');
+          toast.success(`${labelText} added!`);
         }
       }
 
@@ -541,7 +638,7 @@ function PlannerContent() {
       setCellNoteDesc('');
       setIsFormOpen(false);
     } catch {
-      toast.error('Error saving parent note');
+      toast.error(`Error saving ${labelText.toLowerCase()}`);
     } finally {
       setSavingNote(false);
     }
@@ -549,13 +646,18 @@ function PlannerContent() {
 
   const handleDeleteSingleParentNote = async (noteId: string) => {
     setSavingNote(true);
+    const target = parentNotes.find((n) => n.id === noteId);
+    const labelText =
+      target && getPlannerNoteCategory(target.title, target.description) === 'parent_note'
+        ? 'Parent note'
+        : 'School work';
     try {
       const { error } = await supabase.from('parent_notes').delete().eq('id', noteId);
       if (error) {
-        toast.error(`Error deleting note: ${error.message}`);
+        toast.error(`Error deleting ${labelText.toLowerCase()}: ${error.message}`);
       } else {
         setParentNotes((prev) => prev.filter((n) => n.id !== noteId));
-        toast.success('Parent note deleted!');
+        toast.success(`${labelText} deleted!`);
         if (editingNoteId === noteId) {
           setEditingNoteId(null);
           setCellNoteHeader('');
@@ -564,7 +666,7 @@ function PlannerContent() {
         }
       }
     } catch {
-      toast.error('Failed to delete parent note');
+      toast.error(`Failed to delete ${labelText.toLowerCase()}`);
     } finally {
       setSavingNote(false);
     }
@@ -697,6 +799,254 @@ function PlannerContent() {
     }
   };
 
+  const weekActivitySupplies = useMemo(() => {
+    const entries: Array<{
+      id: string;
+      subjectId: string;
+      subjectName: string;
+      subjectColor: string;
+      dayKey: DayKey;
+      weekdayLabel: string;
+      dateStr: string;
+      weekNumber: number;
+      classNumber: number | null;
+      activityName: string;
+      supplies: string[];
+    }> = [];
+    const seen = new Set<string>();
+
+    for (const sub of subjects) {
+      const cfg = parseRecurringConfig(sub.recurring_config, sub.name);
+      const activeSyl = getActiveCourseSyllabus(cfg);
+      const override = plannerSettings.subject_overrides[sub.id];
+      const counters = resolveSubjectCountersForWeek(cfg, weekStartDate, override);
+
+      if (cfg.mode === 'template' && activeSyl && Array.isArray(activeSyl.days) && activeSyl.days.length > 0) {
+        let runningClass = counters.class_num;
+        for (const dayInfo of weekDates) {
+          const dayCfg = cfg.days[dayInfo.dayKey];
+          if (!dayCfg || !dayCfg.enabled || !dayCfg.template.includes('{class_num}')) continue;
+
+          // Check if a parent note on this cell manually picked a specific Class #
+          const cellNotes = parentNotes.filter(
+            (n) => n.subject_id === sub.id && n.note_date === dayInfo.dateStr
+          );
+          let effectiveClassNum = runningClass;
+          if (cellNotes.length > 0) {
+            const matchCls = cellNotes[0].description.match(/Class\s+(\d+)/i);
+            if (matchCls) {
+              const parsedCls = parseInt(matchCls[1], 10);
+              if (!Number.isNaN(parsedCls) && parsedCls > 0) {
+                effectiveClassNum = parsedCls;
+              }
+            }
+          }
+          runningClass += 1;
+
+          const sylDay = activeSyl.days.find((d) => d.day_number === effectiveClassNum);
+          if (!sylDay || !sylDay.activity) continue;
+
+          const supplies = resolveSyllabusDaySupplies(sylDay);
+          if (supplies.length === 0) continue;
+
+          const key = `${sub.id}::${dayInfo.dateStr}::${sylDay.activity.toLowerCase()}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+
+          entries.push({
+            id: `wk-sup-${sub.id}-${dayInfo.dayKey}-${effectiveClassNum}`,
+            subjectId: sub.id,
+            subjectName: sub.name,
+            subjectColor: sub.color || '#2e7d32',
+            dayKey: dayInfo.dayKey,
+            weekdayLabel: DAY_LABELS[dayInfo.dayKey],
+            dateStr: dayInfo.dateStr,
+            weekNumber: sylDay.week_number ?? counters.week_num,
+            classNumber: sylDay.day_number,
+            activityName: sylDay.activity,
+            supplies,
+          });
+        }
+      }
+
+      // Also check any Activity assignments scheduled this week that might have custom/overridden dates (e.g., holiday shifts)
+      const subActivityAssigns = schoolAssignments.filter(
+        (a) =>
+          a.subject_id === sub.id &&
+          a.category === 'activity' &&
+          a.due_date >= (weekDates[0]?.dateStr || weekStartDate) &&
+          a.due_date <= (weekDates[weekDates.length - 1]?.dateStr || weekStartDate)
+      );
+      for (const actAssign of subActivityAssigns) {
+        const mm = parseAssignmentMoodleMeta(actAssign.state_standards);
+        const dayInfo = weekDates.find((wd) => wd.dateStr === actAssign.due_date);
+        if (!dayInfo) continue;
+
+        const cleanActName =
+          mm?.activity_name || actAssign.title.replace(/^Activity:\s*/i, '').trim();
+        const key = `${sub.id}::${dayInfo.dateStr}::${cleanActName.toLowerCase()}`;
+        if (seen.has(key)) continue;
+
+        const sylDay = activeSyl?.days.find(
+          (d) =>
+            (mm?.class_number && d.day_number === mm.class_number) ||
+            (actAssign.syllabus_day_number && d.day_number === actAssign.syllabus_day_number) ||
+            (d.activity && d.activity.toLowerCase() === cleanActName.toLowerCase())
+        );
+        const supplies =
+          mm?.supplies && mm.supplies.length > 0
+            ? mm.supplies
+            : sylDay
+            ? resolveSyllabusDaySupplies(sylDay)
+            : [];
+        if (supplies.length === 0) continue;
+
+        seen.add(key);
+        entries.push({
+          id: `assign-sup-${actAssign.id}`,
+          subjectId: sub.id,
+          subjectName: sub.name,
+          subjectColor: sub.color || '#2e7d32',
+          dayKey: dayInfo.dayKey,
+          weekdayLabel: DAY_LABELS[dayInfo.dayKey],
+          dateStr: dayInfo.dateStr,
+          weekNumber: mm?.week_number ?? sylDay?.week_number ?? counters.week_num,
+          classNumber: mm?.class_number ?? actAssign.syllabus_day_number ?? sylDay?.day_number ?? null,
+          activityName: cleanActName,
+          supplies,
+        });
+      }
+    }
+
+    return entries.sort((a, b) => a.dateStr.localeCompare(b.dateStr));
+  }, [subjects, plannerSettings.subject_overrides, weekStartDate, weekDates, parentNotes, schoolAssignments]);
+
+  const syncSubjectWeekNotesInPlanner = async (
+    subjectId: string,
+    cfgToUse: ReturnType<typeof parseRecurringConfig>,
+    resolvedCounters: ReturnType<typeof resolveSubjectCountersForWeek>
+  ) => {
+    if (!cfgToUse.enabled) return;
+
+    const generatedByDay = generateSubjectWeekNotesStructured(
+      cfgToUse,
+      resolvedCounters,
+      syllabusMap
+    );
+    const nowIso = new Date().toISOString();
+    const toInsert: Array<{
+      subject_id: string;
+      note_date: string;
+      title: string | null;
+      description: string;
+      created_by: string;
+      updated_by: string;
+      updated_at: string;
+    }> = [];
+    const toUpdate: Array<{
+      id: string;
+      title: string | null;
+      description: string;
+      updated_by: string;
+      updated_at: string;
+    }> = [];
+
+    for (const dayInfo of weekDates) {
+      const dayNote = generatedByDay[dayInfo.dayKey];
+      const hasTitle = Boolean(dayNote.title && dayNote.title.trim());
+      const hasDesc = Boolean(dayNote.description && dayNote.description.trim());
+      if (!hasTitle && !hasDesc) continue;
+
+      const existingNotes = parentNotes.filter(
+        (n) => n.subject_id === subjectId && n.note_date === dayInfo.dateStr
+      );
+
+      if (existingNotes.length === 0) {
+        toInsert.push({
+          subject_id: subjectId,
+          note_date: dayInfo.dateStr,
+          title: dayNote.title,
+          description: dayNote.description,
+          created_by: activeUserName,
+          updated_by: activeUserName,
+          updated_at: nowIso,
+        });
+      } else {
+        toUpdate.push({
+          id: existingNotes[0].id,
+          title: dayNote.title,
+          description: dayNote.description,
+          updated_by: activeUserName,
+          updated_at: nowIso,
+        });
+      }
+    }
+
+    if (toInsert.length > 0) {
+      const { data: insertedData } = await supabase
+        .from('parent_notes')
+        .insert(toInsert)
+        .select('*');
+      if (insertedData) {
+        setParentNotes((prev) => [...prev, ...(insertedData as ParentNote[])]);
+      }
+    }
+
+    if (toUpdate.length > 0) {
+      for (const item of toUpdate) {
+        await supabase
+          .from('parent_notes')
+          .update({
+            title: item.title,
+            description: item.description,
+            updated_by: item.updated_by,
+            updated_at: item.updated_at,
+          })
+          .eq('id', item.id);
+      }
+      setParentNotes((prev) =>
+        prev.map((n) => {
+          const match = toUpdate.find((u) => u.id === n.id);
+          return match
+            ? {
+                ...n,
+                title: match.title,
+                description: match.description,
+                updated_at: match.updated_at,
+              }
+            : n;
+        })
+      );
+    }
+  };
+
+  const handleSwitchActiveSyllabus = async (subjectId: string, nextSyllabusId: string) => {
+    const targetSub = subjects.find((s) => s.id === subjectId);
+    if (!targetSub) return;
+
+    const cfg = parseRecurringConfig(targetSub.recurring_config, targetSub.name);
+    const syllabi = getSubjectCourseSyllabi(cfg);
+    const nextSyl = syllabi.find((s) => s.id === nextSyllabusId);
+    if (!nextSyl) return;
+
+    const nextCfg = {
+      ...cfg,
+      active_syllabus_id: nextSyllabusId,
+      course_syllabus: nextSyl,
+      course_syllabi: syllabi,
+    };
+    const jsonCfg = JSON.parse(JSON.stringify(nextCfg)) as Json;
+    await supabase.from('subjects').update({ recurring_config: jsonCfg }).eq('id', subjectId);
+    setSubjects((prev) =>
+      prev.map((s) => (s.id === subjectId ? { ...s, recurring_config: jsonCfg } : s))
+    );
+
+    const override = plannerSettings.subject_overrides[subjectId];
+    const resolved = resolveSubjectCountersForWeek(nextCfg, weekStartDate, override);
+    await syncSubjectWeekNotesInPlanner(subjectId, nextCfg, resolved);
+    toast.success(`Switched ${targetSub.name} syllabus to "${nextSyl.course_title}" & updated this week!`);
+  };
+
   const handleUpdateSubjectOverride = async (
     subjectId: string,
     patch: Partial<SubjectWeekOverride>,
@@ -718,34 +1068,118 @@ function PlannerContent() {
     };
     await handleSaveSettings(nextSettings);
 
+    const targetSub = subjects.find((s) => s.id === subjectId);
+    if (!targetSub) return;
+
+    const cfg = parseRecurringConfig(targetSub.recurring_config, targetSub.name);
+    const resolved = resolveSubjectCountersForWeek(cfg, weekStartDate, updatedOverride);
+
+    let effectiveCfg = cfg;
+
     // Optional: also update the subject's base anchor to this week so future weeks continue from this number!
     if (shiftFutureWeeks) {
-      const targetSub = subjects.find((s) => s.id === subjectId);
-      if (targetSub) {
-        const cfg = parseRecurringConfig(targetSub.recurring_config, targetSub.name);
-        const resolved = resolveSubjectCountersForWeek(cfg, weekStartDate, updatedOverride);
-        const nextCfg = {
-          ...cfg,
-          base_week_date: weekStartDate,
-          base_week_num: resolved.week_num,
-          base_class_num: resolved.class_num,
-          base_lesson_num: resolved.lesson_num,
-          math_config: cfg.math_config
-            ? {
-                ...cfg.math_config,
-                base_tuesday_day: resolved.tuesday_math_day ?? cfg.math_config.base_tuesday_day,
-                base_thursday_day: resolved.thursday_math_day ?? cfg.math_config.base_thursday_day,
-              }
-            : undefined,
-        };
-        const jsonCfg = JSON.parse(JSON.stringify(nextCfg)) as Json;
-        await supabase.from('subjects').update({ recurring_config: jsonCfg }).eq('id', subjectId);
-        setSubjects((prev) =>
-          prev.map((s) => (s.id === subjectId ? { ...s, recurring_config: jsonCfg } : s))
-        );
-        toast.success(`${targetSub.name} sequence updated for this week and subsequent weeks!`);
-      }
+      const nextCfg = {
+        ...cfg,
+        base_week_date: weekStartDate,
+        base_week_num: resolved.week_num,
+        base_class_num: resolved.class_num,
+        base_lesson_num: resolved.lesson_num,
+        math_config: cfg.math_config
+          ? {
+              ...cfg.math_config,
+              base_tuesday_day: resolved.tuesday_math_day ?? cfg.math_config.base_tuesday_day,
+              base_thursday_day: resolved.thursday_math_day ?? cfg.math_config.base_thursday_day,
+            }
+          : undefined,
+      };
+      effectiveCfg = nextCfg;
+      const jsonCfg = JSON.parse(JSON.stringify(nextCfg)) as Json;
+      await supabase.from('subjects').update({ recurring_config: jsonCfg }).eq('id', subjectId);
+      setSubjects((prev) =>
+        prev.map((s) => (s.id === subjectId ? { ...s, recurring_config: jsonCfg } : s))
+      );
     }
+
+    // Automatically populate / update this subject's weekly schedule notes for the selected Week / Class
+    await syncSubjectWeekNotesInPlanner(subjectId, effectiveCfg, resolved);
+
+    // Automatically synchronize this week's recurring assignments (e.g. Spelling Test, Math Workbook HW, or Syllabus Activity)
+    const subjectTemplates = recurringTemplates.filter((t) => t.subject_id === subjectId);
+    const generatedForWeek = generateWeekAssignmentsFromTemplatesAndPolicy({
+      subject: targetSub as SubjectWithGrading,
+      recurringConfig: effectiveCfg,
+      counters: resolved,
+      weekDates,
+      syllabusMap,
+      templates: subjectTemplates,
+    });
+
+    if (generatedForWeek.length > 0) {
+      const updatedSchoolAssignments = [...schoolAssignments];
+      for (const cand of generatedForWeek) {
+        const existingOnDateIdx = updatedSchoolAssignments.findIndex(
+          (a) =>
+            a.subject_id === subjectId &&
+            a.due_date === cand.due_date &&
+            (a.category === cand.category ||
+              a.source_type === 'recurring_template' ||
+              a.recurring_template_id === cand.recurring_template_id)
+        );
+        if (existingOnDateIdx >= 0) {
+          const existingItem = updatedSchoolAssignments[existingOnDateIdx];
+          if (existingItem.percentage_score === null) {
+            const { data: updatedRow } = await supabase
+              .from('assignments')
+              .update({
+                title: cand.title,
+                description: cand.description,
+                instructions: cand.instructions,
+                syllabus_day_number: cand.syllabus_day_number,
+                state_standards: cand.state_standards,
+              })
+              .eq('id', existingItem.id)
+              .select('*')
+              .single();
+            if (updatedRow) {
+              updatedSchoolAssignments[existingOnDateIdx] = updatedRow as SchoolAssignment;
+            }
+          }
+        } else {
+          const { data: insertedRow } = await supabase
+            .from('assignments')
+            .insert({
+              subject_id: cand.subject_id,
+              title: cand.title,
+              description: cand.description,
+              instructions: cand.instructions,
+              due_date: cand.due_date,
+              assigned_date: cand.assigned_date,
+              category: cand.category,
+              grading_mode: cand.grading_mode,
+              points_possible: cand.points_possible,
+              total_problems: cand.total_problems,
+              estimated_minutes: cand.estimated_minutes,
+              workflow_status: cand.workflow_status,
+              status: cand.status,
+              is_graded: true,
+              source_type: cand.source_type,
+              recurring_template_id: cand.recurring_template_id,
+              syllabus_day_number: cand.syllabus_day_number,
+              state_standards: cand.state_standards,
+              term_name: 'Full Year 2026-2027',
+              academic_year: '2026-2027',
+            })
+            .select('*')
+            .single();
+          if (insertedRow) {
+            updatedSchoolAssignments.push(insertedRow as SchoolAssignment);
+          }
+        }
+      }
+      setSchoolAssignments(updatedSchoolAssignments);
+    }
+
+    toast.success(`${targetSub.name} topics, activities & supplies populated for this week!`);
   };
 
   // ---------------------------------------------------------------------------
@@ -873,54 +1307,128 @@ function PlannerContent() {
         updated_at: string;
       }[] = [];
 
+      const assignmentsToInsert: GeneratedRecurringAssignmentCandidate[] = [];
+
+      // Refresh recurring templates and all existing subject assignments so rules are always up-to-date
+      const [freshTplRes, allAssignsRes] = await Promise.all([
+        supabase
+          .from('recurring_assignment_templates')
+          .select('*')
+          .order('created_at', { ascending: true }),
+        supabase.from('assignments').select('id, subject_id, title, due_date, state_standards'),
+      ]);
+
+      const activeTemplates: RecurringAssignmentTemplate[] = freshTplRes.data
+        ? freshTplRes.data.map((row) => ({
+            id: row.id,
+            subject_id: row.subject_id,
+            title_template: row.title_template,
+            instructions_template: row.instructions_template,
+            assignment_type_slug: row.assignment_type_slug,
+            grading_mode: row.grading_mode,
+            points_possible: Number(row.points_possible),
+            total_problems_default: row.total_problems_default,
+            days_of_week: Array.isArray(row.days_of_week)
+              ? row.days_of_week.filter(
+                  (d): d is DayKey => typeof d === 'string' && DAY_KEYS.includes(d as DayKey)
+                )
+              : ['friday'],
+            linked_weekly_source: row.linked_weekly_source,
+            auto_behavior: row.auto_behavior,
+            estimated_minutes: row.estimated_minutes,
+            is_active: row.is_active,
+          }))
+        : recurringTemplates;
+
+      if (freshTplRes.data) {
+        setRecurringTemplates(activeTemplates);
+      }
+
+      const allKnownAssignments = allAssignsRes.data || schoolAssignments;
+
       for (const subject of subjects) {
         const cfg = parseRecurringConfig(subject.recurring_config, subject.name);
-        if (!cfg.enabled) continue;
-
         const override = plannerSettings.subject_overrides[subject.id];
         const counters = resolveSubjectCountersForWeek(cfg, weekStartDate, override);
-        const generatedByDay = generateSubjectWeekNotesStructured(cfg, counters, syllabusMap);
 
-        for (const dayInfo of weekDates) {
-          const dayNote = generatedByDay[dayInfo.dayKey];
-          const hasTitle = Boolean(dayNote.title && dayNote.title.trim());
-          const hasDesc = Boolean(dayNote.description && dayNote.description.trim());
-          if (!hasTitle && !hasDesc) continue;
+        if (cfg.enabled) {
+          const generatedByDay = generateSubjectWeekNotesStructured(cfg, counters, syllabusMap);
 
-          const existingNotes = parentNotes.filter(
-            (n) => n.subject_id === subject.id && n.note_date === dayInfo.dateStr
+          for (const dayInfo of weekDates) {
+            const dayNote = generatedByDay[dayInfo.dayKey];
+            const hasTitle = Boolean(dayNote.title && dayNote.title.trim());
+            const hasDesc = Boolean(dayNote.description && dayNote.description.trim());
+            if (!hasTitle && !hasDesc) continue;
+
+            const existingNotes = parentNotes.filter(
+              (n) => n.subject_id === subject.id && n.note_date === dayInfo.dateStr
+            );
+
+            if (existingNotes.length === 0) {
+              toInsert.push({
+                subject_id: subject.id,
+                note_date: dayInfo.dateStr,
+                title: dayNote.title,
+                description: dayNote.description,
+                created_by: activeUserName,
+                updated_by: activeUserName,
+                updated_at: nowIso,
+              });
+            } else if (overwriteExisting) {
+              toUpdate.push({
+                id: existingNotes[0].id,
+                title: dayNote.title,
+                description: dayNote.description,
+                updated_by: activeUserName,
+                updated_at: nowIso,
+              });
+            }
+          }
+        }
+
+        // Also evaluate recurring assignment templates & participation policies for this subject
+        const subjectTemplates = activeTemplates.filter((t) => t.subject_id === subject.id);
+        const generatedAssigns = generateWeekAssignmentsFromTemplatesAndPolicy({
+          subject: subject as SubjectWithGrading,
+          recurringConfig: cfg,
+          counters,
+          weekDates,
+          syllabusMap,
+          templates: subjectTemplates,
+        });
+        for (const ga of generatedAssigns) {
+          const alreadyExistsOnDate = allKnownAssignments.some(
+            (existing) =>
+              existing.subject_id === ga.subject_id &&
+              existing.due_date === ga.due_date &&
+              existing.title.toLowerCase() === ga.title.toLowerCase()
           );
+          if (alreadyExistsOnDate) continue;
 
-          if (existingNotes.length === 0) {
-            toInsert.push({
-              subject_id: subject.id,
-              note_date: dayInfo.dateStr,
-              title: dayNote.title,
-              description: dayNote.description,
-              created_by: activeUserName,
-              updated_by: activeUserName,
-              updated_at: nowIso,
-            });
-          } else if (overwriteExisting) {
-            toUpdate.push({
-              id: existingNotes[0].id,
-              title: dayNote.title,
-              description: dayNote.description,
-              updated_by: activeUserName,
-              updated_at: nowIso,
-            });
+          // Check if an API-synced or syllabus-staged assessment with this exact title already exists
+          const existingByTitle =
+            ga.source_type === 'syllabus_staged'
+              ? allKnownAssignments.find(
+                  (existing) =>
+                    existing.subject_id === ga.subject_id &&
+                    existing.title.toLowerCase() === ga.title.toLowerCase()
+                )
+              : undefined;
+
+          if (!existingByTitle) {
+            assignmentsToInsert.push(ga);
           }
         }
       }
 
-      if (toInsert.length === 0 && toUpdate.length === 0) {
+      if (toInsert.length === 0 && toUpdate.length === 0 && assignmentsToInsert.length === 0) {
         if (pulledSidebar) {
           toast.success(
             `Pulled forward previous week's sidebar sections (subject cells already had notes).`
           );
         } else {
           toast(
-            'All recurring cells for this week already have notes. Use "Adjust Week # & Math Days → Sync / Overwrite" or Reset Week if you want to replace them.',
+            'All recurring cells and graded assignments for this week are already populated.',
             { icon: 'ℹ️' }
           );
         }
@@ -965,10 +1473,56 @@ function PlannerContent() {
         );
       }
 
+      let createdAssignmentsCount = 0;
+      let stagedAssignmentsCount = 0;
+      if (assignmentsToInsert.length > 0) {
+        const insertPayloads = assignmentsToInsert.map((cand) => ({
+          subject_id: cand.subject_id,
+          title: cand.title,
+          description: cand.description,
+          instructions: cand.instructions,
+          due_date: cand.due_date,
+          assigned_date: cand.assigned_date,
+          category: cand.category,
+          grading_mode: cand.grading_mode,
+          points_possible: cand.points_possible,
+          points_earned: cand.points_earned ?? null,
+          percentage_score: cand.percentage_score ?? null,
+          letter_grade: cand.letter_grade ?? null,
+          total_problems: cand.total_problems,
+          estimated_minutes: cand.estimated_minutes,
+          workflow_status: cand.workflow_status,
+          status: cand.status,
+          is_graded: true,
+          source_type: cand.source_type,
+          recurring_template_id: cand.recurring_template_id,
+          syllabus_day_number: cand.syllabus_day_number,
+          teacher_comments: cand.teacher_comments ?? null,
+          state_standards: cand.state_standards,
+          term_name: 'Full Year 2026-2027',
+          academic_year: '2026-2027',
+        }));
+
+        const { data: insertedAssigns } = await supabase
+          .from('assignments')
+          .insert(insertPayloads)
+          .select('*');
+        if (insertedAssigns) {
+          setSchoolAssignments((prev) => [...prev, ...(insertedAssigns as SchoolAssignment[])]);
+          createdAssignmentsCount = insertedAssigns.filter((a) => a.workflow_status !== 'staged').length;
+          stagedAssignmentsCount = insertedAssigns.filter((a) => a.workflow_status === 'staged').length;
+        }
+      }
+
+      const assignSummary =
+        createdAssignmentsCount > 0 || stagedAssignmentsCount > 0
+          ? ` (+${createdAssignmentsCount} graded, +${stagedAssignmentsCount} queued in staging)`
+          : '';
+
       toast.success(
         pulledSidebar
-          ? `Populated ${toInsert.length + toUpdate.length} placeholders & pulled forward previous week's sidebar!`
-          : `Populated ${toInsert.length + toUpdate.length} subject placeholders for the week of ${weekStartDate}!`
+          ? `Populated ${toInsert.length + toUpdate.length} placeholders${assignSummary} & pulled forward sidebar!`
+          : `Populated ${toInsert.length + toUpdate.length} placeholders${assignSummary} for ${weekStartDate}!`
       );
       setOpenPopulateModal(false);
     } catch {
@@ -1250,7 +1804,8 @@ function PlannerContent() {
                 PaperProps={{
                   sx: {
                     mt: 1,
-                    minWidth: 260,
+                    minWidth: 325,
+                    width: 'max-content',
                     borderRadius: 2.5,
                     p: 0.75,
                     border: '1px solid',
@@ -1278,7 +1833,7 @@ function PlannerContent() {
                 >
                   <Sparkles size={16} color={theme.palette.primary.main} />
                   <Typography variant="body2" fontWeight={600} flexGrow={1}>
-                    {populatingWeek ? 'Populating…' : 'Populate Week Placeholders…'}
+                    {populatingWeek ? 'Populating' : 'Populate Week Placeholders'}
                   </Typography>
                 </MenuItem>
 
@@ -1292,7 +1847,7 @@ function PlannerContent() {
                 >
                   <Copy size={16} color={theme.palette.primary.main} />
                   <Typography variant="body2" fontWeight={600} flexGrow={1}>
-                    Pull Forward Previous Week&apos;s Sidebar…
+                    Pull Forward Previous Week&apos;s Sidebar
                   </Typography>
                 </MenuItem>
 
@@ -1305,7 +1860,7 @@ function PlannerContent() {
                 >
                   <Sliders size={16} color={theme.palette.primary.main} />
                   <Typography variant="body2" fontWeight={600} flexGrow={1}>
-                    {showCountersPanel ? 'Hide Week # & Math Days' : 'Adjust Week # & Math Days…'}
+                    {showCountersPanel ? 'Hide Week # & Math Days' : 'Adjust Week # & Math Days'}
                   </Typography>
                 </MenuItem>
 
@@ -1358,7 +1913,7 @@ function PlannerContent() {
                 >
                   <RotateCcw size={16} />
                   <Typography variant="body2" fontWeight={600}>
-                    Reset Week Notes…
+                    Reset Week Notes
                   </Typography>
                 </MenuItem>
               </Menu>
@@ -1514,15 +2069,65 @@ function PlannerContent() {
                       );
                     }
 
-                    // Check which tokens this subject uses
+                    // Check which tokens this subject uses or if it is API-synced / Class-syllabus backed
+                    const officialCourseName = getOfficialCourseSubtitle(cfg);
+                    const subjectSyllabi = getSubjectCourseSyllabi(cfg);
+                    const activeSyllabus = getActiveCourseSyllabus(cfg);
+                    const apiWeeks =
+                      activeSyllabus?.source_type === 'api_sync' &&
+                      Array.isArray(activeSyllabus?.weeks)
+                        ? activeSyllabus.weeks
+                        : [];
+                    const selectedApiWeek =
+                      apiWeeks.length > 0
+                        ? apiWeeks.find((w) => w.week_number === resolved.week_num)
+                        : undefined;
+                    const classSyllabusDays =
+                      cfg.mode === 'template' &&
+                      activeSyllabus &&
+                      Array.isArray(activeSyllabus.days) &&
+                      activeSyllabus.days.length > 0
+                        ? activeSyllabus.days
+                        : [];
+                    const hasClassSyllabus = classSyllabusDays.length > 0;
+
+                    // Group classSyllabusDays by week_number for the Week dropdown
+                    const classSyllabusWeeks: Array<{
+                      weekNum: number;
+                      firstClassNum: number;
+                      lastClassNum: number;
+                      unit: string;
+                      firstTopic: string;
+                    }> = [];
+                    if (hasClassSyllabus) {
+                      const weekMap = new Map<number, MathSyllabusDay[]>();
+                      classSyllabusDays.forEach((d, idx) => {
+                        const wk = d.week_number ?? Math.ceil((idx + 1) / 3);
+                        const arr = weekMap.get(wk) || [];
+                        arr.push(d);
+                        weekMap.set(wk, arr);
+                      });
+                      Array.from(weekMap.entries())
+                        .sort((a, b) => a[0] - b[0])
+                        .forEach(([wkNum, daysInWk]) => {
+                          classSyllabusWeeks.push({
+                            weekNum: wkNum,
+                            firstClassNum: daysInWk[0].day_number,
+                            lastClassNum: daysInWk[daysInWk.length - 1].day_number,
+                            unit: daysInWk[0].unit || '',
+                            firstTopic: daysInWk[0].topic || '',
+                          });
+                        });
+                    }
+
                     const allTemplates = DAY_KEYS.map((dk) => cfg.days[dk].template).join(' ');
-                    const usesWeek = allTemplates.includes('{week}');
+                    const usesWeek = allTemplates.includes('{week}') || apiWeeks.length > 0;
                     const usesClassNum = allTemplates.includes('{class_num}');
                     const usesLesson =
                       allTemplates.includes('{lesson}') || allTemplates.includes('{prev_lesson}');
 
                     return (
-                      <Grid item xs={12} sm={6} md={3} key={sub.id}>
+                      <Grid item xs={12} sm={6} md={hasClassSyllabus ? 6 : 3} key={sub.id}>
                         <Paper
                           variant="outlined"
                           sx={{
@@ -1532,54 +2137,292 @@ function PlannerContent() {
                             borderLeft: `4px solid ${sub.color || '#0C74E4'}`,
                           }}
                         >
-                          <Typography variant="subtitle2" fontWeight={800} mb={1.25}>
-                            {sub.name}
-                          </Typography>
+                          <Stack
+                            direction="row"
+                            justifyContent="space-between"
+                            alignItems="flex-start"
+                            mb={1.25}
+                            spacing={1}
+                          >
+                            <Box>
+                              <Typography variant="subtitle2" fontWeight={800} sx={{ lineHeight: 1.2 }}>
+                                {sub.name}
+                                {hasClassSyllabus ? ' — Syllabus Week & Class Selector' : ''}
+                              </Typography>
+                              {officialCourseName && (
+                                <Typography
+                                  variant="caption"
+                                  sx={{
+                                    fontStyle: 'italic',
+                                    color: 'text.secondary',
+                                    fontSize: '0.7rem',
+                                    display: 'block',
+                                    mt: 0.15,
+                                  }}
+                                >
+                                  {officialCourseName}
+                                </Typography>
+                              )}
+                            </Box>
+                            {hasClassSyllabus && (
+                              <Chip
+                                size="small"
+                                label={`${classSyllabusWeeks.length} Wks · ${classSyllabusDays.length} Classes`}
+                                color="success"
+                                variant="outlined"
+                                sx={{ fontWeight: 700, fontSize: '0.68rem' }}
+                              />
+                            )}
+                          </Stack>
+
                           <Stack spacing={1.25}>
-                            {(usesWeek || (!usesClassNum && !usesLesson)) && (
+                            {subjectSyllabi.length > 1 && (
                               <TextField
+                                select
                                 size="small"
-                                type="number"
-                                label="Week #"
-                                value={resolved.week_num}
-                                onChange={(e) => {
-                                  const nextWeekNum = Math.max(1, parseInt(e.target.value, 10) || 1);
-                                  const patch: Partial<SubjectWeekOverride> = { week_num: nextWeekNum };
-                                  if (usesClassNum) {
-                                    patch.class_num = (nextWeekNum - 1) * 3 + 1;
-                                  }
-                                  handleUpdateSubjectOverride(sub.id, patch, true);
-                                }}
+                                label="Active Science / Subject Syllabus"
+                                value={activeSyllabus?.id || subjectSyllabi[0].id || ''}
+                                onChange={(e) => handleSwitchActiveSyllabus(sub.id, e.target.value)}
                                 fullWidth
-                              />
+                                SelectProps={{ native: true }}
+                              >
+                                {subjectSyllabi.map((syl, idx) => (
+                                  <option key={syl.id || idx} value={syl.id || `syllabus-${idx + 1}`}>
+                                    {syl.course_title} ({syl.days.length} classes)
+                                  </option>
+                                ))}
+                              </TextField>
                             )}
-                            {usesClassNum && (
-                              <TextField
-                                size="small"
-                                type="number"
-                                label="Mon Starting Class #"
-                                value={resolved.class_num}
-                                onChange={(e) => {
-                                  const nextClass = Math.max(1, parseInt(e.target.value, 10) || 1);
-                                  handleUpdateSubjectOverride(sub.id, { class_num: nextClass }, true);
-                                }}
-                                helperText={`Mon=${resolved.class_num}, Tue=${resolved.class_num + 1}, Wed=${resolved.class_num + 2}`}
-                                fullWidth
-                              />
-                            )}
-                            {usesLesson && (
-                              <TextField
-                                size="small"
-                                type="number"
-                                label="Lesson #"
-                                value={resolved.lesson_num}
-                                onChange={(e) => {
-                                  const nextLesson = Math.max(1, parseInt(e.target.value, 10) || 1);
-                                  handleUpdateSubjectOverride(sub.id, { lesson_num: nextLesson }, true);
-                                }}
-                                helperText={`Quiz Lesson: ${Math.max(1, resolved.lesson_num - 1)}`}
-                                fullWidth
-                              />
+
+                            {apiWeeks.length > 0 ? (
+                              <Box>
+                                <TextField
+                                  select
+                                  size="small"
+                                  label="API Syllabus Week #"
+                                  value={resolved.week_num}
+                                  onChange={(e) => {
+                                    const nextWeekNum = Math.max(
+                                      1,
+                                      parseInt(e.target.value, 10) || 1
+                                    );
+                                    const patch: Partial<SubjectWeekOverride> = {
+                                      week_num: nextWeekNum,
+                                      lesson_num: nextWeekNum,
+                                    };
+                                    if (usesClassNum) {
+                                      patch.class_num = (nextWeekNum - 1) * 3 + 1;
+                                    }
+                                    handleUpdateSubjectOverride(sub.id, patch, true);
+                                  }}
+                                  fullWidth
+                                  SelectProps={{ native: true }}
+                                >
+                                  {apiWeeks.map((wk) => (
+                                    <option key={wk.week_number} value={wk.week_number}>
+                                      Week {wk.week_number}
+                                      {wk.section_title && wk.section_title !== `Week ${wk.week_number}`
+                                        ? ` (${wk.section_title})`
+                                        : ''}
+                                      {wk.linked_assessments.length > 0
+                                        ? ` • ${wk.linked_assessments[0].name}`
+                                        : ''}
+                                    </option>
+                                  ))}
+                                </TextField>
+                                {selectedApiWeek && selectedApiWeek.linked_assessments.length > 0 && (
+                                  <Typography
+                                    variant="caption"
+                                    color="secondary.main"
+                                    fontWeight={700}
+                                    display="block"
+                                    mt={0.5}
+                                    sx={{ fontSize: '0.68rem' }}
+                                  >
+                                    Quiz/Assn: {selectedApiWeek.linked_assessments.map((a) => a.name).join(', ')}
+                                  </Typography>
+                                )}
+                              </Box>
+                            ) : hasClassSyllabus ? (
+                              <Box>
+                                <Grid container spacing={1.5}>
+                                  <Grid item xs={12} sm={6}>
+                                    <TextField
+                                      select
+                                      size="small"
+                                      label="Select Syllabus Week #"
+                                      value={resolved.week_num}
+                                      onChange={(e) => {
+                                        const nextWeekNum = Math.max(
+                                          1,
+                                          parseInt(e.target.value, 10) || 1
+                                        );
+                                        const matchedWk = classSyllabusWeeks.find(
+                                          (w) => w.weekNum === nextWeekNum
+                                        );
+                                        const nextClassNum = matchedWk
+                                          ? matchedWk.firstClassNum
+                                          : (nextWeekNum - 1) * 3 + 1;
+                                        handleUpdateSubjectOverride(
+                                          sub.id,
+                                          {
+                                            week_num: nextWeekNum,
+                                            class_num: nextClassNum,
+                                          },
+                                          true
+                                        );
+                                      }}
+                                      fullWidth
+                                      SelectProps={{ native: true }}
+                                    >
+                                      {classSyllabusWeeks.map((wk) => (
+                                        <option key={wk.weekNum} value={wk.weekNum}>
+                                          Week {wk.weekNum} (Classes {wk.firstClassNum}–{wk.lastClassNum})
+                                          {wk.unit ? ` — ${wk.unit}` : ''}
+                                        </option>
+                                      ))}
+                                    </TextField>
+                                  </Grid>
+
+                                  <Grid item xs={12} sm={6}>
+                                    <TextField
+                                      select
+                                      size="small"
+                                      label="Select Starting Class # (Mon)"
+                                      value={resolved.class_num}
+                                      onChange={(e) => {
+                                        const nextClass = Math.max(
+                                          1,
+                                          parseInt(e.target.value, 10) || 1
+                                        );
+                                        const matchedDay = classSyllabusDays.find(
+                                          (d) => d.day_number === nextClass
+                                        );
+                                        const nextWeek =
+                                          matchedDay?.week_number ?? Math.ceil(nextClass / 3);
+                                        handleUpdateSubjectOverride(
+                                          sub.id,
+                                          {
+                                            week_num: nextWeek,
+                                            class_num: nextClass,
+                                          },
+                                          true
+                                        );
+                                      }}
+                                      fullWidth
+                                      SelectProps={{ native: true }}
+                                    >
+                                      {classSyllabusDays.map((cd) => (
+                                        <option key={cd.day_number} value={cd.day_number}>
+                                          Class {cd.day_number} (Wk {cd.week_number ?? Math.ceil(cd.day_number / 3)}):{' '}
+                                          {cd.topic.slice(0, 44)}
+                                        </option>
+                                      ))}
+                                    </TextField>
+                                  </Grid>
+                                </Grid>
+
+                                {/* Live Mon/Tue/Wed Topic Preview */}
+                                <Box
+                                  mt={1.25}
+                                  p={1}
+                                  sx={{
+                                    bgcolor: 'action.hover',
+                                    borderRadius: 1.5,
+                                    border: '1px solid',
+                                    borderColor: 'divider',
+                                  }}
+                                >
+                                  {[0, 1, 2].map((offset) => {
+                                    const cNum = resolved.class_num + offset;
+                                    const cDay = classSyllabusDays.find((d) => d.day_number === cNum);
+                                    const dayLabel = offset === 0 ? 'Mon' : offset === 1 ? 'Tue' : 'Wed';
+                                    if (!cDay) return null;
+                                    return (
+                                      <Typography
+                                        key={cNum}
+                                        variant="caption"
+                                        display="block"
+                                        color="text.secondary"
+                                        sx={{ fontSize: '0.7rem', lineHeight: 1.35 }}
+                                      >
+                                        <strong>
+                                          {dayLabel} (Class {cNum}):
+                                        </strong>{' '}
+                                        {cDay.topic}
+                                        {cDay.activity ? ` • [Activity: ${cDay.activity}]` : ''}
+                                      </Typography>
+                                    );
+                                  })}
+                                </Box>
+                              </Box>
+                            ) : (
+                              <>
+                                {(usesWeek || (!usesClassNum && !usesLesson)) && (
+                                  <TextField
+                                    size="small"
+                                    type="number"
+                                    label="Week #"
+                                    value={resolved.week_num}
+                                    onChange={(e) => {
+                                      const nextWeekNum = Math.max(
+                                        1,
+                                        parseInt(e.target.value, 10) || 1
+                                      );
+                                      const patch: Partial<SubjectWeekOverride> = {
+                                        week_num: nextWeekNum,
+                                      };
+                                      if (usesClassNum) {
+                                        patch.class_num = (nextWeekNum - 1) * 3 + 1;
+                                      }
+                                      handleUpdateSubjectOverride(sub.id, patch, true);
+                                    }}
+                                    fullWidth
+                                  />
+                                )}
+                                {usesClassNum && (
+                                  <TextField
+                                    size="small"
+                                    type="number"
+                                    label="Mon Starting Class #"
+                                    value={resolved.class_num}
+                                    onChange={(e) => {
+                                      const nextClass = Math.max(
+                                        1,
+                                        parseInt(e.target.value, 10) || 1
+                                      );
+                                      handleUpdateSubjectOverride(
+                                        sub.id,
+                                        { class_num: nextClass },
+                                        true
+                                      );
+                                    }}
+                                    helperText={`Mon=${resolved.class_num}, Tue=${resolved.class_num + 1}, Wed=${resolved.class_num + 2}`}
+                                    fullWidth
+                                  />
+                                )}
+                                {usesLesson && (
+                                  <TextField
+                                    size="small"
+                                    type="number"
+                                    label="Lesson #"
+                                    value={resolved.lesson_num}
+                                    onChange={(e) => {
+                                      const nextLesson = Math.max(
+                                        1,
+                                        parseInt(e.target.value, 10) || 1
+                                      );
+                                      handleUpdateSubjectOverride(
+                                        sub.id,
+                                        { lesson_num: nextLesson },
+                                        true
+                                      );
+                                    }}
+                                    helperText={`Quiz Lesson: ${Math.max(1, resolved.lesson_num - 1)}`}
+                                    fullWidth
+                                  />
+                                )}
+                              </>
                             )}
                           </Stack>
                         </Paper>
@@ -1683,56 +2526,115 @@ function PlannerContent() {
             </thead>
             <tbody>
 
-              {displaySubjects.map((subject) => (
-                <tr key={subject.id}>
-                  <td className="subject-name-cell">
-                    <Typography variant="body2" fontWeight={700}>
-                      {subject.name}
-                    </Typography>
-                  </td>
-                  {page1Days.map((d) => {
-                    const cellNote = parentNotes.find(
-                      (n) => n.subject_id === subject.id && n.note_date === d.dateStr
-                    );
-                    const cellSchoolAssignments = schoolAssignments.filter(
-                      (a) => a.subject_id === subject.id && a.due_date === d.dateStr
-                    );
+              {displaySubjects.map((subject) => {
+                const subCfg = parseRecurringConfig(subject.recurring_config, subject.name);
+                const officialSubtitle = getOfficialCourseSubtitle(subCfg);
+                return (
+                  <tr key={subject.id}>
+                    <td className="subject-name-cell">
+                      <Typography variant="body2" fontWeight={700} sx={{ lineHeight: 1.2, color: '#0f172a' }}>
+                        {subject.name}
+                      </Typography>
+                      {officialSubtitle && (
+                        <Typography
+                          variant="caption"
+                          sx={{
+                            display: 'block',
+                            fontStyle: 'italic',
+                            fontWeight: 500,
+                            fontSize: '0.66rem',
+                            color: '#475569',
+                            lineHeight: 1.15,
+                            mt: 0.25,
+                          }}
+                        >
+                          {officialSubtitle}
+                        </Typography>
+                      )}
+                      {subject.link && (
+                        <Typography
+                          component="a"
+                          href={subject.link}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="no-print"
+                          sx={{
+                            display: 'inline-block',
+                            fontSize: '0.62rem',
+                            fontWeight: 700,
+                            color: '#0284c7',
+                            textDecoration: 'none',
+                            mt: 0.35,
+                            '&:hover': { textDecoration: 'underline' },
+                          }}
+                        >
+                          {subject.link.includes('zoom.us')
+                            ? 'Zoom Link ↗'
+                            : subject.link.includes('adobeconnect.com')
+                            ? 'Live Classroom ↗'
+                            : 'Class Link ↗'}
+                        </Typography>
+                      )}
+                    </td>
+                    {page1Days.map((d) => {
+                      const cellNote = parentNotes.find(
+                        (n) => n.subject_id === subject.id && n.note_date === d.dateStr
+                      );
+                      const cellSchoolAssignments = schoolAssignments.filter(
+                        (a) =>
+                          a.subject_id === subject.id &&
+                          a.due_date === d.dateStr &&
+                          a.workflow_status !== 'staged'
+                      );
 
-                    return (
-                      <td
-                        key={d.dateStr}
-                        className="assignment-cell"
-                        onClick={() => handleOpenCellEditor(subject, d.dateStr)}
-                      >
-                        {(() => {
-                          const squareNotes = parentNotes.filter(
-                            (n) => n.subject_id === subject.id && n.note_date === d.dateStr
-                          );
-                          if (squareNotes.length === 0) return null;
-                          return squareNotes.map((noteItem) => (
-                            <Box key={noteItem.id} className="parent-note-item" sx={{ color: branding.notes.color, mb: 1 }}>
-                              <FormattedParentNote
-                                noteId={noteItem.id}
-                                title={noteItem.title}
-                                description={noteItem.description}
-                                color={branding.notes.color}
-                                iconName={branding.notes.icon}
-                                onToggleCheckbox={handleToggleParentNoteCheckbox}
-                              />
-                            </Box>
-                          ));
-                        })()}
-                        {cellSchoolAssignments.map((a) => (
-                          <div key={a.id} className="school-assignment-item" style={{ color: branding.assignments.color }}>
-                            <ItemIcon name={branding.assignments.icon} size={11} color={branding.assignments.color} style={{ marginRight: 4, display: 'inline' }} />
-                            [{a.category.toUpperCase()}] {a.title}
-                          </div>
-                        ))}
-                      </td>
-                    );
-                  })}
-                </tr>
-              ))}
+                      return (
+                        <td
+                          key={d.dateStr}
+                          className="assignment-cell"
+                          onClick={() => handleOpenCellEditor(subject, d.dateStr)}
+                        >
+                          {(() => {
+                            const squareNotes = parentNotes.filter(
+                              (n) => n.subject_id === subject.id && n.note_date === d.dateStr
+                            );
+                            if (squareNotes.length === 0) return null;
+                            return squareNotes.map((noteItem) => (
+                              <Box key={noteItem.id} className="parent-note-item" sx={{ mb: 1 }}>
+                                <FormattedParentNote
+                                  noteId={noteItem.id}
+                                  title={noteItem.title}
+                                  description={noteItem.description}
+                                  color={branding.notes.color}
+                                  iconName={branding.notes.icon}
+                                  parentNoteColor={branding.parentNotes.color}
+                                  parentNoteIconName={branding.parentNotes.icon}
+                                  onToggleCheckbox={handleToggleParentNoteCheckbox}
+                                />
+                              </Box>
+                            ));
+                          })()}
+                          {cellSchoolAssignments.map((a) => (
+                            <div
+                              key={a.id}
+                              className="school-assignment-item"
+                              style={{ color: branding.assignments.color, cursor: 'pointer' }}
+                              onClick={(e) => handleOpenAssignmentFromPlanner(a, e)}
+                              title="Click to grade or edit assignment"
+                            >
+                              <ItemIcon name={branding.assignments.icon} size={11} color={branding.assignments.color} style={{ marginRight: 4, display: 'inline' }} />
+                              [{a.category.toUpperCase()}] {a.title}
+                              {typeof a.percentage_score === 'number'
+                                ? ` • ${a.percentage_score.toFixed(0)}%`
+                                : ''}
+                            </div>
+                          ))}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </Box>
@@ -1802,20 +2704,67 @@ function PlannerContent() {
                 </thead>
                 <tbody>
 
-                  {displaySubjects.map((subject) => (
-                    <tr key={subject.id}>
-                      <td className="subject-name-cell">
-                        <Typography variant="body2" fontWeight={700}>
-                          {subject.name}
-                        </Typography>
-                      </td>
-                      {page2Days.map((d) => {
-                        const cellNote = parentNotes.find(
-                          (n) => n.subject_id === subject.id && n.note_date === d.dateStr
-                        );
-                        const cellSchoolAssignments = schoolAssignments.filter(
-                          (a) => a.subject_id === subject.id && a.due_date === d.dateStr
-                        );
+                  {displaySubjects.map((subject) => {
+                    const subCfg = parseRecurringConfig(subject.recurring_config, subject.name);
+                    const officialSubtitle = getOfficialCourseSubtitle(subCfg);
+                    return (
+                      <tr key={subject.id}>
+                        <td className="subject-name-cell">
+                          <Typography variant="body2" fontWeight={700} sx={{ lineHeight: 1.2, color: '#0f172a' }}>
+                            {subject.name}
+                          </Typography>
+                          {officialSubtitle && (
+                            <Typography
+                              variant="caption"
+                              sx={{
+                                display: 'block',
+                                fontStyle: 'italic',
+                                fontWeight: 500,
+                                fontSize: '0.66rem',
+                                color: '#475569',
+                                lineHeight: 1.15,
+                                mt: 0.25,
+                              }}
+                            >
+                              {officialSubtitle}
+                            </Typography>
+                          )}
+                          {subject.link && (
+                            <Typography
+                              component="a"
+                              href={subject.link}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={(e) => e.stopPropagation()}
+                              className="no-print"
+                              sx={{
+                                display: 'inline-block',
+                                fontSize: '0.62rem',
+                                fontWeight: 700,
+                                color: '#0284c7',
+                                textDecoration: 'none',
+                                mt: 0.35,
+                                '&:hover': { textDecoration: 'underline' },
+                              }}
+                            >
+                              {subject.link.includes('zoom.us')
+                                ? 'Zoom Link ↗'
+                                : subject.link.includes('adobeconnect.com')
+                                ? 'Live Classroom ↗'
+                                : 'Class Link ↗'}
+                            </Typography>
+                          )}
+                        </td>
+                        {page2Days.map((d) => {
+                          const cellNote = parentNotes.find(
+                            (n) => n.subject_id === subject.id && n.note_date === d.dateStr
+                          );
+                          const cellSchoolAssignments = schoolAssignments.filter(
+                            (a) =>
+                              a.subject_id === subject.id &&
+                              a.due_date === d.dateStr &&
+                              a.workflow_status !== 'staged'
+                          );
 
                         return (
                           <td
@@ -1829,29 +2778,41 @@ function PlannerContent() {
                               );
                               if (squareNotes.length === 0) return null;
                               return squareNotes.map((noteItem) => (
-                                <Box key={noteItem.id} className="parent-note-item" sx={{ color: branding.notes.color, mb: 1 }}>
+                                <Box key={noteItem.id} className="parent-note-item" sx={{ mb: 1 }}>
                                   <FormattedParentNote
                                     noteId={noteItem.id}
                                     title={noteItem.title}
                                     description={noteItem.description}
                                     color={branding.notes.color}
                                     iconName={branding.notes.icon}
+                                    parentNoteColor={branding.parentNotes.color}
+                                    parentNoteIconName={branding.parentNotes.icon}
                                     onToggleCheckbox={handleToggleParentNoteCheckbox}
                                   />
                                 </Box>
                               ));
                             })()}
                             {cellSchoolAssignments.map((a) => (
-                              <div key={a.id} className="school-assignment-item" style={{ color: branding.assignments.color }}>
+                              <div
+                                key={a.id}
+                                className="school-assignment-item"
+                                style={{ color: branding.assignments.color, cursor: 'pointer' }}
+                                onClick={(e) => handleOpenAssignmentFromPlanner(a, e)}
+                                title="Click to grade or edit assignment"
+                              >
                                 <ItemIcon name={branding.assignments.icon} size={11} color={branding.assignments.color} style={{ marginRight: 4, display: 'inline' }} />
                                 [{a.category.toUpperCase()}] {a.title}
+                                {typeof a.percentage_score === 'number'
+                                  ? ` • ${a.percentage_score.toFixed(0)}%`
+                                  : ''}
                               </div>
                             ))}
                           </td>
                         );
                       })}
-                    </tr>
-                  ))}
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </Box>
@@ -1946,16 +2907,55 @@ function PlannerContent() {
                 />
               </Box>
 
-              {/* NOTES Section */}
+              {/* NOTES Section (shows Activity Supplies Needed above the Notes text box) */}
               <Box className="sidebar-section">
                 <div className="sidebar-header-badge">NOTES</div>
+                {weekActivitySupplies.length > 0 && (
+                  <Box
+                    sx={{
+                      px: 0.75,
+                      py: 0.6,
+                      mb: 0.5,
+                      borderBottom: '1px dashed rgba(0, 0, 0, 0.25)',
+                      bgcolor: 'rgba(46, 125, 50, 0.06)',
+                      fontSize: '0.66rem',
+                      lineHeight: 1.3,
+                      color: '#111',
+                    }}
+                  >
+                    <div
+                      style={{
+                        fontWeight: 800,
+                        fontSize: '0.64rem',
+                        letterSpacing: '0.03em',
+                        textTransform: 'uppercase',
+                        color: '#1b5e20',
+                        marginBottom: 3,
+                      }}
+                    >
+                      Activity Supplies Needed
+                    </div>
+                    {weekActivitySupplies.map((supEntry) => (
+                      <div key={supEntry.id} style={{ marginBottom: 4 }}>
+                        <div style={{ fontWeight: 700 }}>
+                          • {supEntry.weekdayLabel.slice(0, 3)}
+                          {supEntry.classNumber ? ` (Class ${supEntry.classNumber})` : ''} —{' '}
+                          {supEntry.activityName}:
+                        </div>
+                        <div style={{ paddingLeft: 8, color: '#222' }}>
+                          {supEntry.supplies.join(', ')}
+                        </div>
+                      </div>
+                    ))}
+                  </Box>
+                )}
                 <textarea
                   className="sidebar-textarea sidebar-textarea-notes"
-                  value={plannerSettings.notes}
+                  value={plannerSettings.notes.replace(/\n*\[Activity Supplies\][\s\S]*$/i, '').trim()}
                   onChange={(e) =>
                     handleSaveSettings({ ...plannerSettings, notes: e.target.value })
                   }
-                  rows={6}
+                  rows={weekActivitySupplies.length > 0 ? 4 : 6}
                 />
               </Box>
             </Box>
@@ -1975,6 +2975,7 @@ function PlannerContent() {
             width: { xs: '100%', sm: 460, md: 500 },
             zIndex: 1300,
             bgcolor: 'background.paper',
+            color: 'text.primary',
             boxShadow: '-4px 0 24px rgba(0, 0, 0, 0.15)',
             display: 'flex',
             flexDirection: 'column',
@@ -1992,25 +2993,71 @@ function PlannerContent() {
             sx={{ borderBottom: 1, borderColor: 'divider', bgcolor: 'background.paper' }}
           >
             <Box>
-              <Typography variant="h6" fontWeight={800} fontSize="1.05rem" color="text.primary">
-                {selectedSubject?.name}
-              </Typography>
+              <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+                <Typography variant="h6" fontWeight={800} fontSize="1.05rem" color="text.primary">
+                  {selectedSubject?.name}
+                </Typography>
+                {selectedSubject?.link && (
+                  <Chip
+                    label={
+                      selectedSubject.link.includes('zoom.us')
+                        ? 'Zoom Link ↗'
+                        : selectedSubject.link.includes('adobeconnect.com')
+                        ? 'Live Classroom ↗'
+                        : 'Class Link ↗'
+                    }
+                    size="small"
+                    color="info"
+                    variant="outlined"
+                    component="a"
+                    href={selectedSubject.link}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    clickable
+                    sx={{ height: 22, fontSize: '0.68rem', fontWeight: 700 }}
+                  />
+                )}
+              </Stack>
               <Typography variant="caption" color="text.secondary" fontWeight={600}>
                 {selectedDate}
               </Typography>
             </Box>
             <Stack direction="row" spacing={1} alignItems="center">
               {!isFormOpen && (
-                <Button
-                  size="small"
-                  variant="contained"
-                  color="primary"
-                  onClick={handleAddNewNoteForm}
-                  startIcon={<Plus size={16} />}
-                  sx={{ fontWeight: 700, px: 1.5 }}
-                >
-                  + Note
-                </Button>
+                <>
+                  <Button
+                    size="small"
+                    variant="contained"
+                    onClick={() => handleAddNewNoteForm('school_work')}
+                    startIcon={<Plus size={15} />}
+                    sx={{
+                      fontWeight: 700,
+                      px: 1.25,
+                      textTransform: 'none',
+                      bgcolor: branding.notes.color,
+                      color: '#ffffff',
+                      '&:hover': { bgcolor: branding.notes.color, opacity: 0.9 },
+                    }}
+                  >
+                    School Work
+                  </Button>
+                  <Button
+                    size="small"
+                    variant="contained"
+                    onClick={() => handleAddNewNoteForm('parent_note')}
+                    startIcon={<ItemIcon name={branding.parentNotes.icon} size={14} color="#ffffff" />}
+                    sx={{
+                      fontWeight: 700,
+                      px: 1.25,
+                      textTransform: 'none',
+                      bgcolor: branding.parentNotes.color,
+                      color: '#ffffff',
+                      '&:hover': { bgcolor: branding.parentNotes.color, opacity: 0.9 },
+                    }}
+                  >
+                    Parent Note
+                  </Button>
+                </>
               )}
               <IconButton size="small" onClick={() => setOpenCellModal(false)}>
                 <X size={20} />
@@ -2020,30 +3067,428 @@ function PlannerContent() {
 
           {/* Drawer Body Content */}
           <Box sx={{ flex: 1, overflowY: 'auto', p: 3 }}>
-            {/* Section 1: Parent Notes List / Form */}
+            {/* Quick Syllabus Week / Class Selector for Class-Based Syllabi (e.g., Science) */}
+            {selectedSubject &&
+              (() => {
+                const subCfg = parseRecurringConfig(
+                  selectedSubject.recurring_config,
+                  selectedSubject.name
+                );
+                const activeSyl = getActiveCourseSyllabus(subCfg);
+                const allSyllabi = getSubjectCourseSyllabi(subCfg);
+                const classDays =
+                  subCfg.mode === 'template' &&
+                  activeSyl &&
+                  Array.isArray(activeSyl.days) &&
+                  activeSyl.days.length > 0
+                    ? activeSyl.days
+                    : [];
+                if (classDays.length === 0) return null;
+
+                const subOverride = plannerSettings.subject_overrides[selectedSubject.id];
+                const subResolved = resolveSubjectCountersForWeek(
+                  subCfg,
+                  weekStartDate,
+                  subOverride
+                );
+                const dayIndexInWeek = Math.max(
+                  0,
+                  weekDates.findIndex((wd) => wd.dateStr === selectedDate)
+                );
+                const defaultCellClassNum = subResolved.class_num + Math.min(2, dayIndexInWeek);
+
+                const weekOptionsMap = new Map<
+                  number,
+                  { firstClass: number; lastClass: number; unit: string }
+                >();
+                classDays.forEach((cd, idx) => {
+                  const wk = cd.week_number ?? Math.ceil((idx + 1) / 3);
+                  const existing = weekOptionsMap.get(wk);
+                  if (!existing) {
+                    weekOptionsMap.set(wk, {
+                      firstClass: cd.day_number,
+                      lastClass: cd.day_number,
+                      unit: cd.unit || '',
+                    });
+                  } else {
+                    existing.lastClass = cd.day_number;
+                  }
+                });
+
+                const currentSelectedDayObj = classDays.find(
+                  (d) => d.day_number === defaultCellClassNum
+                );
+                const currentDaySupplies = currentSelectedDayObj
+                  ? resolveSyllabusDaySupplies(currentSelectedDayObj)
+                  : [];
+
+                return (
+                  <Paper
+                    variant="outlined"
+                    sx={{
+                      p: 2,
+                      mb: 2.5,
+                      borderRadius: 2,
+                      borderLeft: `4px solid ${selectedSubject.color || '#2e7d32'}`,
+                      bgcolor: 'action.hover',
+                    }}
+                  >
+                    <Stack
+                      direction="row"
+                      justifyContent="space-between"
+                      alignItems="center"
+                      mb={1.25}
+                    >
+                      <Typography variant="subtitle2" fontWeight={800}>
+                        {activeSyl?.course_title || `${selectedSubject.name} Syllabus`}
+                      </Typography>
+                      <Chip
+                        size="small"
+                        label={`Week ${subResolved.week_num} · Class ${defaultCellClassNum}`}
+                        color="success"
+                        variant="outlined"
+                        sx={{ fontWeight: 700, fontSize: '0.68rem' }}
+                      />
+                    </Stack>
+
+                    <Stack spacing={1.25}>
+                      {allSyllabi.length > 1 && (
+                        <TextField
+                          select
+                          size="small"
+                          label="Active Syllabus"
+                          value={activeSyl?.id || allSyllabi[0].id || ''}
+                          onChange={(e) =>
+                            handleSwitchActiveSyllabus(selectedSubject.id, e.target.value)
+                          }
+                          fullWidth
+                          SelectProps={{ native: true }}
+                        >
+                          {allSyllabi.map((s, idx) => (
+                            <option key={s.id || idx} value={s.id || `syllabus-${idx + 1}`}>
+                              {s.course_title} ({s.days.length} classes)
+                            </option>
+                          ))}
+                        </TextField>
+                      )}
+
+                      <TextField
+                        select
+                        size="small"
+                        label="Populate Full Week Schedule (Select Week 1–35)"
+                        value={subResolved.week_num}
+                        onChange={(e) => {
+                          const nextWk = Math.max(1, parseInt(e.target.value, 10) || 1);
+                          const wkMeta = weekOptionsMap.get(nextWk);
+                          const firstCls = wkMeta ? wkMeta.firstClass : (nextWk - 1) * 3 + 1;
+                          handleUpdateSubjectOverride(
+                            selectedSubject.id,
+                            { week_num: nextWk, class_num: firstCls },
+                            true
+                          );
+                        }}
+                        fullWidth
+                        SelectProps={{ native: true }}
+                      >
+                        {Array.from(weekOptionsMap.entries())
+                          .sort((a, b) => a[0] - b[0])
+                          .map(([wkNum, meta]) => (
+                            <option key={wkNum} value={wkNum}>
+                              Week {wkNum} (Classes {meta.firstClass}–{meta.lastClass})
+                              {meta.unit ? ` — ${meta.unit}` : ''}
+                            </option>
+                          ))}
+                      </TextField>
+
+                      <TextField
+                        select
+                        size="small"
+                        label={`Populate This Day Only (${selectedDate}) — Select Class`}
+                        value={defaultCellClassNum}
+                        onChange={async (e) => {
+                          const chosenClassNum = Math.max(1, parseInt(e.target.value, 10) || 1);
+                          const chosenDay = classDays.find(
+                            (d) => d.day_number === chosenClassNum
+                          );
+                          if (!chosenDay || !selectedDate) return;
+                          const wkNum =
+                            chosenDay.week_number ?? Math.ceil(chosenDay.day_number / 3);
+                          const lines = [
+                            `- [ ] Week ${wkNum}, Class ${chosenDay.day_number}: ${chosenDay.topic}`,
+                          ];
+                          if (chosenDay.activity) {
+                            lines.push(`- [ ] Activity: ${chosenDay.activity}`);
+                          }
+                          const newDesc = lines.join('\n');
+                          setCellNoteDesc(newDesc);
+
+                          const existingCellNotes = parentNotes.filter(
+                            (n) =>
+                              n.subject_id === selectedSubject.id &&
+                              n.note_date === selectedDate
+                          );
+                          const nowIso = new Date().toISOString();
+                          if (existingCellNotes.length > 0) {
+                            const targetId = existingCellNotes[0].id;
+                            await supabase
+                              .from('parent_notes')
+                              .update({
+                                description: newDesc,
+                                updated_by: activeUserName,
+                                updated_at: nowIso,
+                              })
+                              .eq('id', targetId);
+                            setParentNotes((prev) =>
+                              prev.map((n) =>
+                                n.id === targetId
+                                  ? { ...n, description: newDesc, updated_at: nowIso }
+                                  : n
+                              )
+                            );
+                          } else {
+                            const { data: inserted } = await supabase
+                              .from('parent_notes')
+                              .insert({
+                                subject_id: selectedSubject.id,
+                                note_date: selectedDate,
+                                title: null,
+                                description: newDesc,
+                                created_by: activeUserName,
+                                updated_by: activeUserName,
+                                updated_at: nowIso,
+                              })
+                              .select('*')
+                              .single();
+                            if (inserted) {
+                              setParentNotes((prev) => [...prev, inserted as ParentNote]);
+                            }
+                          }
+
+                          // If this class has an Activity, also link/create the Activity assignment on the SAME day of the week (selectedDate)
+                          if (chosenDay.activity) {
+                            const actSupplies = resolveSyllabusDaySupplies(chosenDay);
+                            const matchedDayObj = weekDates.find((wd) => wd.dateStr === selectedDate);
+                            const weekdayKey: DayKey = matchedDayObj?.dayKey || 'monday';
+                            const actTitle = `Activity: ${chosenDay.activity}`;
+                            const actDesc = `Week ${wkNum}, Class ${chosenDay.day_number}: ${chosenDay.topic} — Hands-on Activity: ${chosenDay.activity}`;
+                            const actInstructions =
+                              actSupplies.length > 0
+                                ? `Supplies Needed: ${actSupplies.join(', ')}`
+                                : chosenDay.materials || null;
+                            const actMeta = {
+                              moodle_category: 'Activity',
+                              week_number: wkNum,
+                              class_number: chosenDay.day_number,
+                              class_topic: chosenDay.topic,
+                              activity_name: chosenDay.activity,
+                              supplies: actSupplies,
+                              weekday: weekdayKey,
+                              official_portal_open_date: weekStartDate,
+                              official_portal_due_date: selectedDate,
+                            };
+
+                            const existingAct = schoolAssignments.find(
+                              (a) =>
+                                a.subject_id === selectedSubject.id &&
+                                a.due_date === selectedDate &&
+                                a.category === 'activity'
+                            );
+                            if (existingAct) {
+                              const { data: updatedAct } = await supabase
+                                .from('assignments')
+                                .update({
+                                  title: actTitle,
+                                  description: actDesc,
+                                  instructions: actInstructions,
+                                  syllabus_day_number: chosenDay.day_number,
+                                  state_standards: JSON.parse(JSON.stringify(actMeta)) as Json,
+                                })
+                                .eq('id', existingAct.id)
+                                .select('*')
+                                .single();
+                              if (updatedAct) {
+                                setSchoolAssignments((prev) =>
+                                  prev.map((a) =>
+                                    a.id === existingAct.id ? (updatedAct as SchoolAssignment) : a
+                                  )
+                                );
+                              }
+                            } else {
+                              const { data: insertedAct } = await supabase
+                                .from('assignments')
+                                .insert({
+                                  subject_id: selectedSubject.id,
+                                  title: actTitle,
+                                  description: actDesc,
+                                  instructions: actInstructions,
+                                  due_date: selectedDate,
+                                  assigned_date: weekStartDate,
+                                  category: 'activity',
+                                  grading_mode: 'completion',
+                                  points_possible: 100,
+                                  estimated_minutes: 30,
+                                  workflow_status: 'active',
+                                  status: 'pending',
+                                  is_graded: true,
+                                  source_type: 'recurring_template',
+                                  syllabus_day_number: chosenDay.day_number,
+                                  state_standards: JSON.parse(JSON.stringify(actMeta)) as Json,
+                                  term_name: 'Full Year 2026-2027',
+                                  academic_year: '2026-2027',
+                                })
+                                .select('*')
+                                .single();
+                              if (insertedAct) {
+                                setSchoolAssignments((prev) => [
+                                  ...prev,
+                                  insertedAct as SchoolAssignment,
+                                ]);
+                              }
+                            }
+                          }
+
+                          toast.success(
+                            chosenDay.activity
+                              ? `Populated Class ${chosenDay.day_number} + Activity (${chosenDay.activity}) on ${selectedDate}!`
+                              : `Populated Class ${chosenDay.day_number} into ${selectedSubject.name} (${selectedDate})!`
+                          );
+                        }}
+                        fullWidth
+                        SelectProps={{ native: true }}
+                      >
+                        {classDays.map((cd) => (
+                          <option key={cd.day_number} value={cd.day_number}>
+                            Class {cd.day_number} (Wk {cd.week_number ?? Math.ceil(cd.day_number / 3)}):{' '}
+                            {cd.topic.slice(0, 44)}
+                            {cd.activity ? ` ★ [${cd.activity.slice(0, 24)}]` : ''}
+                          </option>
+                        ))}
+                      </TextField>
+
+                      {currentSelectedDayObj?.activity && (
+                        <Box
+                          sx={{
+                            p: 1.25,
+                            borderRadius: 1.5,
+                            bgcolor: 'background.paper',
+                            border: '1px solid',
+                            borderColor: 'success.light',
+                          }}
+                        >
+                          <Typography variant="caption" fontWeight={700} color="success.main" display="block">
+                            Linked Activity (Same Weekday): {currentSelectedDayObj.activity}
+                          </Typography>
+                          {currentDaySupplies.length > 0 && (
+                            <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.25 }}>
+                              <strong>Supplies Needed:</strong> {currentDaySupplies.join(', ')}
+                            </Typography>
+                          )}
+                        </Box>
+                      )}
+                    </Stack>
+                  </Paper>
+                );
+              })()}
+
+            {/* Section 1: School Work & Parent Notes List / Form */}
             <Box mb={3}>
               <Typography variant="subtitle2" fontWeight={700} color="primary.main" mb={1.5} display="flex" alignItems="center" gap={1}>
                 <FileText size={18} />
-                Parent Notes &amp; Reminders
+                School Work &amp; Parent Notes
               </Typography>
 
-              {/* IF FORM IS OPEN (creating new note or editing an existing note) */}
+              {/* IF FORM IS OPEN (creating new item or editing an existing item) */}
               {isFormOpen ? (
                 <Box p={2.5} sx={{ bgcolor: 'action.hover', borderRadius: 2, border: '1px solid', borderColor: 'divider' }}>
                   <Typography variant="subtitle2" fontWeight={800} mb={1.5}>
-                    {editingNoteId ? 'Edit Parent Note' : 'Add New Parent Note'}
+                    {editingNoteId
+                      ? cellNoteCategory === 'parent_note'
+                        ? 'Edit Parent Note'
+                        : 'Edit School Work'
+                      : cellNoteCategory === 'parent_note'
+                      ? 'Add New Parent Note'
+                      : 'Add New School Work'}
                   </Typography>
 
                   <Stack spacing={2}>
-                    {/* Note Header (Always Bold) */}
+                    {/* Category Selector: School Work (Orange) vs Parent Note (Purple) */}
+                    <Box>
+                      <Typography variant="caption" fontWeight={700} color="text.secondary" display="block" mb={0.75}>
+                        Item Category:
+                      </Typography>
+                      <Stack direction="row" spacing={1}>
+                        <Button
+                          size="small"
+                          variant={cellNoteCategory === 'school_work' ? 'contained' : 'outlined'}
+                          onClick={() => setCellNoteCategory('school_work')}
+                          startIcon={
+                            <ItemIcon
+                              name={branding.notes.icon}
+                              size={14}
+                              color={cellNoteCategory === 'school_work' ? '#ffffff' : branding.notes.color}
+                            />
+                          }
+                          sx={{
+                            flex: 1,
+                            fontWeight: 700,
+                            textTransform: 'none',
+                            bgcolor: cellNoteCategory === 'school_work' ? branding.notes.color : 'transparent',
+                            borderColor: branding.notes.color,
+                            color: cellNoteCategory === 'school_work' ? '#ffffff' : branding.notes.color,
+                            '&:hover': {
+                              bgcolor: cellNoteCategory === 'school_work' ? branding.notes.color : 'action.hover',
+                              borderColor: branding.notes.color,
+                            },
+                          }}
+                        >
+                          School Work
+                        </Button>
+                        <Button
+                          size="small"
+                          variant={cellNoteCategory === 'parent_note' ? 'contained' : 'outlined'}
+                          onClick={() => setCellNoteCategory('parent_note')}
+                          startIcon={
+                            <ItemIcon
+                              name={branding.parentNotes.icon}
+                              size={14}
+                              color={cellNoteCategory === 'parent_note' ? '#ffffff' : branding.parentNotes.color}
+                            />
+                          }
+                          sx={{
+                            flex: 1,
+                            fontWeight: 700,
+                            textTransform: 'none',
+                            bgcolor: cellNoteCategory === 'parent_note' ? branding.parentNotes.color : 'transparent',
+                            borderColor: branding.parentNotes.color,
+                            color: cellNoteCategory === 'parent_note' ? '#ffffff' : branding.parentNotes.color,
+                            '&:hover': {
+                              bgcolor: cellNoteCategory === 'parent_note' ? branding.parentNotes.color : 'action.hover',
+                              borderColor: branding.parentNotes.color,
+                            },
+                          }}
+                        >
+                          Parent Note (Syllabus)
+                        </Button>
+                      </Stack>
+                    </Box>
+
+                    {/* Header (Always Bold) */}
                     <TextField
                       fullWidth
                       size="small"
-                      label="Note Header (Always Bold)"
-                      placeholder="e.g. Reading Assignment, Science Kit, Field Trip"
+                      label={
+                        cellNoteCategory === 'parent_note'
+                          ? 'Parent Note Header (Optional, Bold)'
+                          : 'School Work Header (Always Bold)'
+                      }
+                      placeholder={
+                        cellNoteCategory === 'parent_note'
+                          ? 'e.g. Syllabus Adjustment, Skip Problems 11-15'
+                          : 'e.g. Attend Class, Reading Assignment, Science Kit'
+                      }
                       value={cellNoteHeader}
                       onChange={(e) => setCellNoteHeader(e.target.value)}
-                      helperText="This title line will always display in bold font at the top of the note."
+                      helperText="This title line will always display in bold font at the top of the item."
                     />
 
                     {/* Formatting Buttons for Body */}
@@ -2071,13 +3516,21 @@ function PlannerContent() {
                       </Button>
                     </Stack>
 
-                    {/* Note Body */}
+                    {/* Body */}
                     <TextField
                       fullWidth
                       multiline
                       rows={4}
-                      label="Note Body (Bullets & Checkboxes)"
-                      placeholder="e.g. • Read Chapters 4-5\n- [ ] Complete practice problems 1-10\n- [ ] Sign workbook page"
+                      label={
+                        cellNoteCategory === 'parent_note'
+                          ? 'Parent Note about the Syllabus'
+                          : 'School Work Body (Bullets & Checkboxes)'
+                      }
+                      placeholder={
+                        cellNoteCategory === 'parent_note'
+                          ? 'e.g. Teacher moved Day 14 to Thursday; only complete odd numbers on p. 22.'
+                          : 'e.g. • Read Chapters 4-5\n- [ ] Complete practice problems 1-10\n- [ ] Sign workbook page'
+                      }
                       value={cellNoteDesc}
                       onChange={(e) => setCellNoteDesc(e.target.value)}
                     />
@@ -2088,13 +3541,24 @@ function PlannerContent() {
                         <Typography variant="caption" fontWeight={800} color="text.secondary" display="block" mb={0.75}>
                           Student Planner Preview:
                         </Typography>
-                        <FormattedParentNote
-                          title={cellNoteHeader}
-                          description={cellNoteDesc}
-                          color={branding.notes.color}
-                          iconName={branding.notes.icon}
-                          interactive={false}
-                        />
+                        {(() => {
+                          const previewEncoded = encodePlannerNoteFields(
+                            cellNoteHeader,
+                            cellNoteDesc,
+                            cellNoteCategory
+                          );
+                          return (
+                            <FormattedParentNote
+                              title={previewEncoded.title}
+                              description={previewEncoded.description}
+                              color={branding.notes.color}
+                              iconName={branding.notes.icon}
+                              parentNoteColor={branding.parentNotes.color}
+                              parentNoteIconName={branding.parentNotes.icon}
+                              interactive={false}
+                            />
+                          );
+                        })()}
                       </Box>
                     )}
 
@@ -2122,56 +3586,128 @@ function PlannerContent() {
                         startIcon={<Save size={16} />}
                         sx={{ fontWeight: 700 }}
                       >
-                        {savingNote ? 'Saving Note...' : editingNoteId ? 'Update Note' : 'Save Note'}
+                        {savingNote
+                          ? 'Saving...'
+                          : editingNoteId
+                          ? cellNoteCategory === 'parent_note'
+                            ? 'Update Parent Note'
+                            : 'Update School Work'
+                          : cellNoteCategory === 'parent_note'
+                          ? 'Save Parent Note'
+                          : 'Save School Work'}
                       </Button>
                     </Stack>
                   </Stack>
                 </Box>
               ) : (
-                /* LIST VIEW OF EXISTING PARENT NOTES ON THIS SQUARE */
+                /* LIST VIEW OF EXISTING SCHOOL WORK & PARENT NOTES ON THIS SQUARE */
                 <Stack spacing={2}>
                   {(() => {
                     const squareNotes = parentNotes.filter(
                       (n) => n.subject_id === selectedSubject?.id && n.note_date === selectedDate
                     );
 
-                    return squareNotes.map((n, idx) => (
-                      <Card key={n.id} variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
-                        <Box display="flex" justifyContent="space-between" alignItems="flex-start" gap={1} mb={1}>
-                          <Typography variant="caption" fontWeight={800} color="text.secondary">
-                            Parent Note #{idx + 1}
-                          </Typography>
-                          <Stack direction="row" spacing={1}>
-                            <IconButton size="small" color="primary" onClick={() => handleStartEditNote(n)}>
-                              <Edit2 size={16} />
-                            </IconButton>
-                            <IconButton size="small" color="error" onClick={() => handleDeleteSingleParentNote(n.id)}>
-                              <Trash2 size={16} />
-                            </IconButton>
-                          </Stack>
-                        </Box>
+                    return squareNotes.map((n, idx) => {
+                      const itemCat = getPlannerNoteCategory(n.title, n.description);
+                      const isPNote = itemCat === 'parent_note';
+                      return (
+                        <Card key={n.id} variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+                          <Box display="flex" justifyContent="space-between" alignItems="flex-start" gap={1} mb={1}>
+                            <Stack direction="row" spacing={0.75} alignItems="center">
+                              <ItemIcon
+                                name={isPNote ? branding.parentNotes.icon : branding.notes.icon}
+                                size={13}
+                                color={isPNote ? branding.parentNotes.color : branding.notes.color}
+                              />
+                              <Typography
+                                variant="caption"
+                                fontWeight={800}
+                                sx={{ color: isPNote ? branding.parentNotes.color : branding.notes.color }}
+                              >
+                                {isPNote ? 'Parent Note' : 'School Work'} #{idx + 1}
+                              </Typography>
+                            </Stack>
+                            <Stack direction="row" spacing={0.5} alignItems="center">
+                              <Button
+                                size="small"
+                                variant="outlined"
+                                color="success"
+                                startIcon={<Sparkles size={13} />}
+                                onClick={() => {
+                                  setUnifiedEditAssignment(null);
+                                  setUnifiedPromotedNote({
+                                    id: n.id,
+                                    title: stripParentNoteMarker(n.title),
+                                    description: stripParentNoteMarker(n.description),
+                                    subject_id: n.subject_id,
+                                    note_date: n.note_date,
+                                  });
+                                  setOpenUnifiedModal(true);
+                                }}
+                                sx={{ fontWeight: 700, fontSize: 11, py: 0.25 }}
+                              >
+                                Promote to Graded
+                              </Button>
+                              <IconButton size="small" color="primary" onClick={() => handleStartEditNote(n)}>
+                                <Edit2 size={16} />
+                              </IconButton>
+                              <IconButton size="small" color="error" onClick={() => handleDeleteSingleParentNote(n.id)}>
+                                <Trash2 size={16} />
+                              </IconButton>
+                            </Stack>
+                          </Box>
 
-                        <FormattedParentNote
-                          noteId={n.id}
-                          title={n.title}
-                          description={n.description}
-                          color={branding.notes.color}
-                          iconName={branding.notes.icon}
-                          interactive={false}
-                        />
-                      </Card>
-                    ));
+                          <FormattedParentNote
+                            noteId={n.id}
+                            title={n.title}
+                            description={n.description}
+                            color={branding.notes.color}
+                            iconName={branding.notes.icon}
+                            parentNoteColor={branding.parentNotes.color}
+                            parentNoteIconName={branding.parentNotes.icon}
+                            interactive={false}
+                          />
+                        </Card>
+                      );
+                    });
                   })()}
 
-                  <Button
-                    variant="outlined"
-                    color="primary"
-                    onClick={handleAddNewNoteForm}
-                    startIcon={<Plus size={16} />}
-                    sx={{ fontWeight: 700, alignSelf: 'flex-start' }}
-                  >
-                    + Add Another Parent Note
-                  </Button>
+                  <Stack direction="row" spacing={1.5} flexWrap="wrap" useFlexGap>
+                    <Button
+                      variant="outlined"
+                      onClick={() => handleAddNewNoteForm('school_work')}
+                      startIcon={<ItemIcon name={branding.notes.icon} size={15} color={branding.notes.color} />}
+                      sx={{
+                        fontWeight: 700,
+                        textTransform: 'none',
+                        borderColor: branding.notes.color,
+                        color: branding.notes.color,
+                        '&:hover': {
+                          borderColor: branding.notes.color,
+                          bgcolor: 'action.hover',
+                        },
+                      }}
+                    >
+                      + Add School Work
+                    </Button>
+                    <Button
+                      variant="outlined"
+                      onClick={() => handleAddNewNoteForm('parent_note')}
+                      startIcon={<ItemIcon name={branding.parentNotes.icon} size={15} color={branding.parentNotes.color} />}
+                      sx={{
+                        fontWeight: 700,
+                        textTransform: 'none',
+                        borderColor: branding.parentNotes.color,
+                        color: branding.parentNotes.color,
+                        '&:hover': {
+                          borderColor: branding.parentNotes.color,
+                          bgcolor: 'action.hover',
+                        },
+                      }}
+                    >
+                      + Add Parent Note
+                    </Button>
+                  </Stack>
                 </Stack>
               )}
             </Box>
@@ -2179,15 +3715,96 @@ function PlannerContent() {
             <Divider sx={{ my: 3 }} />
 
             {/* Section 2: School Assignments */}
-            <Typography variant="subtitle2" fontWeight={700} color="success.main" mb={1.5} display="flex" alignItems="center" gap={1}>
-              <FileText size={18} />
-              Quick Add School Assignment
-            </Typography>
+            <Box display="flex" justifyContent="space-between" alignItems="center" mb={1.5} flexWrap="wrap" gap={1}>
+              <Typography variant="subtitle2" fontWeight={700} color="success.main" display="flex" alignItems="center" gap={1}>
+                <FileText size={18} />
+                School Assignments &amp; Grades
+              </Typography>
+              <Stack direction="row" spacing={1}>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  color="inherit"
+                  startIcon={<Sliders size={14} />}
+                  onClick={() => setOpenTypesManagerModal(true)}
+                  sx={{ fontWeight: 700, fontSize: 11 }}
+                >
+                  Edit Assignment Types
+                </Button>
+                <Button
+                  size="small"
+                  variant="contained"
+                  color="success"
+                  startIcon={<Plus size={14} />}
+                  onClick={() => {
+                    setUnifiedEditAssignment(null);
+                    setUnifiedPromotedNote(null);
+                    setOpenUnifiedModal(true);
+                  }}
+                  sx={{ fontWeight: 700, fontSize: 11 }}
+                >
+                  Full Graded / Recurring Modal
+                </Button>
+              </Stack>
+            </Box>
+
+            {/* Existing Assignments on this cell */}
+            {(() => {
+              const cellAssigns = schoolAssignments.filter(
+                (a) => a.subject_id === selectedSubject?.id && a.due_date === selectedDate
+              );
+              if (cellAssigns.length === 0) return null;
+              return (
+                <Stack spacing={1} mb={2}>
+                  {cellAssigns.map((ca) => (
+                    <Paper
+                      key={ca.id}
+                      variant="outlined"
+                      sx={{
+                        p: 1.25,
+                        borderRadius: 1.5,
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        gap: 1,
+                      }}
+                    >
+                      <Box>
+                        <Stack direction="row" spacing={0.75} alignItems="center">
+                          <Chip label={ca.category} size="small" color="primary" variant="outlined" sx={{ height: 20, fontSize: 10, fontWeight: 700 }} />
+                          <Typography variant="body2" fontWeight={700}>
+                            {ca.title}
+                          </Typography>
+                          {ca.percentage_score != null && (
+                            <Chip
+                              label={`${ca.percentage_score.toFixed(1)}%`}
+                              size="small"
+                              color="success"
+                              sx={{ height: 20, fontSize: 10, fontWeight: 800 }}
+                            />
+                          )}
+                        </Stack>
+                      </Box>
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        startIcon={<Edit2 size={13} />}
+                        onClick={() => handleOpenAssignmentFromPlanner(ca)}
+                        sx={{ fontWeight: 700, fontSize: 11 }}
+                      >
+                        Grade / Edit
+                      </Button>
+                    </Paper>
+                  ))}
+                </Stack>
+              );
+            })()}
+
             <Stack spacing={2} pt={0.5}>
               <TextField
                 fullWidth
                 size="small"
-                label="Assignment Title"
+                label="Quick Add Assignment Title"
                 placeholder="e.g. Math Worksheet 4B, History Essay"
                 value={assignmentTitle}
                 onChange={(e) => setAssignmentTitle(e.target.value)}
@@ -2198,7 +3815,7 @@ function PlannerContent() {
                   select
                   SelectProps={{ native: true }}
                   size="small"
-                  label="Category"
+                  label="Assignment Type"
                   value={assignmentCategory}
                   onChange={(e) => {
                     const val = e.target.value;
@@ -2206,12 +3823,22 @@ function PlannerContent() {
                   }}
                   sx={{ flex: 1 }}
                 >
-                  <option value="homework">Homework</option>
-                  <option value="project">Project</option>
-                  <option value="test">Test</option>
-                  <option value="quiz">Quiz</option>
-                  <option value="reading">Reading</option>
-                  <option value="paper">Paper</option>
+                  {assignmentTypes.length > 0 ? (
+                    assignmentTypes.map((t) => (
+                      <option key={t.slug} value={t.slug}>
+                        {t.name}
+                      </option>
+                    ))
+                  ) : (
+                    <>
+                      <option value="homework">Homework</option>
+                      <option value="project">Project</option>
+                      <option value="test">Test</option>
+                      <option value="quiz">Quiz</option>
+                      <option value="reading">Reading</option>
+                      <option value="paper">Paper</option>
+                    </>
+                  )}
                 </TextField>
                 <TextField
                   fullWidth
@@ -2239,7 +3866,7 @@ function PlannerContent() {
                 startIcon={<Plus size={16} />}
                 sx={{ fontWeight: 700, alignSelf: 'flex-start' }}
               >
-                {savingAssignment ? 'Adding...' : 'Add School Assignment'}
+                {savingAssignment ? 'Adding...' : 'Quick Add Assignment'}
               </Button>
             </Stack>
           </Box>
@@ -2329,12 +3956,12 @@ function PlannerContent() {
                   }}
                 >
                   <Typography variant="subtitle2" fontWeight={700} gutterBottom>
-                    Subject Placeholders ({getWeekSequenceSummary()})
+                    Subject Placeholders &amp; Recurring Graded Assignments ({getWeekSequenceSummary()})
                   </Typography>
                   <Typography variant="caption" color="text.secondary">
                     {populateOverwriteExisting
-                      ? 'Existing recurring subject notes in this week will be refreshed with the selected Week # and Math Days.'
-                      : 'Empty subject cells in this week will be populated from your active subject recurring rules (with Attend Class labels placed as bold note headers).'}
+                      ? 'Existing recurring subject notes in this week will be refreshed with the selected Week # and Math Days, and any missing recurring graded assignments for this week will be generated.'
+                      : 'Empty subject cells in this week will be populated from your active subject recurring rules, and any recurring graded assignments for this week will be generated automatically.'}
                   </Typography>
                 </Paper>
               )}
@@ -2607,7 +4234,7 @@ function PlannerContent() {
             </Box>
             <Box p={3}>
               <Typography variant="body2" color="text.secondary">
-                This will clear all Parent Notes and custom week counter overrides for the week of <strong>{weekStartDate}</strong> ({weekDates[0]?.dateStr} to {weekDates[weekDates.length - 1]?.dateStr}).
+                This will clear all School Work, Parent Notes, and custom week counter overrides for the week of <strong>{weekStartDate}</strong> ({weekDates[0]?.dateStr} to {weekDates[weekDates.length - 1]?.dateStr}).
               </Typography>
               <Typography variant="body2" color="text.secondary" mt={1.5}>
                 After resetting, you can click <strong>Populate Week Placeholders</strong> to generate fresh placeholders from your subject recurring rules.
@@ -2631,6 +4258,88 @@ function PlannerContent() {
           </Paper>
         </Box>
       )}
+
+      {/* UNIFIED ASSIGNMENT & GRADE MODAL */}
+      <UnifiedAssignmentModal
+        open={openUnifiedModal}
+        onClose={() => {
+          setOpenUnifiedModal(false);
+          setUnifiedEditAssignment(null);
+          setUnifiedPromotedNote(null);
+        }}
+        subjects={subjects as SubjectWithGrading[]}
+        assignmentTypes={assignmentTypes}
+        editingAssignment={unifiedEditAssignment}
+        initialValues={
+          unifiedPromotedNote
+            ? {
+                subject_id: unifiedPromotedNote.subject_id,
+                title: unifiedPromotedNote.title || unifiedPromotedNote.description.split('\n')[0] || 'Graded Assignment',
+                description: unifiedPromotedNote.description,
+                due_date: unifiedPromotedNote.note_date,
+                assigned_date: unifiedPromotedNote.note_date,
+                source_type: 'planner_promoted',
+                linked_note_id: unifiedPromotedNote.id,
+              }
+            : {
+                subject_id: selectedSubject?.id || undefined,
+                due_date: selectedDate || weekStartDate,
+                assigned_date: selectedDate || weekStartDate,
+              }
+        }
+        onOpenManageTypes={() => setOpenTypesManagerModal(true)}
+        onSaved={(savedAssignment, savedTemplate) => {
+          if (savedAssignment) {
+            setSchoolAssignments((prev) => {
+              const exists = prev.some((a) => a.id === savedAssignment.id);
+              return exists
+                ? prev.map((a) => (a.id === savedAssignment.id ? (savedAssignment as SchoolAssignment) : a))
+                : [...prev, savedAssignment as SchoolAssignment];
+            });
+          }
+          if (savedTemplate) {
+            setRecurringTemplates((prev) => {
+              const exists = prev.some((t) => t.id === savedTemplate.id);
+              return exists ? prev.map((t) => (t.id === savedTemplate.id ? savedTemplate : t)) : [...prev, savedTemplate];
+            });
+            loadPlannerData(weekStartDate);
+          }
+        }}
+      />
+
+      <ApiGradeOverrideWarningModal
+        open={Boolean(apiWarningAssignment)}
+        assignment={apiWarningAssignment}
+        subject={
+          apiWarningAssignment?.subject_id
+            ? (subjects.find((s) => s.id === apiWarningAssignment.subject_id) as
+                | SubjectWithGrading
+                | undefined) || null
+            : null
+        }
+        onClose={() => setApiWarningAssignment(null)}
+        onUpdated={(updated) => {
+          setSchoolAssignments((prev) =>
+            prev.map((item) =>
+              item.id === updated.id ? (updated as SchoolAssignment) : item
+            )
+          );
+        }}
+        onOpenFullEditor={(target) => {
+          setUnifiedPromotedNote(null);
+          setUnifiedEditAssignment(target);
+          setApiWarningAssignment(null);
+          setOpenUnifiedModal(true);
+        }}
+      />
+
+      {/* ASSIGNMENT TYPES MANAGER MODAL */}
+      <AssignmentTypesManagerModal
+        open={openTypesManagerModal}
+        onClose={() => setOpenTypesManagerModal(false)}
+        assignmentTypes={assignmentTypes}
+        onUpdated={setAssignmentTypes}
+      />
 
       {/* CSS STYLES FOR PRINTING & BINDER LAYOUT */}
       <style jsx global>{`
@@ -2904,7 +4613,7 @@ function PlannerContent() {
           font-size: 11px;
           outline: none;
           background: transparent;
-          color: #000000;
+          color: #000000 !important;
         }
 
         .sidebar-textarea {
@@ -2916,7 +4625,7 @@ function PlannerContent() {
           outline: none;
           resize: none;
           background: transparent;
-          color: #000000;
+          color: #000000 !important;
           box-sizing: border-box;
         }
 

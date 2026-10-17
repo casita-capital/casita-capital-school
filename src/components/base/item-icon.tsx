@@ -13,6 +13,8 @@ import {
   CheckCircle,
   FileEdit,
   MessageSquare,
+  User,
+  UserCheck,
 } from 'lucide-react';
 
 interface ItemIconProps {
@@ -40,6 +42,10 @@ export const ItemIcon: FC<ItemIconProps> = ({ name, size = 16, color, style }) =
       return <FileEdit {...iconProps} />;
     case 'MessageSquare':
       return <MessageSquare {...iconProps} />;
+    case 'User':
+      return <User {...iconProps} />;
+    case 'UserCheck':
+      return <UserCheck {...iconProps} />;
     case 'Sparkles':
       return <Sparkles {...iconProps} />;
     case 'Star':

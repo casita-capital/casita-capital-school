@@ -52,6 +52,8 @@ import type { ColorPreset } from 'src/theme';
 
 const AVAILABLE_ICONS = [
   { id: 'none', label: 'No Icon (Text Only)' },
+  { id: 'User', label: 'Person / User (User)' },
+  { id: 'UserCheck', label: 'Person Check (UserCheck)' },
   { id: 'FileText', label: 'Document (FileText)' },
   { id: 'CheckSquare', label: 'Checkbox (CheckSquare)' },
   { id: 'CheckCircle', label: 'Circle Check (CheckCircle)' },
@@ -634,7 +636,7 @@ export default function SettingsPage() {
               </Box>
 
               <Typography variant="body2" color="text.secondary" mb={3}>
-                Customize the accent colors and icons used to display <strong>School Assignments</strong>, <strong>To-Do Tasks</strong>, <strong>Parent Notes</strong>, and <strong>Holidays</strong> across the Master Calendar and Weekly Planner.
+                Customize the accent colors and icons used to display <strong>School Assignments</strong>, <strong>To-Do Tasks</strong>, <strong>School Work</strong>, <strong>Parent Notes</strong>, and <strong>Holidays</strong> across the Master Calendar and Weekly Planner.
               </Typography>
 
               <Divider sx={{ my: 3 }} />
@@ -788,7 +790,7 @@ export default function SettingsPage() {
                   </Card>
                 </Grid>
 
-                {/* 3. Parent Notes */}
+                {/* 3. School Work (formerly Parent Notes) */}
                 <Grid item xs={12} sm={6}>
                   <Card variant="outlined" sx={{ p: 2.5, borderRadius: 2 }}>
                     <Stack direction="row" alignItems="center" spacing={1} mb={2}>
@@ -803,9 +805,14 @@ export default function SettingsPage() {
                       >
                         <ItemIcon name={itemBrandingState.notes.icon} size={18} />
                       </Box>
-                      <Typography variant="h6" fontWeight={700}>
-                        Parent Notes
-                      </Typography>
+                      <Box>
+                        <Typography variant="h6" fontWeight={700} lineHeight={1.2}>
+                          School Work
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          Daily classwork, lessons &amp; workbook items
+                        </Typography>
+                      </Box>
                     </Stack>
 
                     <Stack spacing={2}>
@@ -862,7 +869,86 @@ export default function SettingsPage() {
                   </Card>
                 </Grid>
 
-                {/* 4. Holidays */}
+                {/* 4. Parent Notes (New Purple Category for Syllabus Notes) */}
+                <Grid item xs={12} sm={6}>
+                  <Card variant="outlined" sx={{ p: 2.5, borderRadius: 2 }}>
+                    <Stack direction="row" alignItems="center" spacing={1} mb={2}>
+                      <Box
+                        sx={{
+                          p: 1,
+                          borderRadius: 1.5,
+                          bgcolor: itemBrandingState.parentNotes.color,
+                          color: '#ffffff',
+                          display: 'flex',
+                        }}
+                      >
+                        <ItemIcon name={itemBrandingState.parentNotes.icon} size={18} />
+                      </Box>
+                      <Box>
+                        <Typography variant="h6" fontWeight={700} lineHeight={1.2}>
+                          Parent Notes
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          Notes from the parent about the syllabus
+                        </Typography>
+                      </Box>
+                    </Stack>
+
+                    <Stack spacing={2}>
+                      <Box>
+                        <Typography variant="caption" fontWeight={700} color="text.secondary" mb={0.5} display="block">
+                          Accent Color
+                        </Typography>
+                        <Stack direction="row" spacing={1.5} alignItems="center">
+                          <input
+                            type="color"
+                            value={itemBrandingState.parentNotes.color}
+                            onChange={(e) =>
+                              handleUpdateSingleBranding('parentNotes', 'color', e.target.value)
+                            }
+                            style={{
+                              width: 40,
+                              height: 38,
+                              border: 'none',
+                              borderRadius: 4,
+                              cursor: 'pointer',
+                            }}
+                          />
+                          <TextField
+                            size="small"
+                            fullWidth
+                            value={itemBrandingState.parentNotes.color}
+                            onChange={(e) =>
+                              handleUpdateSingleBranding('parentNotes', 'color', e.target.value)
+                            }
+                          />
+                        </Stack>
+                      </Box>
+
+                      <TextField
+                        select
+                        size="small"
+                        fullWidth
+                        label="Icon"
+                        value={itemBrandingState.parentNotes.icon}
+                        onChange={(e) =>
+                          handleUpdateSingleBranding('parentNotes', 'icon', e.target.value)
+                        }
+                      >
+                        {AVAILABLE_ICONS.map((icon) => (
+                          <MenuItem key={icon.id} value={icon.id}>
+                            <Stack direction="row" alignItems="center" spacing={1.5}>
+                              <ItemIcon name={icon.id} size={16} />
+                              <span>{icon.label}</span>
+                            </Stack>
+                          </MenuItem>
+                        ))}
+                      </TextField>
+                    </Stack>
+                  </Card>
+                </Grid>
+
+                {/* 5. Holidays */}
                 <Grid item xs={12} sm={6}>
                   <Card variant="outlined" sx={{ p: 2.5, borderRadius: 2 }}>
                     <Stack direction="row" alignItems="center" spacing={1} mb={2}>
@@ -942,7 +1028,7 @@ export default function SettingsPage() {
                 <Typography variant="subtitle2" fontWeight={800} mb={1.5}>
                   Live Preview on Calendar Chips &amp; Badges:
                 </Typography>
-                <Stack direction="row" spacing={2} flexWrap="wrap" alignItems="center">
+                <Stack direction="row" spacing={2} flexWrap="wrap" alignItems="center" useFlexGap>
                   <Chip
                     icon={<ItemIcon name={itemBrandingState.assignments.icon} size={16} color="#ffffff" />}
                     label="School Assignment"
@@ -975,9 +1061,24 @@ export default function SettingsPage() {
                   />
                   <Chip
                     icon={<ItemIcon name={itemBrandingState.notes.icon} size={16} color="#ffffff" />}
-                    label="Parent Note"
+                    label="School Work"
                     sx={{
                       bgcolor: itemBrandingState.notes.color,
+                      color: '#ffffff',
+                      fontWeight: 700,
+                      height: 36,
+                      px: 1,
+                      fontSize: '0.85rem',
+                      borderRadius: 2,
+                      '& .MuiChip-icon': { color: '#ffffff', ml: 0.5, mr: 0.5 },
+                      '& .MuiChip-label': { px: 1.2 },
+                    }}
+                  />
+                  <Chip
+                    icon={<ItemIcon name={itemBrandingState.parentNotes.icon} size={16} color="#ffffff" />}
+                    label="Parent Note"
+                    sx={{
+                      bgcolor: itemBrandingState.parentNotes.color,
                       color: '#ffffff',
                       fontWeight: 700,
                       height: 36,
@@ -1252,7 +1353,7 @@ export default function SettingsPage() {
                   <Typography variant="caption" color="text.secondary" fontWeight={600} display="block">
                     Customized Items Branding
                   </Typography>
-                  <Stack direction="row" spacing={1} mt={0.5}>
+                  <Stack direction="row" spacing={1} mt={0.5} flexWrap="wrap" useFlexGap>
                     <Chip
                       size="small"
                       label="Assignments"
@@ -1265,8 +1366,13 @@ export default function SettingsPage() {
                     />
                     <Chip
                       size="small"
-                      label="Notes"
+                      label="School Work"
                       sx={{ bgcolor: branding.notes.color, color: '#fff', fontWeight: 700, fontSize: '0.68rem' }}
+                    />
+                    <Chip
+                      size="small"
+                      label="Parent Notes"
+                      sx={{ bgcolor: branding.parentNotes.color, color: '#fff', fontWeight: 700, fontSize: '0.68rem' }}
                     />
                     <Chip
                       size="small"

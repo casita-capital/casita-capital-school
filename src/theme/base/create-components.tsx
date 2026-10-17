@@ -79,6 +79,9 @@ export const createComponents = (): Components => {
         root: {
           padding: '18px 14px',
         },
+        stickyHeader: {
+          zIndex: 3,
+        },
       },
     },
     MuiTableHead: {

@@ -9,19 +9,35 @@ interface ComponentsConfig {
 
 export const createComponents = ({ palette }: ComponentsConfig): Components => {
   return {
+    MuiPaper: {
+      styleOverrides: {
+        root: {
+          color: palette.text!.primary,
+        },
+      },
+    },
+    MuiModal: {
+      styleOverrides: {
+        root: {
+          color: palette.text!.primary,
+        },
+      },
+    },
     MuiPopover: {
       styleOverrides: {
         paper: {
-          backgroundColor: alpha(palette.background?.paper || '#ffffff', 0.9),
+          backgroundColor: alpha(palette.background?.paper || '#ffffff', 0.95),
           backdropFilter: 'blur(18px)',
+          color: palette.text!.primary,
         },
       },
     },
     MuiDrawer: {
       styleOverrides: {
         paper: {
-          backgroundColor: alpha(palette.background?.paper || '#ffffff', 0.9),
+          backgroundColor: alpha(palette.background?.paper || '#ffffff', 0.95),
           backdropFilter: 'blur(18px)',
+          color: palette.text!.primary,
         },
       },
     },
@@ -50,16 +66,57 @@ export const createComponents = ({ palette }: ComponentsConfig): Components => {
       styleOverrides: {
         root: {
           borderBottomColor: palette.divider,
+          color: palette.text!.primary,
+        },
+        stickyHeader: {
+          backgroundColor: palette.neutral![50],
+          color: palette.neutral![800],
+          borderBottomColor: palette.divider,
         },
       },
     },
     MuiTableHead: {
       styleOverrides: {
         root: {
+          backgroundColor: palette.neutral![50],
           [`& .${tableCellClasses.root}`]: {
-            backgroundColor: alpha(palette.neutral![100], 0.5),
+            backgroundColor: palette.neutral![50],
             color: palette.neutral![800],
             borderBottomColor: palette.divider,
+          },
+        },
+      },
+    },
+    MuiInputBase: {
+      styleOverrides: {
+        root: {
+          color: palette.text!.primary,
+        },
+        input: {
+          color: palette.text!.primary,
+          '&::placeholder': {
+            color: palette.neutral![500],
+            opacity: 0.8,
+          },
+        },
+      },
+    },
+    MuiFormLabel: {
+      styleOverrides: {
+        root: {
+          color: palette.neutral![700],
+          '&.Mui-focused': {
+            color: (palette.primary as PaletteColor).main,
+          },
+        },
+      },
+    },
+    MuiInputLabel: {
+      styleOverrides: {
+        root: {
+          color: palette.neutral![700],
+          '&.Mui-focused': {
+            color: (palette.primary as PaletteColor).main,
           },
         },
       },
@@ -70,6 +127,7 @@ export const createComponents = ({ palette }: ComponentsConfig): Components => {
           backgroundColor: alpha(palette.neutral![50], 0.4),
           boxShadow: `${alpha(palette.neutral![400], 0.3)} 0 1px 3px`,
           borderColor: palette.neutral![400],
+          color: palette.text!.primary,
 
           '&:hover': {
             backgroundColor: palette.background!.paper,
@@ -86,6 +144,9 @@ export const createComponents = ({ palette }: ComponentsConfig): Components => {
             boxShadow: `${alpha(palette.neutral![400], 0.3)} 0 1px 3px`,
           },
         },
+        input: {
+          color: palette.text!.primary,
+        },
       },
     },
     MuiOutlinedInput: {
@@ -93,6 +154,7 @@ export const createComponents = ({ palette }: ComponentsConfig): Components => {
         root: {
           boxShadow: `${alpha(palette.neutral![400], 0.3)} 0 1px 3px`,
           backgroundColor: palette.background!.paper,
+          color: palette.text!.primary,
 
           '&:hover': {
             '.MuiOutlinedInput-notchedOutline': {
@@ -105,6 +167,9 @@ export const createComponents = ({ palette }: ComponentsConfig): Components => {
               },
             },
           },
+        },
+        input: {
+          color: palette.text!.primary,
         },
         notchedOutline: {
           borderColor: palette.neutral![400],
@@ -171,6 +236,20 @@ export const createComponents = ({ palette }: ComponentsConfig): Components => {
     },
     MuiCssBaseline: {
       styleOverrides: {
+        html: {
+          colorScheme: 'light',
+        },
+        body: {
+          backgroundColor: palette.background!.default,
+          color: palette.text!.primary,
+        },
+        'input, textarea, select': {
+          color: palette.text!.primary,
+        },
+        option: {
+          backgroundColor: palette.background?.paper || '#ffffff',
+          color: palette.text!.primary,
+        },
         '#nprogress .bar': {
           backgroundColor: (palette.primary as PaletteColor).main,
         },
