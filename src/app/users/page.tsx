@@ -47,7 +47,17 @@ import {
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { PageHeading } from 'src/components/base/page-heading';
+import { ItemIcon } from 'src/components/base/item-icon';
 import { createClient } from 'src/services/supabase/client';
+
+const AVATAR_ICON_OPTIONS = [
+  { id: 'User', label: 'Initials / Default' },
+  { id: 'Sparkles', label: 'Sparkles' },
+  { id: 'Star', label: 'Star' },
+  { id: 'BookOpen', label: 'Book' },
+  { id: 'CheckCircle', label: 'Check Circle' },
+  { id: 'Shield', label: 'Shield' },
+];
 
 interface UserRecord {
   id: string;
@@ -56,6 +66,9 @@ interface UserRecord {
   full_name: string;
   role: 'admin' | 'parent' | 'teacher' | 'student';
   avatar_url: string | null;
+  last_login_at: string | null;
+  updated_at?: string | null;
+  last_activity_at?: string | null;
   created_at: string;
 }
 
@@ -74,6 +87,7 @@ export default function UsersPage() {
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [role, setRole] = useState<'admin' | 'parent' | 'teacher' | 'student'>('parent');
+  const [avatarUrl, setAvatarUrl] = useState<string>('User');
   const [sendInvite, setSendInvite] = useState(true);
   const [saving, setSaving] = useState(false);
 
@@ -144,15 +158,60 @@ export default function UsersPage() {
 
   async function loadUsers() {
     try {
-      const { data, error } = await supabase
-        .from('users')
-        .select('*')
-        .order('created_at', { ascending: false });
+      const [{ data, error }, { data: auditRows }] = await Promise.all([
+        supabase
+          .from('users')
+          .select('*')
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('audit_logs')
+          .select('changed_by, created_at')
+          .order('created_at', { ascending: false })
+          .limit(300),
+      ]);
 
       if (error) {
         toast.error(`Error loading users: ${error.message}`);
       } else if (data) {
-        setUsers(data as UserRecord[]);
+        const latestAuditByActor = new Map<string, string>();
+        if (auditRows) {
+          for (const row of auditRows) {
+            if (typeof row.changed_by === 'string' && typeof row.created_at === 'string') {
+              const key = row.changed_by.trim().toLowerCase();
+              if (key && !latestAuditByActor.has(key)) {
+                latestAuditByActor.set(key, row.created_at);
+              }
+            }
+          }
+        }
+
+        const enriched = (data as UserRecord[]).map((u) => {
+          const emailKey = u.email.trim().toLowerCase();
+          const nameKey = u.full_name.trim().toLowerCase();
+          const candidates = [
+            u.last_login_at,
+            latestAuditByActor.get(emailKey) || null,
+            latestAuditByActor.get(nameKey) || null,
+            u.updated_at && u.updated_at !== u.created_at ? u.updated_at : null,
+          ].filter((val): val is string => Boolean(val));
+
+          let bestIso: string | null = null;
+          let bestMs = 0;
+          for (const iso of candidates) {
+            const ms = new Date(iso).getTime();
+            if (!Number.isNaN(ms) && ms > bestMs) {
+              bestMs = ms;
+              bestIso = iso;
+            }
+          }
+
+          return {
+            ...u,
+            last_activity_at: bestIso,
+          };
+        });
+
+        setUsers(enriched);
       }
     } catch {
       toast.error('Failed to fetch user accounts');
@@ -170,6 +229,7 @@ export default function UsersPage() {
     setFullName('');
     setEmail('');
     setRole('parent');
+    setAvatarUrl('User');
     setSendInvite(true);
     setOpenModal(true);
   };
@@ -179,6 +239,7 @@ export default function UsersPage() {
     setFullName(u.full_name);
     setEmail(u.email);
     setRole(u.role);
+    setAvatarUrl(u.avatar_url || 'User');
     setSendInvite(false);
     setOpenModal(true);
   };
@@ -193,11 +254,13 @@ export default function UsersPage() {
     setSaving(true);
     try {
       if (editingUser) {
+        const nextAvatar = avatarUrl === 'User' ? null : avatarUrl;
         const { error } = await supabase
           .from('users')
           .update({
             full_name: fullName.trim(),
             role,
+            avatar_url: nextAvatar,
           })
           .eq('id', editingUser.id);
 
@@ -206,19 +269,23 @@ export default function UsersPage() {
         } else {
           setUsers((prev) =>
             prev.map((u) =>
-              u.id === editingUser.id ? { ...u, full_name: fullName.trim(), role } : u
+              u.id === editingUser.id
+                ? { ...u, full_name: fullName.trim(), role, avatar_url: nextAvatar }
+                : u
             )
           );
           toast.success('User updated successfully');
           setOpenModal(false);
         }
       } else {
+        const nextAvatar = avatarUrl === 'User' ? null : avatarUrl;
         const { data, error } = await supabase
           .from('users')
           .insert({
             full_name: fullName.trim(),
             email: email.trim().toLowerCase(),
             role,
+            avatar_url: nextAvatar,
             preferences: {},
           })
           .select('*')
@@ -301,6 +368,98 @@ export default function UsersPage() {
       return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
     }
     return name.slice(0, 2).toUpperCase();
+  };
+
+  const renderUserAvatar = (u: Pick<UserRecord, 'full_name' | 'avatar_url'>, size = 38) => {
+    const isImageUrl = Boolean(
+      u.avatar_url && (u.avatar_url.startsWith('data:') || u.avatar_url.startsWith('http'))
+    );
+    const isCustomIcon = Boolean(
+      u.avatar_url && !isImageUrl && u.avatar_url !== 'User'
+    );
+
+    return (
+      <Avatar
+        src={isImageUrl && u.avatar_url ? u.avatar_url : undefined}
+        sx={{
+          bgcolor: 'primary.main',
+          fontWeight: 700,
+          width: size,
+          height: size,
+          fontSize: '0.85rem',
+          border: '1px solid',
+          borderColor: 'divider',
+        }}
+      >
+        {!isImageUrl ? (
+          isCustomIcon && u.avatar_url ? (
+            <ItemIcon name={u.avatar_url} size={Math.round(size * 0.48)} color="#ffffff" />
+          ) : (
+            getInitials(u.full_name)
+          )
+        ) : null}
+      </Avatar>
+    );
+  };
+
+  const formatLastActivity = (activityAt: string | null | undefined) => {
+    if (!activityAt) {
+      return (
+        <Typography variant="caption" color="text.secondary" sx={{ fontStyle: 'italic', whiteSpace: 'nowrap' }}>
+          No activity yet
+        </Typography>
+      );
+    }
+    const d = new Date(activityAt);
+    if (Number.isNaN(d.getTime())) {
+      return (
+        <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: 'nowrap' }}>
+          —
+        </Typography>
+      );
+    }
+
+    const now = new Date();
+    const isSameDay =
+      d.getFullYear() === now.getFullYear() &&
+      d.getMonth() === now.getMonth() &&
+      d.getDate() === now.getDate();
+
+    const yesterday = new Date(now);
+    yesterday.setDate(now.getDate() - 1);
+    const isYesterday =
+      d.getFullYear() === yesterday.getFullYear() &&
+      d.getMonth() === yesterday.getMonth() &&
+      d.getDate() === yesterday.getDate();
+
+    const datePart = isSameDay
+      ? 'Today'
+      : isYesterday
+      ? 'Yesterday'
+      : d.toLocaleDateString('en-US', {
+          month: 'short',
+          day: 'numeric',
+          year: 'numeric',
+        });
+    const timePart = d.toLocaleTimeString('en-US', {
+      hour: 'numeric',
+      minute: '2-digit',
+    });
+    return (
+      <Stack spacing={0.15} sx={{ whiteSpace: 'nowrap' }}>
+        <Typography
+          variant="body2"
+          fontWeight={600}
+          color={isSameDay ? 'success.main' : 'text.primary'}
+          sx={{ fontVariantNumeric: 'tabular-nums' }}
+        >
+          {datePart}
+        </Typography>
+        <Typography variant="caption" color="text.secondary" sx={{ fontVariantNumeric: 'tabular-nums' }}>
+          {timePart}
+        </Typography>
+      </Stack>
+    );
   };
 
   const getRoleChip = (r: string) => {
@@ -393,20 +552,21 @@ export default function UsersPage() {
 
         {/* HIGH-DENSITY USER ACCOUNTS TABLE */}
         <TableContainer>
-          <Table sx={{ minWidth: 650 }}>
+          <Table sx={{ minWidth: 760 }}>
             <TableHead sx={{ bgcolor: 'action.hover' }}>
               <TableRow>
-                <TableCell sx={{ fontWeight: 700 }}>USER NAME</TableCell>
-                <TableCell sx={{ fontWeight: 700 }}>EMAIL ADDRESS</TableCell>
-                <TableCell sx={{ fontWeight: 700, width: 140 }}>ROLE</TableCell>
-                <TableCell sx={{ fontWeight: 700, width: 160 }}>CREATED DATE</TableCell>
-                <TableCell sx={{ fontWeight: 700, width: 180, textAlign: 'right' }}>ACTIONS</TableCell>
+                <TableCell sx={{ fontWeight: 700, whiteSpace: 'nowrap' }}>USER NAME</TableCell>
+                <TableCell sx={{ fontWeight: 700, whiteSpace: 'nowrap' }}>EMAIL ADDRESS</TableCell>
+                <TableCell sx={{ fontWeight: 700, width: 130, whiteSpace: 'nowrap' }}>ROLE</TableCell>
+                <TableCell sx={{ fontWeight: 700, width: 170, whiteSpace: 'nowrap' }}>LAST ACTIVITY</TableCell>
+                <TableCell sx={{ fontWeight: 700, width: 150, whiteSpace: 'nowrap' }}>CREATED DATE</TableCell>
+                <TableCell sx={{ fontWeight: 700, width: 170, textAlign: 'right', whiteSpace: 'nowrap' }}>ACTIONS</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
               {filteredUsers.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={5} align="center" sx={{ py: 6 }}>
+                  <TableCell colSpan={6} align="center" sx={{ py: 6 }}>
                     <Users size={32} color={theme.palette.text.secondary} />
                     <Typography variant="subtitle1" fontWeight={700} mt={1}>
                       No User Accounts Found
@@ -428,27 +588,36 @@ export default function UsersPage() {
               ) : (
                 filteredUsers.map((u) => (
                   <TableRow key={u.id} hover>
-                    <TableCell>
+                    <TableCell sx={{ whiteSpace: 'nowrap' }}>
                       <Stack direction="row" alignItems="center" spacing={1.5}>
-                        <Avatar sx={{ bgcolor: 'primary.main', fontWeight: 700, width: 36, height: 36, fontSize: '0.85rem' }}>
-                          {getInitials(u.full_name)}
-                        </Avatar>
-                        <Typography variant="subtitle2" fontWeight={700}>
-                          {u.full_name}
-                        </Typography>
+                        {renderUserAvatar(u, 38)}
+                        <Box>
+                          <Typography variant="subtitle2" fontWeight={700}>
+                            {u.full_name}
+                          </Typography>
+                          {u.avatar_url && !u.avatar_url.startsWith('data:') && !u.avatar_url.startsWith('http') && u.avatar_url !== 'User' && (
+                            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', lineHeight: 1.1 }}>
+                              Icon: {u.avatar_url}
+                            </Typography>
+                          )}
+                        </Box>
                       </Stack>
                     </TableCell>
 
-                    <TableCell>
+                    <TableCell sx={{ whiteSpace: 'nowrap' }}>
                       <Typography variant="body2" color="text.secondary" fontWeight={500}>
                         {u.email}
                       </Typography>
                     </TableCell>
 
-                    <TableCell>{getRoleChip(u.role)}</TableCell>
+                    <TableCell sx={{ whiteSpace: 'nowrap' }}>{getRoleChip(u.role)}</TableCell>
 
-                    <TableCell>
-                      <Typography variant="body2" color="text.secondary">
+                    <TableCell sx={{ whiteSpace: 'nowrap' }}>
+                      {formatLastActivity(u.last_activity_at ?? u.last_login_at)}
+                    </TableCell>
+
+                    <TableCell sx={{ whiteSpace: 'nowrap' }}>
+                      <Typography variant="body2" color="text.secondary" sx={{ fontVariantNumeric: 'tabular-nums' }}>
                         {new Date(u.created_at).toLocaleDateString('en-US', {
                           month: 'short',
                           day: 'numeric',
@@ -457,7 +626,7 @@ export default function UsersPage() {
                       </Typography>
                     </TableCell>
 
-                    <TableCell align="right">
+                    <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>
                       <Stack direction="row" spacing={0.5} justifyContent="flex-end">
                         <IconButton
                           size="small"
@@ -510,6 +679,20 @@ export default function UsersPage() {
 
           <DialogContent dividers>
             <Stack spacing={2.5} pt={1}>
+              <Stack direction="row" spacing={2} alignItems="center">
+                {renderUserAvatar({ full_name: fullName || 'User', avatar_url: avatarUrl }, 48)}
+                <Box flexGrow={1}>
+                  <Typography variant="subtitle2" fontWeight={700}>
+                    {fullName || 'New User'}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    {avatarUrl.startsWith('data:') || avatarUrl.startsWith('http')
+                      ? 'Using custom uploaded photo'
+                      : `Avatar Icon: ${avatarUrl}`}
+                  </Typography>
+                </Box>
+              </Stack>
+
               <TextField
                 fullWidth
                 label="Full Name"
@@ -535,12 +718,32 @@ export default function UsersPage() {
                 select
                 label="Account Role"
                 value={role}
-                onChange={(e) => setRole(e.target.value as any)}
+                onChange={(e) => setRole(e.target.value as UserRecord['role'])}
               >
                 <MenuItem value="admin">Admin (Full Access &amp; Settings)</MenuItem>
                 <MenuItem value="parent">Parent (Planner, Calendar, Assignments)</MenuItem>
                 <MenuItem value="teacher">Teacher (Assignments &amp; Curriculum)</MenuItem>
                 <MenuItem value="student">Student (Read-Only Assignments &amp; Tasks)</MenuItem>
+              </TextField>
+
+              <TextField
+                fullWidth
+                select
+                label="Avatar Icon"
+                value={avatarUrl}
+                onChange={(e) => setAvatarUrl(e.target.value)}
+              >
+                {(avatarUrl.startsWith('data:') || avatarUrl.startsWith('http')) && (
+                  <MenuItem value={avatarUrl}>Custom Uploaded Image (Keep Current)</MenuItem>
+                )}
+                {AVATAR_ICON_OPTIONS.map((opt) => (
+                  <MenuItem key={opt.id} value={opt.id}>
+                    <Stack direction="row" alignItems="center" spacing={1.5}>
+                      <ItemIcon name={opt.id} size={18} />
+                      <span>{opt.label}</span>
+                    </Stack>
+                  </MenuItem>
+                ))}
               </TextField>
 
               {!editingUser && (

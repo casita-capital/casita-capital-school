@@ -75,6 +75,26 @@ export function clearCachedActiveUser(): void {
   localStorage.removeItem(ACTIVE_USER_EMAIL_STORAGE_KEY);
 }
 
+const LAST_ACTIVITY_PING_STORAGE_KEY = 'school_active_user_last_ping_ms';
+const ACTIVITY_PING_THROTTLE_MS = 60 * 1000; // 1 minute
+
+function shouldRecordActivityPing(userId: string, existingTimestamp: string | null): boolean {
+  if (!existingTimestamp) return true;
+  if (typeof window === 'undefined') return false;
+  try {
+    const raw = localStorage.getItem(`${LAST_ACTIVITY_PING_STORAGE_KEY}:${userId}`);
+    const lastPingMs = raw ? Number(raw) : 0;
+    const nowMs = Date.now();
+    if (!lastPingMs || nowMs - lastPingMs >= ACTIVITY_PING_THROTTLE_MS) {
+      localStorage.setItem(`${LAST_ACTIVITY_PING_STORAGE_KEY}:${userId}`, String(nowMs));
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 export async function resolveAndSyncActiveUser(
   supabase: ReturnType<typeof createClient>
 ): Promise<ResolvedActiveUser | null> {
@@ -92,14 +112,22 @@ export async function resolveAndSyncActiveUser(
     return null;
   }
 
+  const nowIso = new Date().toISOString();
+
   if (user?.id) {
     const { data: byAuthId } = await supabase
       .from('users')
-      .select('id, auth_id, full_name, email, role, avatar_url')
+      .select('id, auth_id, full_name, email, role, avatar_url, last_login_at')
       .eq('auth_id', user.id)
       .maybeSingle();
 
     if (byAuthId) {
+      if (shouldRecordActivityPing(byAuthId.id, byAuthId.last_login_at)) {
+        await supabase
+          .from('users')
+          .update({ last_login_at: nowIso, updated_at: nowIso })
+          .eq('id', byAuthId.id);
+      }
       const displayName =
         byAuthId.full_name && !byAuthId.full_name.includes('@')
           ? byAuthId.full_name
@@ -119,16 +147,21 @@ export async function resolveAndSyncActiveUser(
   if (activeEmail) {
     const { data: byEmail } = await supabase
       .from('users')
-      .select('id, auth_id, full_name, email, role, avatar_url')
+      .select('id, auth_id, full_name, email, role, avatar_url, last_login_at')
       .ilike('email', activeEmail)
       .maybeSingle();
 
     if (byEmail) {
-      // If user is authenticated and auth_id was not yet linked, link it automatically
-      if (user?.id && !byEmail.auth_id) {
+      const needsAuthLink = Boolean(user?.id && !byEmail.auth_id);
+      const needsActivityPing = shouldRecordActivityPing(byEmail.id, byEmail.last_login_at);
+      if (needsAuthLink || needsActivityPing) {
         await supabase
           .from('users')
-          .update({ auth_id: user.id })
+          .update({
+            ...(needsAuthLink && user?.id ? { auth_id: user.id } : {}),
+            last_login_at: nowIso,
+            updated_at: nowIso,
+          })
           .eq('id', byEmail.id);
       }
       const displayName =

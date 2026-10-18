@@ -100,6 +100,7 @@ export interface Database {
           role: 'admin' | 'parent' | 'teacher' | 'student';
           avatar_url: string | null;
           preferences: Json;
+          last_login_at: string | null;
           created_at: string;
           updated_at: string;
         };
@@ -111,6 +112,7 @@ export interface Database {
           role?: 'admin' | 'parent' | 'teacher' | 'student';
           avatar_url?: string | null;
           preferences?: Json;
+          last_login_at?: string | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -122,6 +124,7 @@ export interface Database {
           role?: 'admin' | 'parent' | 'teacher' | 'student';
           avatar_url?: string | null;
           preferences?: Json;
+          last_login_at?: string | null;
           created_at?: string;
           updated_at?: string;
         };

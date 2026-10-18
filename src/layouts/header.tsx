@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import {
   alpha,
   AppBar,
@@ -143,6 +143,7 @@ export const headingFontOptions: HeadingFontOption[] = [
 export function Header({ onMobileNavOpen }: HeaderProps) {
   const theme = useTheme();
   const router = useRouter();
+  const pathname = usePathname();
   const customization = useCustomization();
   const { schoolName } = useSchoolSettings();
   const supabase = createClient();
@@ -177,21 +178,27 @@ export function Header({ onMobileNavOpen }: HeaderProps) {
       loadUser();
     };
 
+    const handleWindowFocus = () => {
+      loadUser();
+    };
+
     const { data: authSub } = supabase.auth.onAuthStateChange(() => {
       loadUser();
     });
 
     if (typeof window !== 'undefined') {
       window.addEventListener('school_user_profile_updated', handleProfileUpdated);
+      window.addEventListener('focus', handleWindowFocus);
     }
 
     return () => {
       authSub.subscription.unsubscribe();
       if (typeof window !== 'undefined') {
         window.removeEventListener('school_user_profile_updated', handleProfileUpdated);
+        window.removeEventListener('focus', handleWindowFocus);
       }
     };
-  }, [supabase]);
+  }, [supabase, pathname]);
 
   const handleOpenMenu = (event: React.MouseEvent<HTMLElement>) => {
     setMenuAnchorEl(event.currentTarget);

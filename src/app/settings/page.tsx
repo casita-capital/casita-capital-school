@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import {
+  alpha,
   Alert,
   Box,
   Button,
@@ -18,6 +19,8 @@ import {
   MenuItem,
   Stack,
   Switch,
+  Tab,
+  Tabs,
   TextField,
   Tooltip,
   Typography,
@@ -39,16 +42,21 @@ import {
   Plus,
   RefreshCw,
   Trash2,
+  Type,
+  GraduationCap,
 } from 'lucide-react';
 import Link from 'next/link';
 import toast from 'react-hot-toast';
 import { PageHeading } from 'src/components/base/page-heading';
 import { useCustomization } from 'src/hooks/use-customization';
-import { colorPresetOptions } from 'src/layouts/header';
+import { colorPresetOptions, headingFontOptions } from 'src/layouts/header';
 import { useSchoolSettings, SystemBrandingSettings } from 'src/contexts/school-settings';
 import { ItemIcon } from 'src/components/base/item-icon';
 import { createClient } from 'src/services/supabase/client';
-import type { ColorPreset } from 'src/theme';
+import type { Json } from 'src/services/supabase/types';
+import type { ColorPreset, HeadingFontPreset } from 'src/theme';
+import { HEADING_FONT_STACKS } from 'src/theme/base/create-typography';
+import { resolveAndSyncActiveUser } from 'src/utils/active-user';
 
 const AVAILABLE_ICONS = [
   { id: 'none', label: 'No Icon (Text Only)' },
@@ -95,6 +103,8 @@ export default function SettingsPage() {
     scheduleEndHour,
     updateScheduleHours,
   } = useSchoolSettings();
+
+  const [activeTab, setActiveTab] = useState<'school' | 'preferences' | 'calendars'>('school');
 
   const [inputSchoolName, setInputSchoolName] = useState(schoolName);
   const [savingName, setSavingName] = useState(false);
@@ -210,15 +220,168 @@ export default function SettingsPage() {
     setItemBrandingState(branding);
   }, [branding]);
 
-  const activePreset = customization.colorPreset || 'monacoBlue';
-  const activeMode = customization.paletteMode || 'dark';
+  const [systemUsers, setSystemUsers] = useState<Array<{ id: string; full_name: string; email: string; role: string }>>([]);
+  const [currentUserEmail, setCurrentUserEmail] = useState<string>('');
+  const [selectedThemeUserEmail, setSelectedThemeUserEmail] = useState<string>('__current__');
+  const [targetUserPrefs, setTargetUserPrefs] = useState<{
+    paletteMode: 'light' | 'dark';
+    colorPreset: ColorPreset;
+    headingFont: HeadingFontPreset;
+  } | null>(null);
+  const [loadingUserPrefs, setLoadingUserPrefs] = useState(false);
+
+  useEffect(() => {
+    let isMounted = true;
+    async function loadUsersAndActiveUser() {
+      const [{ data: usersData }, resolvedUser] = await Promise.all([
+        supabase.from('users').select('id, full_name, email, role').order('full_name', { ascending: true }),
+        resolveAndSyncActiveUser(supabase),
+      ]);
+      if (!isMounted) return;
+      if (usersData) {
+        setSystemUsers(usersData);
+      }
+      if (resolvedUser?.email) {
+        setCurrentUserEmail(resolvedUser.email.trim().toLowerCase());
+      }
+    }
+    loadUsersAndActiveUser();
+    return () => {
+      isMounted = false;
+    };
+  }, [supabase]);
+
+  const isTargetCurrentSession =
+    selectedThemeUserEmail === '__current__' ||
+    (Boolean(currentUserEmail) && selectedThemeUserEmail.trim().toLowerCase() === currentUserEmail);
+
+  const parseUserPrefsRecord = (raw: unknown): {
+    paletteMode: 'light' | 'dark';
+    colorPreset: ColorPreset;
+    headingFont: HeadingFontPreset;
+  } | null => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    const record = raw as Record<string, unknown>;
+    const paletteMode = record.paletteMode === 'light' || record.paletteMode === 'dark' ? record.paletteMode : 'light';
+    const colorPreset = typeof record.colorPreset === 'string' ? (record.colorPreset as ColorPreset) : 'monacoBlue';
+    const headingFont =
+      record.headingFont === 'inter' ||
+      record.headingFont === 'plusJakarta' ||
+      record.headingFont === 'outfit' ||
+      record.headingFont === 'dmSans' ||
+      record.headingFont === 'nunito' ||
+      record.headingFont === 'newsreader'
+        ? record.headingFont
+        : 'inter';
+    return { paletteMode, colorPreset, headingFont };
+  };
+
+  const handleThemeUserChange = async (nextEmailValue: string) => {
+    setSelectedThemeUserEmail(nextEmailValue);
+    const normalized = nextEmailValue.trim().toLowerCase();
+    if (nextEmailValue === '__current__' || (currentUserEmail && normalized === currentUserEmail)) {
+      setTargetUserPrefs(null);
+      return;
+    }
+
+    setLoadingUserPrefs(true);
+    try {
+      const { data } = await supabase
+        .from('weekly_planner_settings')
+        .select('todos')
+        .eq('week_start_date', `USER_CUSTOMIZATION:${normalized}`)
+        .maybeSingle();
+
+      const parsedFromDb = data?.todos ? parseUserPrefsRecord(data.todos) : null;
+      if (parsedFromDb) {
+        setTargetUserPrefs(parsedFromDb);
+      } else {
+        const localStr = typeof window !== 'undefined' ? window.localStorage.getItem(`school_app_customization:${normalized}`) : null;
+        const parsedLocal = localStr ? parseUserPrefsRecord(JSON.parse(localStr)) : null;
+        setTargetUserPrefs(
+          parsedLocal || {
+            paletteMode: customization.paletteMode || 'light',
+            colorPreset: customization.colorPreset || 'monacoBlue',
+            headingFont: customization.headingFont || 'inter',
+          }
+        );
+      }
+    } catch {
+      setTargetUserPrefs({
+        paletteMode: customization.paletteMode || 'light',
+        colorPreset: customization.colorPreset || 'monacoBlue',
+        headingFont: customization.headingFont || 'inter',
+      });
+    } finally {
+      setLoadingUserPrefs(false);
+    }
+  };
+
+  const saveTargetUserPrefs = async (
+    nextPartial: Partial<{
+      paletteMode: 'light' | 'dark';
+      colorPreset: ColorPreset;
+      headingFont: HeadingFontPreset;
+    }>
+  ) => {
+    if (isTargetCurrentSession) {
+      customization.handleUpdate(nextPartial);
+      toast.success('Theme & font preference updated!');
+      return;
+    }
+
+    const normalized = selectedThemeUserEmail.trim().toLowerCase();
+    const currentTarget = targetUserPrefs || {
+      paletteMode: customization.paletteMode || 'light',
+      colorPreset: customization.colorPreset || 'monacoBlue',
+      headingFont: customization.headingFont || 'inter',
+    };
+    const merged = { ...currentTarget, ...nextPartial };
+    setTargetUserPrefs(merged);
+
+    try {
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem(`school_app_customization:${normalized}`, JSON.stringify(merged));
+      }
+      const { error } = await supabase.from('weekly_planner_settings').upsert(
+        {
+          week_start_date: `USER_CUSTOMIZATION:${normalized}`,
+          todos: merged as unknown as Json,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'week_start_date' }
+      );
+      if (error) {
+        toast.error(`Failed to save preference for ${selectedThemeUserEmail}: ${error.message}`);
+      } else {
+        const matchedUser = systemUsers.find((u) => u.email.trim().toLowerCase() === normalized);
+        toast.success(`Saved preference for ${matchedUser ? matchedUser.full_name : selectedThemeUserEmail}!`);
+      }
+    } catch {
+      toast.error('Failed to save user theme preference');
+    }
+  };
+
+  const activePreset = isTargetCurrentSession
+    ? customization.colorPreset || 'monacoBlue'
+    : targetUserPrefs?.colorPreset || customization.colorPreset || 'monacoBlue';
+  const activeMode = isTargetCurrentSession
+    ? customization.paletteMode || 'dark'
+    : targetUserPrefs?.paletteMode || customization.paletteMode || 'dark';
+  const activeHeadingFont: HeadingFontPreset = isTargetCurrentSession
+    ? customization.headingFont || 'inter'
+    : targetUserPrefs?.headingFont || customization.headingFont || 'inter';
 
   const handleSelectPreset = (preset: ColorPreset) => {
-    customization.handleUpdate({ colorPreset: preset });
+    void saveTargetUserPrefs({ colorPreset: preset });
   };
 
   const handleSelectMode = (mode: 'light' | 'dark') => {
-    customization.handleUpdate({ paletteMode: mode });
+    void saveTargetUserPrefs({ paletteMode: mode });
+  };
+
+  const handleSelectHeadingFont = (font: HeadingFontPreset) => {
+    void saveTargetUserPrefs({ headingFont: font });
   };
 
   const handleSaveSchoolName = async () => {
@@ -413,201 +576,314 @@ export default function SettingsPage() {
     <Box>
       <PageHeading
         heading="School App Settings & Configuration"
-        caption="Define your school name, connect Google Calendars, customize item colors & icons, and adjust theme preferences."
+        caption="Define your school name, customize item colors & icons, adjust user theme & font preferences, and connect Google Calendars."
       />
 
-      <Grid container spacing={3}>
+      {/* Top Settings Section Tabs */}
+      <Card
+        elevation={0}
+        sx={{
+          mb: 3,
+          borderRadius: 2,
+          border: '1px solid',
+          borderColor: 'divider',
+          bgcolor: 'background.paper',
+          px: { xs: 1, sm: 2 },
+        }}
+      >
+        <Tabs
+          value={activeTab}
+          onChange={(_, nextVal: 'school' | 'preferences' | 'calendars') => setActiveTab(nextVal)}
+          variant="scrollable"
+          scrollButtons="auto"
+          indicatorColor="primary"
+          textColor="primary"
+          sx={{
+            minHeight: 54,
+            '& .MuiTab-root': {
+              minHeight: 54,
+              fontWeight: 700,
+              textTransform: 'none',
+              fontSize: '0.92rem',
+              px: 2.5,
+            },
+          }}
+        >
+          <Tab
+            value="school"
+            icon={<School size={18} />}
+            iconPosition="start"
+            label="School & System"
+          />
+          <Tab
+            value="preferences"
+            icon={<Palette size={18} />}
+            iconPosition="start"
+            label="User Preferences & Theme"
+          />
+          <Tab
+            value="calendars"
+            icon={<CalendarIcon size={18} />}
+            iconPosition="start"
+            label={`Calendar Integrations (${googleConnections.length})`}
+          />
+        </Tabs>
+      </Card>
+
+      <Grid container spacing={3} alignItems="flex-start">
         {/* Main Column */}
         <Grid item xs={12} lg={8}>
-          {/* School Name & Profile Configuration Card */}
-          <Card elevation={8} sx={{ borderRadius: 3, mb: 4 }}>
-            <CardContent sx={{ p: 4 }}>
-              <Box display="flex" alignItems="center" gap={1.5} mb={1}>
-                <School size={22} color={theme.palette.primary.main} />
-                <Typography variant="h4" fontWeight={700}>
-                  School Name &amp; Branding
+          {activeTab === 'school' && (
+            <>
+              {/* School Name & Profile Configuration Card */}
+              <Card elevation={8} sx={{ borderRadius: 3, mb: 3 }}>
+                <CardContent sx={{ p: 4 }}>
+                  <Box display="flex" alignItems="center" gap={1.5} mb={1}>
+                    <School size={22} color={theme.palette.primary.main} />
+                    <Typography variant="h4" fontWeight={700}>
+                      School Name &amp; Branding
+                    </Typography>
+                  </Box>
+                  <Typography variant="body2" color="text.secondary" mb={3}>
+                    Customize the name of your school. This title will appear across your weekly binder planners, master calendar headers, printouts, and top navigation bar.
+                  </Typography>
+
+                  <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems="center">
+                    <TextField
+                      fullWidth
+                      label="School Name"
+                      placeholder="e.g. Womble Family Academy"
+                      value={inputSchoolName}
+                      onChange={(e) => setInputSchoolName(e.target.value)}
+                    />
+                    <Button
+                      variant="contained"
+                      color="primary"
+                      size="large"
+                      onClick={handleSaveSchoolName}
+                      disabled={savingName || !inputSchoolName.trim()}
+                      startIcon={<Save size={18} />}
+                      sx={{
+                        fontWeight: 700,
+                        whiteSpace: 'nowrap',
+                        px: 3.5,
+                        py: 1.5,
+                        minHeight: 54,
+                        fontSize: '0.92rem',
+                        borderRadius: 2,
+                      }}
+                    >
+                      {savingName ? 'Saving...' : 'Save School Name'}
+                    </Button>
+                  </Stack>
+                </CardContent>
+              </Card>
+
+              {/* TIME SCHEDULER TIMEFRAME CONFIGURATION CARD */}
+              <Card elevation={8} sx={{ borderRadius: 3, mb: 3 }}>
+                <CardContent sx={{ p: 4 }}>
+                  <Box display="flex" alignItems="center" gap={1.5} mb={1}>
+                    <Clock size={22} color={theme.palette.primary.main} />
+                    <Typography variant="h4" fontWeight={700}>
+                      Time Scheduler Timeframe
+                    </Typography>
+                  </Box>
+                  <Typography variant="body2" color="text.secondary" mb={3}>
+                    Define the daily starting and ending hours displayed on your 15-minute weekly scheduler (Monday–Friday). Default is 7:00 AM to 7:00 PM.
+                  </Typography>
+                  <Grid container spacing={3}>
+                    <Grid item xs={12} sm={6}>
+                      <TextField
+                        fullWidth
+                        select
+                        label="Daily Start Time"
+                        value={scheduleStartHour}
+                        onChange={(e) => updateScheduleHours(Number(e.target.value), scheduleEndHour)}
+                      >
+                        {Array.from({ length: 12 }, (_, i) => i + 5).map((hour) => {
+                          const ampm = hour < 12 ? 'AM' : 'PM';
+                          const displayHour = hour % 12 === 0 ? 12 : hour % 12;
+                          return (
+                            <MenuItem key={hour} value={hour}>
+                              {displayHour}:00 {ampm}
+                            </MenuItem>
+                          );
+                        })}
+                      </TextField>
+                    </Grid>
+                    <Grid item xs={12} sm={6}>
+                      <TextField
+                        fullWidth
+                        select
+                        label="Daily End Time"
+                        value={scheduleEndHour}
+                        onChange={(e) => updateScheduleHours(scheduleStartHour, Number(e.target.value))}
+                      >
+                        {Array.from({ length: 12 }, (_, i) => i + 12).map((hour) => {
+                          const ampm = hour < 12 ? 'AM' : 'PM';
+                          const displayHour = hour % 12 === 0 ? 12 : hour % 12;
+                          return (
+                            <MenuItem key={hour} value={hour}>
+                              {displayHour}:00 {ampm}
+                            </MenuItem>
+                          );
+                        })}
+                      </TextField>
+                    </Grid>
+                  </Grid>
+                </CardContent>
+              </Card>
+            </>
+          )}
+
+          {activeTab === 'calendars' && (
+            /* GOOGLE CALENDAR CONNECTIONS CARD */
+            <Card elevation={8} sx={{ borderRadius: 3, mb: 3 }}>
+              <CardContent sx={{ p: 4 }}>
+                <Box display="flex" alignItems="center" justifyContent="space-between" flexWrap="wrap" gap={2} mb={1}>
+                  <Box display="flex" alignItems="center" gap={1.5}>
+                    <CalendarIcon size={22} color="#4285F4" />
+                    <Typography variant="h4" fontWeight={700}>
+                      Google Calendar Integration
+                    </Typography>
+                  </Box>
+                  <Button
+                    variant="contained"
+                    color="primary"
+                    onClick={() => setOpenAddModal(true)}
+                    startIcon={<Plus size={18} />}
+                    sx={{ fontWeight: 700, borderRadius: 2 }}
+                  >
+                    Connect Google Calendar
+                  </Button>
+                </Box>
+
+                <Typography variant="body2" color="text.secondary" mb={3}>
+                  Link external Google Calendars to display schedule events alongside school assignments, notes, and tasks on your <strong>Monthly Planner</strong> and <strong>Weekly Binder Planner</strong>.
                 </Typography>
-              </Box>
-              <Typography variant="body2" color="text.secondary" mb={3}>
-                Customize the name of your school. This title will appear across your weekly binder planners, master calendar headers, printouts, and top navigation bar.
-              </Typography>
 
-              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems="center">
-                <TextField
-                  fullWidth
-                  label="School Name"
-                  placeholder="e.g. Womble Family Academy"
-                  value={inputSchoolName}
-                  onChange={(e) => setInputSchoolName(e.target.value)}
-                />
-                <Button
-                  variant="contained"
-                  color="primary"
-                  size="large"
-                  onClick={handleSaveSchoolName}
-                  disabled={savingName || !inputSchoolName.trim()}
-                  startIcon={<Save size={18} />}
-                  sx={{
-                    fontWeight: 700,
-                    whiteSpace: 'nowrap',
-                    px: 3.5,
-                    py: 1.5,
-                    minHeight: 54,
-                    fontSize: '0.92rem',
-                    borderRadius: 2,
-                  }}
-                >
-                  {savingName ? 'Saving...' : 'Save School Name'}
-                </Button>
-              </Stack>
-            </CardContent>
-          </Card>
+                <Divider sx={{ my: 3 }} />
 
-          {/* GOOGLE CALENDAR CONNECTIONS CARD */}
-          <Card elevation={8} sx={{ borderRadius: 3, mb: 4 }}>
-            <CardContent sx={{ p: 4 }}>
-              <Box display="flex" alignItems="center" justifyContent="space-between" flexWrap="wrap" gap={2} mb={1}>
-                <Box display="flex" alignItems="center" gap={1.5}>
-                  <CalendarIcon size={22} color="#4285F4" />
-                  <Typography variant="h4" fontWeight={700}>
-                    Google Calendar Integration
-                  </Typography>
-                </Box>
-                <Button
-                  variant="contained"
-                  color="primary"
-                  onClick={() => setOpenAddModal(true)}
-                  startIcon={<Plus size={18} />}
-                  sx={{ fontWeight: 700, borderRadius: 2 }}
-                >
-                  Connect Google Calendar
-                </Button>
-              </Box>
+                {googleConnections.length === 0 ? (
+                  <Box p={3} textAlign="center" bgcolor="action.selected" borderRadius={2}>
+                    <Typography variant="subtitle2" fontWeight={600} color="text.secondary" mb={1}>
+                      No Google Calendars linked yet
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary" display="block" mb={2}>
+                      Click &quot;Connect Google Calendar&quot; above to link a calendar and customize per-planner visibility.
+                    </Typography>
+                  </Box>
+                ) : (
+                  <Stack spacing={2.5}>
+                    {googleConnections.map((conn) => (
+                      <Card key={conn.id} variant="outlined" sx={{ p: 3, borderRadius: 2 }}>
+                        <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" alignItems={{ xs: 'flex-start', sm: 'center' }} gap={2} mb={2}>
+                          <Stack direction="row" alignItems="center" spacing={2}>
+                            {/* Color Swatch */}
+                            <Tooltip title="Custom Accent Color">
+                              <Box display="flex" alignItems="center">
+                                <input
+                                  type="color"
+                                  value={conn.color || '#4285F4'}
+                                  onChange={(e) => handleUpdateConnectionColor(conn.id, e.target.value)}
+                                  style={{
+                                    width: 32,
+                                    height: 32,
+                                    border: 'none',
+                                    borderRadius: '50%',
+                                    cursor: 'pointer',
+                                  }}
+                                />
+                              </Box>
+                            </Tooltip>
 
-              <Typography variant="body2" color="text.secondary" mb={3}>
-                Link external Google Calendars to display schedule events alongside school assignments, notes, and tasks on your <strong>Monthly Planner</strong> and <strong>Weekly Binder Planner</strong>.
-              </Typography>
-
-              <Divider sx={{ my: 3 }} />
-
-              {googleConnections.length === 0 ? (
-                <Box p={3} textAlign="center" bgcolor="action.selected" borderRadius={2}>
-                  <Typography variant="subtitle2" fontWeight={600} color="text.secondary" mb={1}>
-                    No Google Calendars linked yet
-                  </Typography>
-                  <Typography variant="caption" color="text.secondary" display="block" mb={2}>
-                    Click &quot;Connect Google Calendar&quot; above to link a calendar and customize per-planner visibility.
-                  </Typography>
-                </Box>
-              ) : (
-                <Stack spacing={2.5}>
-                  {googleConnections.map((conn) => (
-                    <Card key={conn.id} variant="outlined" sx={{ p: 3, borderRadius: 2 }}>
-                      <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" alignItems={{ xs: 'flex-start', sm: 'center' }} gap={2} mb={2}>
-                        <Stack direction="row" alignItems="center" spacing={2}>
-                          {/* Color Swatch */}
-                          <Tooltip title="Custom Accent Color">
-                            <Box display="flex" alignItems="center">
-                              <input
-                                type="color"
-                                value={conn.color || '#4285F4'}
-                                onChange={(e) => handleUpdateConnectionColor(conn.id, e.target.value)}
-                                style={{
-                                  width: 32,
-                                  height: 32,
-                                  border: 'none',
-                                  borderRadius: '50%',
-                                  cursor: 'pointer',
-                                }}
+                            <Box>
+                              <Typography variant="subtitle1" fontWeight={700}>
+                                {conn.calendar_name}
+                              </Typography>
+                              <Chip
+                                label={conn.google_email}
+                                size="small"
+                                variant="outlined"
+                                sx={{ fontWeight: 600, fontSize: '0.75rem', height: 22 }}
                               />
                             </Box>
-                          </Tooltip>
+                          </Stack>
 
-                          <Box>
-                            <Typography variant="subtitle1" fontWeight={700}>
-                              {conn.calendar_name}
-                            </Typography>
-                            <Chip
-                              label={conn.google_email}
+                          <Stack direction="row" alignItems="center" spacing={1}>
+                            <Button
                               size="small"
                               variant="outlined"
-                              sx={{ fontWeight: 600, fontSize: '0.75rem', height: 22 }}
-                            />
-                          </Box>
+                              onClick={() => seedSampleEventsForConnection(conn.id, conn.color)}
+                              disabled={syncingId === conn.id}
+                              startIcon={<RefreshCw size={14} />}
+                              sx={{ fontWeight: 700 }}
+                            >
+                              {syncingId === conn.id ? 'Syncing...' : 'Sync Now'}
+                            </Button>
+                            <IconButton size="small" color="error" onClick={() => handleDeleteConnection(conn.id)}>
+                              <Trash2 size={18} />
+                            </IconButton>
+                          </Stack>
                         </Stack>
 
-                        <Stack direction="row" alignItems="center" spacing={1}>
-                          <Button
-                            size="small"
-                            variant="outlined"
-                            onClick={() => seedSampleEventsForConnection(conn.id, conn.color)}
-                            disabled={syncingId === conn.id}
-                            startIcon={<RefreshCw size={14} />}
-                            sx={{ fontWeight: 700 }}
-                          >
-                            {syncingId === conn.id ? 'Syncing...' : 'Sync Now'}
-                          </Button>
-                          <IconButton size="small" color="error" onClick={() => handleDeleteConnection(conn.id)}>
-                            <Trash2 size={18} />
-                          </IconButton>
-                        </Stack>
-                      </Stack>
+                        <Divider sx={{ my: 1.5 }} />
 
-                      <Divider sx={{ my: 1.5 }} />
+                        {/* Display Preferences Toggles */}
+                        <Grid container spacing={2} pt={1}>
+                          <Grid item xs={12} sm={4}>
+                            <Stack direction="row" alignItems="center" justifyContent="space-between">
+                              <Typography variant="body2" fontWeight={600}>
+                                Enabled
+                              </Typography>
+                              <Switch
+                                checked={conn.is_enabled}
+                                onChange={(e) => handleToggleConnectionField(conn.id, 'is_enabled', e.target.checked)}
+                                color="primary"
+                                size="small"
+                              />
+                            </Stack>
+                          </Grid>
 
-                      {/* Display Preferences Toggles */}
-                      <Grid container spacing={2} pt={1}>
-                        <Grid item xs={12} sm={4}>
-                          <Stack direction="row" alignItems="center" justifyContent="space-between">
-                            <Typography variant="body2" fontWeight={600}>
-                              Enabled
-                            </Typography>
-                            <Switch
-                              checked={conn.is_enabled}
-                              onChange={(e) => handleToggleConnectionField(conn.id, 'is_enabled', e.target.checked)}
-                              color="primary"
-                              size="small"
-                            />
-                          </Stack>
+                          <Grid item xs={12} sm={4}>
+                            <Stack direction="row" alignItems="center" justifyContent="space-between">
+                              <Typography variant="body2" fontWeight={600}>
+                                Show on Monthly
+                              </Typography>
+                              <Switch
+                                checked={conn.show_on_monthly}
+                                onChange={(e) => handleToggleConnectionField(conn.id, 'show_on_monthly', e.target.checked)}
+                                color="primary"
+                                size="small"
+                              />
+                            </Stack>
+                          </Grid>
+
+                          <Grid item xs={12} sm={4}>
+                            <Stack direction="row" alignItems="center" justifyContent="space-between">
+                              <Typography variant="body2" fontWeight={600}>
+                                Show on Weekly
+                              </Typography>
+                              <Switch
+                                checked={conn.show_on_weekly}
+                                onChange={(e) => handleToggleConnectionField(conn.id, 'show_on_weekly', e.target.checked)}
+                                color="primary"
+                                size="small"
+                              />
+                            </Stack>
+                          </Grid>
                         </Grid>
+                      </Card>
+                    ))}
+                  </Stack>
+                )}
+              </CardContent>
+            </Card>
+          )}
 
-                        <Grid item xs={12} sm={4}>
-                          <Stack direction="row" alignItems="center" justifyContent="space-between">
-                            <Typography variant="body2" fontWeight={600}>
-                              Show on Monthly
-                            </Typography>
-                            <Switch
-                              checked={conn.show_on_monthly}
-                              onChange={(e) => handleToggleConnectionField(conn.id, 'show_on_monthly', e.target.checked)}
-                              color="primary"
-                              size="small"
-                            />
-                          </Stack>
-                        </Grid>
-
-                        <Grid item xs={12} sm={4}>
-                          <Stack direction="row" alignItems="center" justifyContent="space-between">
-                            <Typography variant="body2" fontWeight={600}>
-                              Show on Weekly
-                            </Typography>
-                            <Switch
-                              checked={conn.show_on_weekly}
-                              onChange={(e) => handleToggleConnectionField(conn.id, 'show_on_weekly', e.target.checked)}
-                              color="primary"
-                              size="small"
-                            />
-                          </Stack>
-                        </Grid>
-                      </Grid>
-                    </Card>
-                  ))}
-                </Stack>
-              )}
-            </CardContent>
-          </Card>
-
-          {/* System Item Colors & Icons Customizer */}
-          <Card elevation={8} sx={{ borderRadius: 3, mb: 4 }}>
+          {activeTab === 'school' && (
+            /* System Item Colors & Icons Customizer */
+            <Card elevation={8} sx={{ borderRadius: 3, mb: 3 }}>
             <CardContent sx={{ p: 4 }}>
               <Box display="flex" alignItems="center" justifyContent="space-between" flexWrap="wrap" gap={2} mb={1}>
                 <Box display="flex" alignItems="center" gap={1.5}>
@@ -1108,74 +1384,83 @@ export default function SettingsPage() {
               </Box>
             </CardContent>
           </Card>
+          )}
 
-          {/* TIME SCHEDULER TIMEFRAME CONFIGURATION CARD */}
-          <Card elevation={8} sx={{ borderRadius: 3, mb: 4 }}>
-            <CardContent sx={{ p: 4 }}>
-              <Box display="flex" alignItems="center" gap={1.5} mb={1}>
-                <Clock size={22} color={theme.palette.primary.main} />
-                <Typography variant="h4" fontWeight={700}>
-                  Time Scheduler Timeframe
-                </Typography>
-              </Box>
-              <Typography variant="body2" color="text.secondary" mb={3}>
-                Define the daily starting and ending hours displayed on your 15-minute weekly scheduler (Monday–Friday). Default is 7:00 AM to 7:00 PM.
-              </Typography>
-              <Grid container spacing={3}>
-                <Grid item xs={12} sm={6}>
-                  <TextField
-                    fullWidth
-                    select
-                    label="Daily Start Time"
-                    value={scheduleStartHour}
-                    onChange={(e) => updateScheduleHours(Number(e.target.value), scheduleEndHour)}
-                  >
-                    {Array.from({ length: 12 }, (_, i) => i + 5).map((hour) => {
-                      const ampm = hour < 12 ? 'AM' : 'PM';
-                      const displayHour = hour % 12 === 0 ? 12 : hour % 12;
-                      return (
-                        <MenuItem key={hour} value={hour}>
-                          {displayHour}:00 {ampm}
-                        </MenuItem>
-                      );
-                    })}
-                  </TextField>
-                </Grid>
-                <Grid item xs={12} sm={6}>
-                  <TextField
-                    fullWidth
-                    select
-                    label="Daily End Time"
-                    value={scheduleEndHour}
-                    onChange={(e) => updateScheduleHours(scheduleStartHour, Number(e.target.value))}
-                  >
-                    {Array.from({ length: 12 }, (_, i) => i + 12).map((hour) => {
-                      const ampm = hour < 12 ? 'AM' : 'PM';
-                      const displayHour = hour % 12 === 0 ? 12 : hour % 12;
-                      return (
-                        <MenuItem key={hour} value={hour}>
-                          {displayHour}:00 {ampm}
-                        </MenuItem>
-                      );
-                    })}
-                  </TextField>
-                </Grid>
-              </Grid>
-            </CardContent>
-          </Card>
-
-          {/* Theme & Accent Color Customizer */}
+          {activeTab === 'preferences' && (
+          /* Theme, Header Font & Accent Color Customizer */
           <Card elevation={8} sx={{ borderRadius: 3, mb: 3 }}>
             <CardContent sx={{ p: 4 }}>
-              <Box display="flex" alignItems="center" gap={1.5} mb={1}>
-                <Palette size={22} color={theme.palette.primary.main} />
-                <Typography variant="h4" fontWeight={700}>
-                  Theme &amp; Accent Color Switcher
-                </Typography>
+              <Box display="flex" alignItems="center" justifyContent="space-between" flexWrap="wrap" gap={2} mb={1}>
+                <Box display="flex" alignItems="center" gap={1.5}>
+                  <Palette size={22} color={theme.palette.primary.main} />
+                  <Typography variant="h4" fontWeight={700}>
+                    Theme, Header Font &amp; Accent Color Switcher
+                  </Typography>
+                </Box>
+                <Chip
+                  size="small"
+                  label={
+                    isTargetCurrentSession
+                      ? `Editing: My Session${currentUserEmail ? ` (${currentUserEmail})` : ''}`
+                      : `Editing User: ${selectedThemeUserEmail}`
+                  }
+                  color={isTargetCurrentSession ? 'primary' : 'secondary'}
+                  sx={{ fontWeight: 700 }}
+                />
               </Box>
               <Typography variant="body2" color="text.secondary" mb={3}>
-                Choose your favorite accent color and dark/light palette mode. Preferences are saved automatically.
+                Choose the light/dark palette mode, header &amp; logo font, and accent color. You can adjust preferences for your own session or pre-configure them for any user account.
               </Typography>
+
+              {/* User Account Target Selector */}
+              <Box
+                sx={{
+                  p: 2.5,
+                  borderRadius: 2,
+                  bgcolor: 'action.hover',
+                  border: '1px solid',
+                  borderColor: 'divider',
+                  mb: 3,
+                }}
+              >
+                <Grid container spacing={2} alignItems="center">
+                  <Grid item xs={12} md={6}>
+                    <Box display="flex" alignItems="center" gap={1.25}>
+                      <Users size={18} color={theme.palette.primary.main} />
+                      <Box>
+                        <Typography variant="subtitle2" fontWeight={700}>
+                          Configure Theme &amp; Font For User
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          Saved per user in Supabase so each user sees their preferred font &amp; theme on login.
+                        </Typography>
+                      </Box>
+                    </Box>
+                  </Grid>
+                  <Grid item xs={12} md={6}>
+                    <TextField
+                      select
+                      fullWidth
+                      size="small"
+                      label="Target User Account"
+                      value={selectedThemeUserEmail}
+                      disabled={loadingUserPrefs}
+                      onChange={(e) => {
+                        void handleThemeUserChange(e.target.value);
+                      }}
+                    >
+                      <MenuItem value="__current__">
+                        My Current Session {currentUserEmail ? `(${currentUserEmail})` : ''}
+                      </MenuItem>
+                      {systemUsers.map((u) => (
+                        <MenuItem key={u.id} value={u.email.trim().toLowerCase()}>
+                          {u.full_name} ({u.email}) — {u.role}
+                        </MenuItem>
+                      ))}
+                    </TextField>
+                  </Grid>
+                </Grid>
+              </Box>
 
               <Divider sx={{ my: 3 }} />
 
@@ -1245,6 +1530,146 @@ export default function SettingsPage() {
                 </Grid>
               </Grid>
 
+              <Divider sx={{ my: 3 }} />
+
+              {/* Header & Logo Font Switcher */}
+              <Box display="flex" alignItems="center" justifyContent="space-between" flexWrap="wrap" gap={1} mb={0.75}>
+                <Box display="flex" alignItems="center" gap={1}>
+                  <Type size={18} color={theme.palette.primary.main} />
+                  <Typography variant="subtitle2" fontWeight={700}>
+                    Header &amp; Logo Font (6 Fonts Available)
+                  </Typography>
+                </Box>
+                <Typography variant="caption" color="text.secondary">
+                  Applies to &ldquo;{schoolName || "Audrey's Planner"}&rdquo; logo &amp; page headers
+                </Typography>
+              </Box>
+              <Typography variant="caption" color="text.secondary" display="block" mb={2}>
+                Select a smooth sans-serif or classic serif typeface for headings across the app. Body copy and gradebook tables remain crisp in Inter.
+              </Typography>
+
+              <Grid container spacing={2} mb={4}>
+                {headingFontOptions.map((fontOpt) => {
+                  const isSelected = activeHeadingFont === fontOpt.key;
+                  const fontFamilyStack = HEADING_FONT_STACKS[fontOpt.key];
+                  return (
+                    <Grid item xs={12} sm={6} md={4} key={fontOpt.key}>
+                      <Card
+                        onClick={() => handleSelectHeadingFont(fontOpt.key)}
+                        elevation={isSelected ? 6 : 1}
+                        sx={{
+                          p: 2.25,
+                          height: '100%',
+                          borderRadius: 2,
+                          cursor: 'pointer',
+                          border: '2px solid',
+                          borderColor: isSelected ? 'primary.main' : 'divider',
+                          bgcolor: isSelected
+                            ? alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.12 : 0.05)
+                            : 'background.paper',
+                          transition: 'all 0.2s ease-in-out',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          justifyContent: 'space-between',
+                          gap: 1.5,
+                          '&:hover': {
+                            transform: 'translateY(-2px)',
+                            boxShadow: 4,
+                            borderColor: isSelected ? 'primary.main' : 'text.secondary',
+                          },
+                        }}
+                      >
+                        <Box>
+                          <Box display="flex" alignItems="center" justifyContent="space-between" gap={1} mb={1}>
+                            <Stack direction="row" spacing={0.75} alignItems="center">
+                              <Typography variant="body2" fontWeight={700} color="text.primary">
+                                {fontOpt.label}
+                              </Typography>
+                              <Chip
+                                label={fontOpt.badge}
+                                size="small"
+                                sx={{
+                                  height: 20,
+                                  fontSize: '0.68rem',
+                                  fontWeight: 700,
+                                  bgcolor: isSelected
+                                    ? 'primary.main'
+                                    : alpha(theme.palette.primary.main, 0.12),
+                                  color: isSelected ? '#ffffff' : 'primary.main',
+                                }}
+                              />
+                            </Stack>
+                            {isSelected && <Check size={18} color={theme.palette.primary.main} />}
+                          </Box>
+
+                          {/* Mini Live Brand & Header Preview */}
+                          <Box
+                            sx={{
+                              p: 1.5,
+                              borderRadius: 1.5,
+                              bgcolor: 'action.hover',
+                              border: '1px solid',
+                              borderColor: 'divider',
+                              mb: 1.25,
+                            }}
+                          >
+                            <Box display="flex" alignItems="center" gap={1} mb={0.5}>
+                              <Box
+                                sx={{
+                                  width: 24,
+                                  height: 24,
+                                  borderRadius: '6px',
+                                  bgcolor: 'primary.main',
+                                  color: '#ffffff',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  flexShrink: 0,
+                                }}
+                              >
+                                <GraduationCap size={14} />
+                              </Box>
+                              <Typography
+                                sx={{
+                                  fontFamily: fontFamilyStack,
+                                  fontWeight: 700,
+                                  fontSize: '1.02rem',
+                                  letterSpacing: fontOpt.key === 'newsreader' ? '-0.015em' : '-0.025em',
+                                  color: 'text.primary',
+                                  lineHeight: 1.2,
+                                  whiteSpace: 'nowrap',
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                }}
+                              >
+                                {schoolName || "Audrey's Planner"}
+                              </Typography>
+                            </Box>
+                            <Typography
+                              sx={{
+                                fontFamily: fontFamilyStack,
+                                fontWeight: 600,
+                                fontSize: '0.82rem',
+                                color: 'text.secondary',
+                                lineHeight: 1.3,
+                              }}
+                            >
+                              Weekly Binder &amp; Schedule
+                            </Typography>
+                          </Box>
+                        </Box>
+
+                        <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1.35 }}>
+                          {fontOpt.description}
+                        </Typography>
+                      </Card>
+                    </Grid>
+                  );
+                })}
+              </Grid>
+
+              <Divider sx={{ my: 3 }} />
+
               {/* Accent Color Presets */}
               <Typography variant="subtitle2" fontWeight={700} mb={2}>
                 Accent Color Presets (11 Presets Available)
@@ -1295,10 +1720,11 @@ export default function SettingsPage() {
               </Grid>
             </CardContent>
           </Card>
+          )}
         </Grid>
 
-        {/* Info & Preferences Sidebar */}
-        <Grid item xs={12} lg={4}>
+        {/* Info & Preferences Sidebar (Sticky on Desktop) */}
+        <Grid item xs={12} lg={4} sx={{ position: { lg: 'sticky' }, top: { lg: 84 } }}>
           {/* User Management & Access Card */}
           <Card elevation={8} sx={{ borderRadius: 3, mb: 3, bgcolor: 'action.hover' }}>
             <CardContent sx={{ p: 3 }}>
@@ -1311,7 +1737,7 @@ export default function SettingsPage() {
                     User Management &amp; Access
                   </Typography>
                   <Typography variant="caption" color="text.secondary">
-                    Define users, manage roles, send login emails, and reset passwords.
+                    Define users ({systemUsers.length} active), view last activity, and manage roles.
                   </Typography>
                 </Box>
               </Box>
@@ -1340,7 +1766,10 @@ export default function SettingsPage() {
               </Box>
               <Divider sx={{ my: 2 }} />
               <Stack spacing={2}>
-                <Box>
+                <Box
+                  onClick={() => setActiveTab('school')}
+                  sx={{ cursor: 'pointer', '&:hover': { opacity: 0.85 } }}
+                >
                   <Typography variant="caption" color="text.secondary" fontWeight={600} display="block">
                     Active School Name
                   </Typography>
@@ -1349,7 +1778,50 @@ export default function SettingsPage() {
                   </Typography>
                 </Box>
 
-                <Box>
+                <Box
+                  onClick={() => setActiveTab('preferences')}
+                  sx={{ cursor: 'pointer', '&:hover': { opacity: 0.85 } }}
+                >
+                  <Typography variant="caption" color="text.secondary" fontWeight={600} display="block">
+                    Active Header &amp; Logo Font
+                  </Typography>
+                  <Typography
+                    variant="body2"
+                    fontWeight={700}
+                    color="primary.main"
+                    sx={{ fontFamily: HEADING_FONT_STACKS[activeHeadingFont] }}
+                  >
+                    {headingFontOptions.find((f) => f.key === activeHeadingFont)?.label || 'Inter'} (
+                    {headingFontOptions.find((f) => f.key === activeHeadingFont)?.badge || 'Original'})
+                  </Typography>
+                </Box>
+
+                <Box
+                  onClick={() => setActiveTab('preferences')}
+                  sx={{ cursor: 'pointer', '&:hover': { opacity: 0.85 } }}
+                >
+                  <Typography variant="caption" color="text.secondary" fontWeight={600} display="block">
+                    Active Theme &amp; Accent Color
+                  </Typography>
+                  <Stack direction="row" spacing={1} alignItems="center" mt={0.25}>
+                    <Box
+                      sx={{
+                        width: 12,
+                        height: 12,
+                        borderRadius: '50%',
+                        bgcolor: colorPresetOptions.find((c) => c.key === activePreset)?.color || 'primary.main',
+                      }}
+                    />
+                    <Typography variant="body2" fontWeight={700} color="text.primary">
+                      {colorPresetOptions.find((c) => c.key === activePreset)?.label || 'Oxford Blue'} ({activeMode === 'light' ? 'Light' : 'Dark'})
+                    </Typography>
+                  </Stack>
+                </Box>
+
+                <Box
+                  onClick={() => setActiveTab('school')}
+                  sx={{ cursor: 'pointer', '&:hover': { opacity: 0.85 } }}
+                >
                   <Typography variant="caption" color="text.secondary" fontWeight={600} display="block">
                     Customized Items Branding
                   </Typography>
@@ -1382,7 +1854,10 @@ export default function SettingsPage() {
                   </Stack>
                 </Box>
 
-                <Box>
+                <Box
+                  onClick={() => setActiveTab('calendars')}
+                  sx={{ cursor: 'pointer', '&:hover': { opacity: 0.85 } }}
+                >
                   <Typography variant="caption" color="text.secondary" fontWeight={600} display="block">
                     Linked Google Calendars
                   </Typography>
