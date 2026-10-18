@@ -10,7 +10,8 @@
     "build": "next build",
     "start": "next start -p 3002",
     "lint": "eslint",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "postinstall": "node scripts/patch-mui-react19-ref.mjs"
   },
   "dependencies": {
     "@emotion/cache": "11.11.0",

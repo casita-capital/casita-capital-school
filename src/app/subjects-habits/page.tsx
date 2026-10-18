@@ -2,21 +2,30 @@
 
 import { useEffect, useState } from 'react';
 import {
+  Alert,
   alpha,
   Box,
   Button,
+  ButtonBase,
   Card,
   CardContent,
   Chip,
-  CircularProgress,
   Divider,
   Grid,
   IconButton,
   Menu,
   MenuItem,
   Paper,
+  Skeleton,
   Stack,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
   TextField,
+  Tooltip,
   Typography,
   useTheme,
 } from '@mui/material';
@@ -36,8 +45,11 @@ import {
   Mail,
   Phone,
   FileText,
+  Repeat,
+  X,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { RouterLink } from 'src/components/base/router-link';
 import { createClient } from 'src/services/supabase/client';
 import { Json } from 'src/services/supabase/types';
 import {
@@ -64,6 +76,17 @@ interface Habit {
 
 const OUTSIDE_ENTITY_PRESETS = ['Memoria Academy', 'Amanda Holliday Math'] as const;
 
+const CLASSICAL_SUBJECT_SWATCHES: ReadonlyArray<{ label: string; hex: string }> = [
+  { label: 'Oxford Blue', hex: '#1b5698' },
+  { label: 'Academy Pine', hex: '#0d735c' },
+  { label: 'Terracotta Ink', hex: '#b8422e' },
+  { label: 'Botanical Sage', hex: '#1e6f3d' },
+  { label: 'Gilded Ochre', hex: '#b85d0c' },
+  { label: 'Classical Plum', hex: '#6c43b8' },
+  { label: 'Crimson Seal', hex: '#c43235' },
+  { label: 'Slate Cobalt', hex: '#2b6cb0' },
+];
+
 function sanitizeUrlInput(raw: string): string | null {
   if (!raw.trim()) return null;
   const match = raw.match(/https?:\/\/[^\s]+/i);
@@ -81,6 +104,7 @@ export default function SubjectsHabitsPage() {
   const supabase = createClient();
 
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [habits, setHabits] = useState<Habit[]>([]);
   const [activeTab, setActiveTab] = useState<'subjects' | 'habits'>('subjects');
@@ -88,7 +112,7 @@ export default function SubjectsHabitsPage() {
   // New Subject Form State
   const [showAddSubjectForm, setShowAddSubjectForm] = useState(false);
   const [newSubjectName, setNewSubjectName] = useState('');
-  const [newSubjectColor, setNewSubjectColor] = useState('#0C74E4');
+  const [newSubjectColor, setNewSubjectColor] = useState('#1b5698');
   const [newSubjectLink, setNewSubjectLink] = useState('');
   const [newProviderType, setNewProviderType] =
     useState<InstructionProviderType>('internal');
@@ -111,10 +135,16 @@ export default function SubjectsHabitsPage() {
   const [habitMenuAnchorEl, setHabitMenuAnchorEl] = useState<null | HTMLElement>(null);
   const [menuHabit, setMenuHabit] = useState<Habit | null>(null);
 
+  // 2-Step Inline Delete Confirmation State
+  const [confirmDeleteSubjectId, setConfirmDeleteSubjectId] = useState<string | null>(
+    null
+  );
+  const [confirmDeleteHabitId, setConfirmDeleteHabitId] = useState<string | null>(null);
+
   // Edit Subject Modal / Inline Drawer State
   const [editingSubject, setEditingSubject] = useState<Subject | null>(null);
   const [editSubjectName, setEditSubjectName] = useState('');
-  const [editSubjectColor, setEditSubjectColor] = useState('#0C74E4');
+  const [editSubjectColor, setEditSubjectColor] = useState('#1b5698');
   const [editSubjectLink, setEditSubjectLink] = useState('');
   const [editProviderType, setEditProviderType] =
     useState<InstructionProviderType>('internal');
@@ -134,15 +164,21 @@ export default function SubjectsHabitsPage() {
   const [draggedHabitIndex, setDraggedHabitIndex] = useState<number | null>(null);
 
   async function loadData() {
+    setLoadError(null);
     try {
-      const [{ data: subData }, { data: habitData }] = await Promise.all([
-        supabase.from('subjects').select('*').order('sort_order', { ascending: true }),
-        supabase.from('habits').select('*').order('sort_order', { ascending: true }),
-      ]);
+      const [{ data: subData, error: subErr }, { data: habitData, error: habErr }] =
+        await Promise.all([
+          supabase.from('subjects').select('*').order('sort_order', { ascending: true }),
+          supabase.from('habits').select('*').order('sort_order', { ascending: true }),
+        ]);
+
+      if (subErr) throw subErr;
+      if (habErr) throw habErr;
 
       if (subData) setSubjects(subData as Subject[]);
       if (habitData) setHabits(habitData as Habit[]);
     } catch {
+      setLoadError('Failed to load subjects and habit trackers. Please try again.');
       toast.error('Failed to load subjects and habit trackers');
     } finally {
       setLoading(false);
@@ -152,6 +188,19 @@ export default function SubjectsHabitsPage() {
   useEffect(() => {
     loadData();
   }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (editingSubject) setEditingSubject(null);
+        if (editingHabit) setEditingHabit(null);
+        if (confirmDeleteSubjectId) setConfirmDeleteSubjectId(null);
+        if (confirmDeleteHabitId) setConfirmDeleteHabitId(null);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [editingSubject, editingHabit, confirmDeleteSubjectId, confirmDeleteHabitId]);
 
   // ---------------------------------------------------------------------------
   // SUBJECT HANDLERS
@@ -222,7 +271,7 @@ export default function SubjectsHabitsPage() {
 
     setEditingSubject(sub);
     setEditSubjectName(sub.name);
-    setEditSubjectColor(sub.color || '#0C74E4');
+    setEditSubjectColor(sub.color || '#1b5698');
     setEditSubjectLink(sub.link || '');
     setEditProviderType(inst.provider_type);
     setEditOutsideEntity(inst.outside_entity_name || 'Memoria Academy');
@@ -305,16 +354,74 @@ export default function SubjectsHabitsPage() {
     }
   };
 
-  const handleDeleteSubject = async (id: string) => {
+  const handleDeleteSubjectWithUndo = async (subject: Subject) => {
+    setConfirmDeleteSubjectId(null);
+    const snapshot = { ...subject };
+    setSubjects((prev) => prev.filter((s) => s.id !== subject.id));
+
     try {
-      const { error } = await supabase.from('subjects').delete().eq('id', id);
+      const { error } = await supabase.from('subjects').delete().eq('id', subject.id);
       if (error) {
+        setSubjects((prev) =>
+          [...prev, snapshot].sort((a, b) => a.sort_order - b.sort_order)
+        );
         toast.error(`Failed to delete: ${error.message}`);
-      } else {
-        setSubjects((prev) => prev.filter((s) => s.id !== id));
-        toast.success('Subject deleted');
+        return;
       }
+
+      toast(
+        (t) => (
+          <Stack direction="row" spacing={1.5} alignItems="center">
+            <Typography variant="body2" fontWeight={600}>
+              Deleted &ldquo;{snapshot.name}&rdquo;
+            </Typography>
+            <Button
+              size="small"
+              variant="outlined"
+              onClick={async () => {
+                toast.dismiss(t.id);
+                const { data, error: restoreErr } = await supabase
+                  .from('subjects')
+                  .insert({
+                    id: snapshot.id,
+                    name: snapshot.name,
+                    sort_order: snapshot.sort_order,
+                    color: snapshot.color,
+                    link: snapshot.link ?? null,
+                    recurring_config: snapshot.recurring_config ?? null,
+                  })
+                  .select('*')
+                  .single();
+                if (!restoreErr && data) {
+                  setSubjects((prev) =>
+                    [...prev, data as Subject].sort(
+                      (a, b) => a.sort_order - b.sort_order
+                    )
+                  );
+                  toast.success(`Restored "${snapshot.name}"`);
+                } else {
+                  toast.error('Could not restore subject');
+                }
+              }}
+              sx={{
+                minWidth: 0,
+                px: 1,
+                py: 0.25,
+                fontSize: '0.75rem',
+                fontWeight: 700,
+                textTransform: 'none',
+              }}
+            >
+              Undo
+            </Button>
+          </Stack>
+        ),
+        { duration: 5000 }
+      );
     } catch {
+      setSubjects((prev) =>
+        [...prev, snapshot].sort((a, b) => a.sort_order - b.sort_order)
+      );
       toast.error('Failed to delete subject');
     }
   };
@@ -327,10 +434,26 @@ export default function SubjectsHabitsPage() {
       if (error) {
         toast.error(`Failed to update color: ${error.message}`);
       } else {
-        toast.success('Subject block color updated!');
+        toast.success('Subject color updated!');
       }
     } catch {
       toast.error('Error updating color');
+    }
+  };
+
+  const persistSubjectOrder = async (reordered: Subject[]) => {
+    try {
+      await Promise.all(
+        reordered.map((item) =>
+          supabase
+            .from('subjects')
+            .update({ sort_order: item.sort_order })
+            .eq('id', item.id)
+        )
+      );
+      toast.success('Subject order updated!');
+    } catch {
+      toast.error('Failed to save subject order');
     }
   };
 
@@ -348,18 +471,7 @@ export default function SubjectsHabitsPage() {
     }));
 
     setSubjects(reordered);
-
-    try {
-      for (const item of reordered) {
-        await supabase
-          .from('subjects')
-          .update({ sort_order: item.sort_order })
-          .eq('id', item.id);
-      }
-      toast.success('Subject order updated!');
-    } catch {
-      toast.error('Failed to save subject order');
-    }
+    await persistSubjectOrder(reordered);
   };
 
   const handleSubjectDragStart = (index: number) => {
@@ -380,18 +492,7 @@ export default function SubjectsHabitsPage() {
 
     setSubjects(reordered);
     setDraggedSubjectIndex(null);
-
-    try {
-      for (const item of reordered) {
-        await supabase
-          .from('subjects')
-          .update({ sort_order: item.sort_order })
-          .eq('id', item.id);
-      }
-      toast.success('Subject order updated!');
-    } catch {
-      toast.error('Failed to save subject order');
-    }
+    await persistSubjectOrder(reordered);
   };
 
   // ---------------------------------------------------------------------------
@@ -464,17 +565,87 @@ export default function SubjectsHabitsPage() {
     }
   };
 
-  const handleDeleteHabit = async (id: string) => {
+  const handleDeleteHabitWithUndo = async (habit: Habit) => {
+    setConfirmDeleteHabitId(null);
+    const snapshot = { ...habit };
+    setHabits((prev) => prev.filter((h) => h.id !== habit.id));
+
     try {
-      const { error } = await supabase.from('habits').delete().eq('id', id);
+      const { error } = await supabase.from('habits').delete().eq('id', habit.id);
       if (error) {
+        setHabits((prev) =>
+          [...prev, snapshot].sort((a, b) => a.sort_order - b.sort_order)
+        );
         toast.error(`Failed to delete: ${error.message}`);
-      } else {
-        setHabits((prev) => prev.filter((h) => h.id !== id));
-        toast.success('Habit deleted');
+        return;
       }
+
+      toast(
+        (t) => (
+          <Stack direction="row" spacing={1.5} alignItems="center">
+            <Typography variant="body2" fontWeight={600}>
+              Deleted &ldquo;{snapshot.title}&rdquo;
+            </Typography>
+            <Button
+              size="small"
+              variant="outlined"
+              onClick={async () => {
+                toast.dismiss(t.id);
+                const { data, error: restoreErr } = await supabase
+                  .from('habits')
+                  .insert({
+                    id: snapshot.id,
+                    title: snapshot.title,
+                    sort_order: snapshot.sort_order,
+                    is_enabled: true,
+                  })
+                  .select('*')
+                  .single();
+                if (!restoreErr && data) {
+                  setHabits((prev) =>
+                    [...prev, data as Habit].sort((a, b) => a.sort_order - b.sort_order)
+                  );
+                  toast.success(`Restored "${snapshot.title}"`);
+                } else {
+                  toast.error('Could not restore habit');
+                }
+              }}
+              sx={{
+                minWidth: 0,
+                px: 1,
+                py: 0.25,
+                fontSize: '0.75rem',
+                fontWeight: 700,
+                textTransform: 'none',
+              }}
+            >
+              Undo
+            </Button>
+          </Stack>
+        ),
+        { duration: 5000 }
+      );
     } catch {
+      setHabits((prev) =>
+        [...prev, snapshot].sort((a, b) => a.sort_order - b.sort_order)
+      );
       toast.error('Failed to delete habit');
+    }
+  };
+
+  const persistHabitOrder = async (reordered: Habit[]) => {
+    try {
+      await Promise.all(
+        reordered.map((item) =>
+          supabase
+            .from('habits')
+            .update({ sort_order: item.sort_order })
+            .eq('id', item.id)
+        )
+      );
+      toast.success('Habit order updated!');
+    } catch {
+      toast.error('Failed to save habit order');
     }
   };
 
@@ -492,18 +663,7 @@ export default function SubjectsHabitsPage() {
     }));
 
     setHabits(reordered);
-
-    try {
-      for (const item of reordered) {
-        await supabase
-          .from('habits')
-          .update({ sort_order: item.sort_order })
-          .eq('id', item.id);
-      }
-      toast.success('Habit order updated!');
-    } catch {
-      toast.error('Failed to save habit order');
-    }
+    await persistHabitOrder(reordered);
   };
 
   const handleHabitDragStart = (index: number) => {
@@ -524,37 +684,98 @@ export default function SubjectsHabitsPage() {
 
     setHabits(reordered);
     setDraggedHabitIndex(null);
-
-    try {
-      for (const item of reordered) {
-        await supabase
-          .from('habits')
-          .update({ sort_order: item.sort_order })
-          .eq('id', item.id);
-      }
-      toast.success('Habit order updated!');
-    } catch {
-      toast.error('Failed to save habit order');
-    }
+    await persistHabitOrder(reordered);
   };
+
+  const renderColorSwatches = (
+    selectedColor: string,
+    onSelect: (hex: string) => void,
+    inputAriaLabel: string
+  ) => (
+    <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
+      {CLASSICAL_SUBJECT_SWATCHES.map((swatch) => {
+        const isSelected =
+          selectedColor.toLowerCase() === swatch.hex.toLowerCase();
+        return (
+          <Tooltip key={swatch.hex} title={swatch.label}>
+            <ButtonBase
+              aria-label={`Select ${swatch.label} (${swatch.hex})`}
+              onClick={() => onSelect(swatch.hex)}
+              sx={{
+                width: 22,
+                height: 22,
+                borderRadius: '50%',
+                bgcolor: swatch.hex,
+                border: isSelected ? '2px solid' : '1px solid',
+                borderColor: isSelected ? 'text.primary' : 'divider',
+                boxShadow: isSelected
+                  ? `0 0 0 2px ${alpha(swatch.hex, 0.35)}`
+                  : 'none',
+                transition: 'transform 0.12s ease',
+                '&:hover': { transform: 'scale(1.12)' },
+              }}
+            />
+          </Tooltip>
+        );
+      })}
+      <Tooltip title="Custom Color Picker">
+        <Box component="span" sx={{ display: 'inline-flex', alignItems: 'center', ml: 0.5 }}>
+          <input
+            type="color"
+            aria-label={inputAriaLabel}
+            value={selectedColor}
+            onChange={(e) => onSelect(e.target.value)}
+            style={{
+              width: 24,
+              height: 24,
+              padding: 0,
+              border: 'none',
+              borderRadius: '50%',
+              cursor: 'pointer',
+            }}
+          />
+        </Box>
+      </Tooltip>
+    </Stack>
+  );
 
   if (loading) {
     return (
-      <Box display="flex" justifyContent="center" alignItems="center" minHeight="50vh">
-        <CircularProgress />
-      </Box>
+      <Stack spacing={2.5}>
+        <Skeleton variant="rounded" height={76} sx={{ borderRadius: 1 }} />
+        <Skeleton variant="rounded" height={420} sx={{ borderRadius: 1 }} />
+      </Stack>
     );
   }
 
   return (
     <Box>
+      {loadError && (
+        <Alert
+          severity="error"
+          sx={{ mb: 2.5, borderRadius: 1 }}
+          action={
+            <Button
+              color="inherit"
+              size="small"
+              onClick={loadData}
+              sx={{ fontWeight: 700, textTransform: 'none' }}
+            >
+              Retry
+            </Button>
+          }
+        >
+          {loadError}
+        </Alert>
+      )}
+
       {/* Unified Page Header Bar */}
       <Card
         elevation={0}
         sx={{
           p: 2,
           mb: 3,
-          borderRadius: 2.5,
+          borderRadius: 1,
           border: '1px solid',
           borderColor: 'divider',
           bgcolor: 'background.paper',
@@ -579,11 +800,28 @@ export default function SubjectsHabitsPage() {
               Subjects &amp; Habit Trackers
             </Typography>
             <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 500 }}>
-              Manage each school subject, designate whether it is taught internally (with Mom) or through an outside entity, and record teacher contact details.
+              Subject order (#1, #2…) controls the exact row sequence on the 2-Page Weekly Binder Planner and Gradebook.
             </Typography>
           </Box>
 
-          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+          <Stack direction="row" spacing={1} alignItems="center" sx={{ flexShrink: 0 }}>
+            <Button
+              component={RouterLink}
+              href="/automations"
+              variant="outlined"
+              color="inherit"
+              size="small"
+              startIcon={<Repeat size={15} />}
+              sx={{
+                fontWeight: 600,
+                textTransform: 'none',
+                borderRadius: 1,
+                borderColor: 'divider',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              Automations &amp; Syllabi
+            </Button>
             {activeTab === 'subjects' ? (
               <Button
                 variant="contained"
@@ -594,10 +832,11 @@ export default function SubjectsHabitsPage() {
                 sx={{
                   fontWeight: 700,
                   textTransform: 'none',
-                  borderRadius: 2,
+                  borderRadius: 1,
                   px: 2,
                   py: 0.75,
                   boxShadow: 'none',
+                  whiteSpace: 'nowrap',
                 }}
               >
                 {showAddSubjectForm ? 'Hide Form' : 'Add Subject'}
@@ -612,10 +851,11 @@ export default function SubjectsHabitsPage() {
                 sx={{
                   fontWeight: 700,
                   textTransform: 'none',
-                  borderRadius: 2,
+                  borderRadius: 1,
                   px: 2,
                   py: 0.75,
                   boxShadow: 'none',
+                  whiteSpace: 'nowrap',
                 }}
               >
                 {showAddHabitForm ? 'Hide Form' : 'Add Habit'}
@@ -628,7 +868,7 @@ export default function SubjectsHabitsPage() {
       <Card
         elevation={0}
         sx={{
-          borderRadius: 2.5,
+          borderRadius: 1,
           border: '1px solid',
           borderColor: 'divider',
           mb: 4,
@@ -664,11 +904,12 @@ export default function SubjectsHabitsPage() {
                     textTransform: 'none',
                     px: 2,
                     py: 1,
-                    borderRadius: '6px 6px 0 0',
+                    borderRadius: 1,
                     borderBottom: '2px solid',
                     borderColor: isSelected ? 'primary.main' : 'transparent',
                     color: isSelected ? 'primary.main' : 'text.secondary',
                     bgcolor: 'transparent',
+                    whiteSpace: 'nowrap',
                   }}
                 >
                   {tab.label}
@@ -678,7 +919,7 @@ export default function SubjectsHabitsPage() {
           </Stack>
         </Box>
 
-        <CardContent sx={{ p: 3 }}>
+        <CardContent sx={{ p: { xs: 2, md: 3 } }}>
           {activeTab === 'subjects' ? (
             <Box>
               {/* Collapsible Form: Add New Subject */}
@@ -688,7 +929,7 @@ export default function SubjectsHabitsPage() {
                   sx={{
                     p: 2.5,
                     mb: 3,
-                    borderRadius: 2,
+                    borderRadius: 1,
                     bgcolor: alpha(theme.palette.primary.main, 0.03),
                     borderColor: alpha(theme.palette.primary.main, 0.25),
                   }}
@@ -705,7 +946,7 @@ export default function SubjectsHabitsPage() {
                   </Typography>
 
                   <Grid container spacing={2} alignItems="center">
-                    <Grid item xs={12} sm={5}>
+                    <Grid item xs={12} sm={4}>
                       <TextField
                         fullWidth
                         size="small"
@@ -713,9 +954,16 @@ export default function SubjectsHabitsPage() {
                         placeholder="e.g. Classical Studies, Math, Literature"
                         value={newSubjectName}
                         onChange={(e) => setNewSubjectName(e.target.value)}
+                        onKeyDown={async (e) => {
+                          if (e.key === 'Enter' && newSubjectName.trim()) {
+                            e.preventDefault();
+                            await handleAddSubject();
+                            setShowAddSubjectForm(false);
+                          }
+                        }}
                       />
                     </Grid>
-                    <Grid item xs={12} sm={5}>
+                    <Grid item xs={12} sm={4}>
                       <TextField
                         fullWidth
                         size="small"
@@ -725,24 +973,16 @@ export default function SubjectsHabitsPage() {
                         onChange={(e) => setNewSubjectLink(e.target.value)}
                       />
                     </Grid>
-                    <Grid item xs={12} sm={2}>
-                      <Stack direction="row" spacing={1} alignItems="center">
-                        <Typography variant="caption" fontWeight={700}>
-                          Color:
+                    <Grid item xs={12} sm={4}>
+                      <Stack spacing={0.5}>
+                        <Typography variant="caption" fontWeight={700} color="text.secondary">
+                          Classical Ink Color:
                         </Typography>
-                        <input
-                          type="color"
-                          value={newSubjectColor}
-                          onChange={(e) => setNewSubjectColor(e.target.value)}
-                          style={{
-                            width: 32,
-                            height: 32,
-                            padding: 0,
-                            border: 'none',
-                            borderRadius: '50%',
-                            cursor: 'pointer',
-                          }}
-                        />
+                        {renderColorSwatches(
+                          newSubjectColor,
+                          setNewSubjectColor,
+                          'Custom color for new subject'
+                        )}
                       </Stack>
                     </Grid>
 
@@ -795,7 +1035,7 @@ export default function SubjectsHabitsPage() {
                                   setNewTeacherName('Amanda Holliday');
                                 }
                               }}
-                              sx={{ height: 20, fontSize: '0.66rem', fontWeight: 700, cursor: 'pointer' }}
+                              sx={{ height: 22, fontSize: '0.75rem', fontWeight: 700, cursor: 'pointer' }}
                             />
                           ))}
                         </Stack>
@@ -850,6 +1090,7 @@ export default function SubjectsHabitsPage() {
                           size="small"
                           color="inherit"
                           onClick={() => setShowAddSubjectForm(false)}
+                          sx={{ textTransform: 'none', fontWeight: 600 }}
                         >
                           Cancel
                         </Button>
@@ -862,7 +1103,7 @@ export default function SubjectsHabitsPage() {
                           }}
                           disabled={saving || !newSubjectName.trim()}
                           startIcon={<Plus size={16} />}
-                          sx={{ fontWeight: 700, textTransform: 'none' }}
+                          sx={{ fontWeight: 700, textTransform: 'none', borderRadius: 1 }}
                         >
                           Save Subject
                         </Button>
@@ -872,275 +1113,450 @@ export default function SubjectsHabitsPage() {
                 </Paper>
               )}
 
-              {/* CLEAN DRAGGABLE SUBJECTS DATA ENTRY LIST */}
-              <Stack spacing={1.25}>
-                {subjects.map((s, idx) => {
-                  const recConfig = parseRecurringConfig(s.recurring_config, s.name);
-                  const officialCourseName =
-                    recConfig.course_syllabus?.official_course_name || '';
-                  const inst =
-                    recConfig.instructor_info ||
-                    createDefaultInstructorInfo(
-                      s.name,
-                      recConfig.course_syllabus?.source_type === 'api_sync',
-                      recConfig.course_syllabus?.teacher_name
-                    );
-                  const isExternal = inst.provider_type === 'external';
-
-                  return (
-                    <Box
-                      key={s.id}
-                      draggable
-                      onDragStart={() => handleSubjectDragStart(idx)}
-                      onDragOver={(e) => e.preventDefault()}
-                      onDrop={() => handleSubjectDrop(idx)}
-                      display="flex"
-                      alignItems="center"
-                      justifyContent="space-between"
-                      flexWrap="wrap"
-                      gap={1.5}
-                      px={2}
-                      py={1.5}
-                      borderRadius={2}
-                      border="1px solid"
-                      borderColor="divider"
-                      bgcolor="background.paper"
-                      sx={{
-                        cursor: 'grab',
-                        transition: 'border-color 0.15s ease, background-color 0.15s ease',
-                        '&:hover': {
-                          borderColor: alpha(theme.palette.primary.main, 0.45),
-                          bgcolor: alpha(theme.palette.primary.main, 0.015),
-                        },
-                      }}
-                    >
-                      <Stack
-                        direction="row"
-                        alignItems="center"
-                        spacing={1.5}
-                        flexGrow={1}
-                        flexWrap="wrap"
-                        useFlexGap
+              {/* STRUCTURED SINGLE-ROW SUBJECTS TABLE */}
+              <TableContainer
+                component={Paper}
+                elevation={0}
+                sx={{
+                  borderRadius: 1,
+                  border: '1px solid',
+                  borderColor: 'divider',
+                }}
+              >
+                <Table size="small">
+                  <TableHead>
+                    <TableRow sx={{ bgcolor: alpha(theme.palette.text.primary, 0.025) }}>
+                      <TableCell
+                        sx={{
+                          fontWeight: 700,
+                          fontSize: '0.75rem',
+                          color: 'text.secondary',
+                          whiteSpace: 'nowrap',
+                          py: 1.25,
+                        }}
                       >
-                        <Box
-                          title="Drag to reorder"
-                          sx={{ color: 'text.disabled', display: 'flex', cursor: 'grab' }}
-                        >
-                          <GripVertical size={18} />
-                        </Box>
-
-                        {/* Color Swatch Picker */}
-                        <Box title="Assign Subject Color" display="flex" alignItems="center">
-                          <input
-                            type="color"
-                            value={s.color || '#0C74E4'}
-                            onChange={(e) => handleUpdateSubjectColor(s.id, e.target.value)}
-                            style={{
-                              width: 18,
-                              height: 18,
-                              padding: 0,
-                              border: 'none',
-                              borderRadius: '50%',
-                              cursor: 'pointer',
-                            }}
-                          />
-                        </Box>
-
-                        {/* Subject Name & Official Course Subtitle */}
-                        <Box sx={{ minWidth: 165 }}>
-                          <Typography
-                            variant="subtitle2"
-                            fontWeight={700}
-                            sx={{ fontSize: '0.94rem', lineHeight: 1.2 }}
-                          >
-                            {s.name}
+                        ORDER &amp; SUBJECT
+                      </TableCell>
+                      <TableCell
+                        sx={{
+                          fontWeight: 700,
+                          fontSize: '0.75rem',
+                          color: 'text.secondary',
+                          whiteSpace: 'nowrap',
+                          py: 1.25,
+                        }}
+                      >
+                        PROVIDER &amp; TEACHER
+                      </TableCell>
+                      <TableCell
+                        sx={{
+                          fontWeight: 700,
+                          fontSize: '0.75rem',
+                          color: 'text.secondary',
+                          whiteSpace: 'nowrap',
+                          py: 1.25,
+                        }}
+                      >
+                        CONTACT &amp; CURRICULUM LINKS
+                      </TableCell>
+                      <TableCell
+                        align="right"
+                        sx={{
+                          fontWeight: 700,
+                          fontSize: '0.75rem',
+                          color: 'text.secondary',
+                          whiteSpace: 'nowrap',
+                          py: 1.25,
+                        }}
+                      >
+                        ACTIONS
+                      </TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {subjects.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={4} align="center" sx={{ py: 5 }}>
+                          <Typography variant="body2" color="text.secondary" mb={1.5}>
+                            No school subjects configured yet.
                           </Typography>
-                          {officialCourseName && (
-                            <Typography
-                              variant="caption"
-                              sx={{
-                                display: 'block',
-                                fontStyle: 'italic',
-                                color: 'text.secondary',
-                                fontSize: '0.73rem',
-                              }}
-                            >
-                              {officialCourseName}
-                            </Typography>
-                          )}
-                        </Box>
-
-                        {/* Instruction Designation Badge (Internal vs Outside Entity) */}
-                        <Chip
-                          icon={
-                            isExternal ? (
-                              <Building2 size={13} />
-                            ) : (
-                              <User size={13} />
-                            )
-                          }
-                          label={
-                            isExternal
-                              ? `Outside Entity: ${inst.outside_entity_name || 'External Provider'}`
-                              : 'Internally (with Mom)'
-                          }
-                          size="small"
-                          color={isExternal ? 'info' : 'success'}
-                          variant="outlined"
-                          onClick={() => handleOpenEditSubject(s)}
-                          sx={{
-                            fontWeight: 700,
-                            fontSize: '0.72rem',
-                            height: 24,
-                            cursor: 'pointer',
-                          }}
-                        />
-
-                        {/* Teacher Name Pill */}
-                        <Chip
-                          icon={<User size={12} />}
-                          label={
-                            inst.teacher_name
-                              ? `Teacher: ${inst.teacher_name}`
-                              : 'Teacher: Not Set (Click to add)'
-                          }
-                          size="small"
-                          variant="outlined"
-                          onClick={() => handleOpenEditSubject(s)}
-                          sx={{
-                            fontWeight: 600,
-                            fontSize: '0.72rem',
-                            height: 24,
-                            cursor: 'pointer',
-                            color: inst.teacher_name ? 'text.primary' : 'text.secondary',
-                          }}
-                        />
-
-                        {/* Teacher Contact Info Summary Chips */}
-                        {inst.teacher_email && (
-                          <Chip
-                            icon={<Mail size={12} />}
-                            label={inst.teacher_email}
+                          <Button
                             size="small"
-                            component="a"
-                            href={`mailto:${inst.teacher_email}`}
-                            clickable
-                            variant="outlined"
-                            sx={{
-                              fontSize: '0.7rem',
-                              height: 24,
-                              fontWeight: 600,
-                            }}
-                          />
-                        )}
+                            variant="contained"
+                            startIcon={<Plus size={15} />}
+                            onClick={() => setShowAddSubjectForm(true)}
+                            sx={{ textTransform: 'none', fontWeight: 700, borderRadius: 1 }}
+                          >
+                            Add First Subject
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      subjects.map((s, idx) => {
+                        const recConfig = parseRecurringConfig(s.recurring_config, s.name);
+                        const officialCourseName =
+                          recConfig.course_syllabus?.official_course_name || '';
+                        const inst =
+                          recConfig.instructor_info ||
+                          createDefaultInstructorInfo(
+                            s.name,
+                            recConfig.course_syllabus?.source_type === 'api_sync',
+                            recConfig.course_syllabus?.teacher_name
+                          );
+                        const isExternal = inst.provider_type === 'external';
+                        const isConfirmingDelete = confirmDeleteSubjectId === s.id;
 
-                        {inst.teacher_phone && (
-                          <Chip
-                            icon={<Phone size={12} />}
-                            label={inst.teacher_phone}
-                            size="small"
-                            variant="outlined"
-                            onClick={() => handleOpenEditSubject(s)}
+                        return (
+                          <TableRow
+                            key={s.id}
+                            hover
+                            draggable
+                            onDragStart={() => handleSubjectDragStart(idx)}
+                            onDragOver={(e) => e.preventDefault()}
+                            onDrop={() => handleSubjectDrop(idx)}
                             sx={{
-                              fontSize: '0.7rem',
-                              height: 24,
-                              fontWeight: 600,
-                              cursor: 'pointer',
+                              cursor: 'grab',
+                              '&:last-child td': { borderBottom: 0 },
                             }}
-                          />
-                        )}
+                          >
+                            {/* COL 1: ORDER & SUBJECT */}
+                            <TableCell sx={{ py: 1.25, whiteSpace: 'nowrap' }}>
+                              <Stack direction="row" spacing={1.25} alignItems="center">
+                                <Box
+                                  title="Drag to reorder"
+                                  sx={{
+                                    color: 'text.disabled',
+                                    display: 'flex',
+                                    cursor: 'grab',
+                                  }}
+                                >
+                                  <GripVertical size={16} />
+                                </Box>
+                                <Chip
+                                  size="small"
+                                  label={`#${idx + 1}`}
+                                  sx={{
+                                    height: 22,
+                                    fontSize: '0.75rem',
+                                    fontWeight: 700,
+                                    fontVariantNumeric: 'tabular-nums',
+                                    bgcolor: alpha(theme.palette.text.primary, 0.05),
+                                    color: 'text.secondary',
+                                  }}
+                                />
+                                <Tooltip title="Change Subject Color">
+                                  <Box display="flex" alignItems="center">
+                                    <input
+                                      type="color"
+                                      aria-label={`Color for ${s.name}`}
+                                      value={s.color || '#1b5698'}
+                                      onChange={(e) =>
+                                        handleUpdateSubjectColor(s.id, e.target.value)
+                                      }
+                                      style={{
+                                        width: 16,
+                                        height: 16,
+                                        padding: 0,
+                                        border: 'none',
+                                        borderRadius: '50%',
+                                        cursor: 'pointer',
+                                      }}
+                                    />
+                                  </Box>
+                                </Tooltip>
+                                <Box sx={{ minWidth: 0 }}>
+                                  <Typography
+                                    variant="subtitle2"
+                                    fontWeight={700}
+                                    sx={{ lineHeight: 1.2, whiteSpace: 'nowrap' }}
+                                  >
+                                    {s.name}
+                                  </Typography>
+                                  {officialCourseName && (
+                                    <Typography
+                                      variant="caption"
+                                      sx={{
+                                        display: 'block',
+                                        fontStyle: 'italic',
+                                        color: 'text.secondary',
+                                        fontSize: '0.75rem',
+                                        whiteSpace: 'nowrap',
+                                        maxWidth: 240,
+                                        overflow: 'hidden',
+                                        textOverflow: 'ellipsis',
+                                      }}
+                                    >
+                                      {officialCourseName}
+                                    </Typography>
+                                  )}
+                                </Box>
+                              </Stack>
+                            </TableCell>
 
-                        {inst.teacher_contact_notes && (
-                          <Chip
-                            icon={<FileText size={12} />}
-                            label={inst.teacher_contact_notes}
-                            size="small"
-                            variant="outlined"
-                            onClick={() => handleOpenEditSubject(s)}
-                            sx={{
-                              fontSize: '0.7rem',
-                              height: 24,
-                              color: 'text.secondary',
-                              cursor: 'pointer',
-                            }}
-                          />
-                        )}
+                            {/* COL 2: PROVIDER & TEACHER */}
+                            <TableCell sx={{ py: 1.25, whiteSpace: 'nowrap' }}>
+                              <Stack direction="row" spacing={1} alignItems="center">
+                                <Chip
+                                  icon={
+                                    isExternal ? (
+                                      <Building2 size={13} />
+                                    ) : (
+                                      <User size={13} />
+                                    )
+                                  }
+                                  label={
+                                    isExternal
+                                      ? inst.outside_entity_name || 'Outside Entity'
+                                      : 'Mom (Internal)'
+                                  }
+                                  size="small"
+                                  color={isExternal ? 'info' : 'success'}
+                                  variant="outlined"
+                                  onClick={() => handleOpenEditSubject(s)}
+                                  sx={{
+                                    fontWeight: 700,
+                                    fontSize: '0.75rem',
+                                    height: 24,
+                                    cursor: 'pointer',
+                                  }}
+                                />
+                                <Typography
+                                  variant="body2"
+                                  fontWeight={600}
+                                  color={inst.teacher_name ? 'text.primary' : 'text.secondary'}
+                                  sx={{ whiteSpace: 'nowrap' }}
+                                >
+                                  {inst.teacher_name || 'No Teacher Set'}
+                                </Typography>
+                              </Stack>
+                            </TableCell>
 
-                        {/* Class / Zoom / Live Classroom Link Pill */}
-                        {s.link && (
-                          <Chip
-                            icon={
-                              s.link.includes('zoom.us') ||
-                              s.link.includes('adobeconnect.com') ? (
-                                <Video size={12} />
+                            {/* COL 3: CONTACT & CURRICULUM LINKS */}
+                            <TableCell sx={{ py: 1.25, whiteSpace: 'nowrap' }}>
+                              <Stack direction="row" spacing={0.75} alignItems="center">
+                                {s.link && (
+                                  <Chip
+                                    icon={
+                                      s.link.includes('zoom.us') ||
+                                      s.link.includes('adobeconnect.com') ? (
+                                        <Video size={12} />
+                                      ) : (
+                                        <LinkIcon size={12} />
+                                      )
+                                    }
+                                    label={
+                                      s.link.includes('zoom.us')
+                                        ? 'Zoom ↗'
+                                        : s.link.includes('adobeconnect.com')
+                                        ? 'Classroom ↗'
+                                        : 'Class Link ↗'
+                                    }
+                                    size="small"
+                                    component="a"
+                                    href={s.link}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    clickable
+                                    sx={{
+                                      bgcolor: alpha(theme.palette.info.main, 0.1),
+                                      color:
+                                        theme.palette.mode === 'dark'
+                                          ? 'info.light'
+                                          : 'info.dark',
+                                      fontWeight: 700,
+                                      fontSize: '0.75rem',
+                                      height: 24,
+                                    }}
+                                  />
+                                )}
+
+                                {inst.teacher_email && (
+                                  <Tooltip title={`Email ${inst.teacher_email}`}>
+                                    <Chip
+                                      icon={<Mail size={12} />}
+                                      label={inst.teacher_email}
+                                      size="small"
+                                      component="a"
+                                      href={`mailto:${inst.teacher_email}`}
+                                      clickable
+                                      variant="outlined"
+                                      sx={{
+                                        fontSize: '0.75rem',
+                                        height: 24,
+                                        fontWeight: 600,
+                                        maxWidth: 190,
+                                      }}
+                                    />
+                                  </Tooltip>
+                                )}
+
+                                {(inst.teacher_phone || inst.teacher_contact_notes) && (
+                                  <Tooltip
+                                    title={
+                                      [inst.teacher_phone, inst.teacher_contact_notes]
+                                        .filter(Boolean)
+                                        .join(' • ')
+                                    }
+                                  >
+                                    <Chip
+                                      icon={
+                                        inst.teacher_phone ? (
+                                          <Phone size={12} />
+                                        ) : (
+                                          <FileText size={12} />
+                                        )
+                                      }
+                                      label={
+                                        inst.teacher_phone ||
+                                        inst.teacher_contact_notes
+                                      }
+                                      size="small"
+                                      variant="outlined"
+                                      onClick={() => handleOpenEditSubject(s)}
+                                      sx={{
+                                        fontSize: '0.75rem',
+                                        height: 24,
+                                        color: 'text.secondary',
+                                        cursor: 'pointer',
+                                        maxWidth: 160,
+                                      }}
+                                    />
+                                  </Tooltip>
+                                )}
+
+                                <Chip
+                                  icon={<Repeat size={12} />}
+                                  label="Syllabus & Rules"
+                                  size="small"
+                                  component={RouterLink}
+                                  href={`/automations?subject=${s.id}`}
+                                  clickable
+                                  variant="outlined"
+                                  sx={{
+                                    fontSize: '0.75rem',
+                                    height: 24,
+                                    fontWeight: 600,
+                                  }}
+                                />
+                              </Stack>
+                            </TableCell>
+
+                            {/* COL 4: ACTIONS */}
+                            <TableCell align="right" sx={{ py: 1.25, whiteSpace: 'nowrap' }}>
+                              {isConfirmingDelete ? (
+                                <Stack
+                                  direction="row"
+                                  spacing={0.75}
+                                  justifyContent="flex-end"
+                                  alignItems="center"
+                                >
+                                  <Button
+                                    size="small"
+                                    color="error"
+                                    variant="contained"
+                                    onClick={() => handleDeleteSubjectWithUndo(s)}
+                                    sx={{
+                                      minWidth: 0,
+                                      px: 1.25,
+                                      py: 0.35,
+                                      fontSize: '0.75rem',
+                                      fontWeight: 700,
+                                      textTransform: 'none',
+                                      borderRadius: 1,
+                                    }}
+                                  >
+                                    Confirm Delete?
+                                  </Button>
+                                  <Button
+                                    size="small"
+                                    color="inherit"
+                                    onClick={() => setConfirmDeleteSubjectId(null)}
+                                    sx={{
+                                      minWidth: 0,
+                                      px: 1,
+                                      py: 0.35,
+                                      fontSize: '0.75rem',
+                                      textTransform: 'none',
+                                    }}
+                                  >
+                                    Cancel
+                                  </Button>
+                                </Stack>
                               ) : (
-                                <LinkIcon size={12} />
-                              )
-                            }
-                            label={
-                              s.link.includes('zoom.us')
-                                ? 'Zoom Link ↗'
-                                : s.link.includes('adobeconnect.com')
-                                ? 'Live Classroom ↗'
-                                : 'Class Link ↗'
-                            }
-                            size="small"
-                            component="a"
-                            href={s.link}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            clickable
-                            sx={{
-                              bgcolor: alpha(theme.palette.info.main, 0.1),
-                              color: theme.palette.mode === 'dark' ? 'info.light' : 'info.dark',
-                              fontWeight: 700,
-                              fontSize: '0.7rem',
-                              height: 24,
-                            }}
-                          />
-                        )}
-                      </Stack>
-
-                      {/* Action Buttons */}
-                      <Stack direction="row" spacing={0.75} alignItems="center">
-                        <Button
-                          size="small"
-                          variant="outlined"
-                          color="inherit"
-                          startIcon={<Edit3 size={13} />}
-                          onClick={() => handleOpenEditSubject(s)}
-                          sx={{
-                            textTransform: 'none',
-                            fontWeight: 600,
-                            fontSize: '0.74rem',
-                            borderColor: 'divider',
-                            py: 0.4,
-                          }}
-                        >
-                          Edit Info
-                        </Button>
-
-                        <IconButton
-                          size="small"
-                          aria-label="Subject options"
-                          onClick={(e) => {
-                            setSubjectMenuAnchorEl(e.currentTarget);
-                            setMenuSubject(s);
-                          }}
-                          sx={{
-                            border: '1px solid',
-                            borderColor: 'divider',
-                            borderRadius: 1.5,
-                            p: 0.65,
-                          }}
-                        >
-                          <MenuIcon size={16} />
-                        </IconButton>
-                      </Stack>
-                    </Box>
-                  );
-                })}
-              </Stack>
+                                <Stack
+                                  direction="row"
+                                  spacing={0.5}
+                                  justifyContent="flex-end"
+                                  alignItems="center"
+                                >
+                                  <Tooltip title="Move Up">
+                                    <span>
+                                      <IconButton
+                                        size="small"
+                                        aria-label={`Move ${s.name} up`}
+                                        disabled={idx === 0}
+                                        onClick={() => handleMoveSubject(idx, 'up')}
+                                      >
+                                        <ArrowUp size={15} />
+                                      </IconButton>
+                                    </span>
+                                  </Tooltip>
+                                  <Tooltip title="Move Down">
+                                    <span>
+                                      <IconButton
+                                        size="small"
+                                        aria-label={`Move ${s.name} down`}
+                                        disabled={idx === subjects.length - 1}
+                                        onClick={() => handleMoveSubject(idx, 'down')}
+                                      >
+                                        <ArrowDown size={15} />
+                                      </IconButton>
+                                    </span>
+                                  </Tooltip>
+                                  <Button
+                                    size="small"
+                                    variant="outlined"
+                                    color="inherit"
+                                    startIcon={<Edit3 size={13} />}
+                                    onClick={() => handleOpenEditSubject(s)}
+                                    sx={{
+                                      textTransform: 'none',
+                                      fontWeight: 600,
+                                      fontSize: '0.75rem',
+                                      borderColor: 'divider',
+                                      borderRadius: 1,
+                                      py: 0.35,
+                                      whiteSpace: 'nowrap',
+                                    }}
+                                  >
+                                    Edit Info
+                                  </Button>
+                                  <IconButton
+                                    size="small"
+                                    aria-label={`More options for ${s.name}`}
+                                    onClick={(e) => {
+                                      setSubjectMenuAnchorEl(e.currentTarget);
+                                      setMenuSubject(s);
+                                    }}
+                                    sx={{
+                                      border: '1px solid',
+                                      borderColor: 'divider',
+                                      borderRadius: 1,
+                                      p: 0.6,
+                                    }}
+                                  >
+                                    <MenuIcon size={15} />
+                                  </IconButton>
+                                </Stack>
+                              )}
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })
+                    )}
+                  </TableBody>
+                </Table>
+              </TableContainer>
 
               {/* Subject 3-Line Dropdown Menu */}
               <Menu
@@ -1157,8 +1573,8 @@ export default function SubjectsHabitsPage() {
                     elevation: 4,
                     sx: {
                       mt: 0.5,
-                      minWidth: 230,
-                      borderRadius: 2,
+                      minWidth: 235,
+                      borderRadius: 1,
                       border: '1px solid',
                       borderColor: 'divider',
                       p: 0.5,
@@ -1189,16 +1605,36 @@ export default function SubjectsHabitsPage() {
                     if (target) handleOpenEditSubject(target);
                   }}
                   sx={{
-                    borderRadius: 1.5,
+                    borderRadius: 1,
                     py: 1,
                     gap: 1.25,
-                    fontSize: '0.84rem',
+                    fontSize: '0.875rem',
                     fontWeight: 600,
                   }}
                 >
                   <Edit3 size={15} />
                   Edit Subject, Entity &amp; Teacher Info…
                 </MenuItem>
+                {menuSubject && (
+                  <MenuItem
+                    component={RouterLink}
+                    href={`/automations?subject=${menuSubject.id}`}
+                    onClick={() => {
+                      setSubjectMenuAnchorEl(null);
+                      setMenuSubject(null);
+                    }}
+                    sx={{
+                      borderRadius: 1,
+                      py: 1,
+                      gap: 1.25,
+                      fontSize: '0.875rem',
+                      fontWeight: 500,
+                    }}
+                  >
+                    <Repeat size={15} />
+                    Syllabus &amp; Automation Rules…
+                  </MenuItem>
+                )}
                 {menuSubject &&
                   subjects.findIndex((x) => x.id === menuSubject.id) > 0 && (
                     <MenuItem
@@ -1209,10 +1645,10 @@ export default function SubjectsHabitsPage() {
                         if (idx > 0) handleMoveSubject(idx, 'up');
                       }}
                       sx={{
-                        borderRadius: 1.5,
+                        borderRadius: 1,
                         py: 1,
                         gap: 1.25,
-                        fontSize: '0.84rem',
+                        fontSize: '0.875rem',
                         fontWeight: 500,
                       }}
                     >
@@ -1232,10 +1668,10 @@ export default function SubjectsHabitsPage() {
                           handleMoveSubject(idx, 'down');
                       }}
                       sx={{
-                        borderRadius: 1.5,
+                        borderRadius: 1,
                         py: 1,
                         gap: 1.25,
-                        fontSize: '0.84rem',
+                        fontSize: '0.875rem',
                         fontWeight: 500,
                       }}
                     >
@@ -1249,19 +1685,19 @@ export default function SubjectsHabitsPage() {
                     const target = menuSubject;
                     setSubjectMenuAnchorEl(null);
                     setMenuSubject(null);
-                    if (target) handleDeleteSubject(target.id);
+                    if (target) setConfirmDeleteSubjectId(target.id);
                   }}
                   sx={{
-                    borderRadius: 1.5,
+                    borderRadius: 1,
                     py: 1,
                     gap: 1.25,
-                    fontSize: '0.84rem',
+                    fontSize: '0.875rem',
                     fontWeight: 600,
                     color: 'error.main',
                   }}
                 >
                   <Trash2 size={15} />
-                  Delete Subject
+                  Delete Subject…
                 </MenuItem>
               </Menu>
             </Box>
@@ -1273,7 +1709,7 @@ export default function SubjectsHabitsPage() {
                   sx={{
                     p: 2,
                     mb: 2.5,
-                    borderRadius: 2,
+                    borderRadius: 1,
                     bgcolor: alpha(theme.palette.primary.main, 0.04),
                     border: '1px solid',
                     borderColor: alpha(theme.palette.primary.main, 0.2),
@@ -1296,6 +1732,13 @@ export default function SubjectsHabitsPage() {
                       placeholder="e.g. Vitamin 1, Reading 20m, Chores"
                       value={newHabitTitle}
                       onChange={(e) => setNewHabitTitle(e.target.value)}
+                      onKeyDown={async (e) => {
+                        if (e.key === 'Enter' && newHabitTitle.trim()) {
+                          e.preventDefault();
+                          await handleAddHabit();
+                          setShowAddHabitForm(false);
+                        }
+                      }}
                     />
                     <Button
                       variant="contained"
@@ -1306,7 +1749,12 @@ export default function SubjectsHabitsPage() {
                       }}
                       disabled={saving || !newHabitTitle.trim()}
                       startIcon={<Plus size={16} />}
-                      sx={{ fontWeight: 700, whiteSpace: 'nowrap', textTransform: 'none' }}
+                      sx={{
+                        fontWeight: 700,
+                        whiteSpace: 'nowrap',
+                        textTransform: 'none',
+                        borderRadius: 1,
+                      }}
                     >
                       Save Habit
                     </Button>
@@ -1314,65 +1762,223 @@ export default function SubjectsHabitsPage() {
                 </Box>
               )}
 
-              {/* CLEAN DRAGGABLE HABITS LIST */}
-              <Stack spacing={1}>
-                {habits.map((h, idx) => (
-                  <Box
-                    key={h.id}
-                    draggable
-                    onDragStart={() => handleHabitDragStart(idx)}
-                    onDragOver={(e) => e.preventDefault()}
-                    onDrop={() => handleHabitDrop(idx)}
-                    display="flex"
-                    alignItems="center"
-                    justifyContent="space-between"
-                    px={2}
-                    py={1.35}
-                    borderRadius={2}
-                    border="1px solid"
-                    borderColor="divider"
-                    bgcolor="background.paper"
-                    sx={{
-                      cursor: 'grab',
-                      transition: 'border-color 0.15s ease, background-color 0.15s ease',
-                      '&:hover': {
-                        borderColor: alpha(theme.palette.secondary.main, 0.45),
-                        bgcolor: alpha(theme.palette.secondary.main, 0.015),
-                      },
-                    }}
-                  >
-                    <Stack direction="row" alignItems="center" spacing={1.5} flexGrow={1}>
-                      <Box
-                        title="Drag to reorder"
-                        sx={{ color: 'text.disabled', display: 'flex', cursor: 'grab' }}
+              {/* STRUCTURED SINGLE-ROW HABITS TABLE */}
+              <TableContainer
+                component={Paper}
+                elevation={0}
+                sx={{
+                  borderRadius: 1,
+                  border: '1px solid',
+                  borderColor: 'divider',
+                }}
+              >
+                <Table size="small">
+                  <TableHead>
+                    <TableRow sx={{ bgcolor: alpha(theme.palette.text.primary, 0.025) }}>
+                      <TableCell
+                        sx={{
+                          fontWeight: 700,
+                          fontSize: '0.75rem',
+                          color: 'text.secondary',
+                          whiteSpace: 'nowrap',
+                          py: 1.25,
+                        }}
                       >
-                        <GripVertical size={18} />
-                      </Box>
+                        ORDER &amp; DAILY HABIT
+                      </TableCell>
+                      <TableCell
+                        align="right"
+                        sx={{
+                          fontWeight: 700,
+                          fontSize: '0.75rem',
+                          color: 'text.secondary',
+                          whiteSpace: 'nowrap',
+                          py: 1.25,
+                        }}
+                      >
+                        ACTIONS
+                      </TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {habits.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={2} align="center" sx={{ py: 5 }}>
+                          <Typography variant="body2" color="text.secondary" mb={1.5}>
+                            No daily habit trackers configured yet.
+                          </Typography>
+                          <Button
+                            size="small"
+                            variant="contained"
+                            startIcon={<Plus size={15} />}
+                            onClick={() => setShowAddHabitForm(true)}
+                            sx={{ textTransform: 'none', fontWeight: 700, borderRadius: 1 }}
+                          >
+                            Add First Habit
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      habits.map((h, idx) => {
+                        const isConfirmingDelete = confirmDeleteHabitId === h.id;
+                        return (
+                          <TableRow
+                            key={h.id}
+                            hover
+                            draggable
+                            onDragStart={() => handleHabitDragStart(idx)}
+                            onDragOver={(e) => e.preventDefault()}
+                            onDrop={() => handleHabitDrop(idx)}
+                            sx={{
+                              cursor: 'grab',
+                              '&:last-child td': { borderBottom: 0 },
+                            }}
+                          >
+                            <TableCell sx={{ py: 1.25, whiteSpace: 'nowrap' }}>
+                              <Stack direction="row" alignItems="center" spacing={1.25}>
+                                <Box
+                                  title="Drag to reorder"
+                                  sx={{
+                                    color: 'text.disabled',
+                                    display: 'flex',
+                                    cursor: 'grab',
+                                  }}
+                                >
+                                  <GripVertical size={16} />
+                                </Box>
+                                <Chip
+                                  size="small"
+                                  label={`#${idx + 1}`}
+                                  sx={{
+                                    height: 22,
+                                    fontSize: '0.75rem',
+                                    fontWeight: 700,
+                                    fontVariantNumeric: 'tabular-nums',
+                                    bgcolor: alpha(theme.palette.text.primary, 0.05),
+                                    color: 'text.secondary',
+                                  }}
+                                />
+                                <Typography variant="subtitle2" fontWeight={700}>
+                                  {h.title}
+                                </Typography>
+                              </Stack>
+                            </TableCell>
 
-                      <Typography variant="subtitle2" fontWeight={700} sx={{ fontSize: '0.92rem' }}>
-                        {h.title}
-                      </Typography>
-                    </Stack>
-
-                    <IconButton
-                      size="small"
-                      aria-label="Habit options"
-                      onClick={(e) => {
-                        setHabitMenuAnchorEl(e.currentTarget);
-                        setMenuHabit(h);
-                      }}
-                      sx={{
-                        border: '1px solid',
-                        borderColor: 'divider',
-                        borderRadius: 1.5,
-                        p: 0.65,
-                      }}
-                    >
-                      <MenuIcon size={16} />
-                    </IconButton>
-                  </Box>
-                ))}
-              </Stack>
+                            <TableCell align="right" sx={{ py: 1.25, whiteSpace: 'nowrap' }}>
+                              {isConfirmingDelete ? (
+                                <Stack
+                                  direction="row"
+                                  spacing={0.75}
+                                  justifyContent="flex-end"
+                                  alignItems="center"
+                                >
+                                  <Button
+                                    size="small"
+                                    color="error"
+                                    variant="contained"
+                                    onClick={() => handleDeleteHabitWithUndo(h)}
+                                    sx={{
+                                      minWidth: 0,
+                                      px: 1.25,
+                                      py: 0.35,
+                                      fontSize: '0.75rem',
+                                      fontWeight: 700,
+                                      textTransform: 'none',
+                                      borderRadius: 1,
+                                    }}
+                                  >
+                                    Confirm Delete?
+                                  </Button>
+                                  <Button
+                                    size="small"
+                                    color="inherit"
+                                    onClick={() => setConfirmDeleteHabitId(null)}
+                                    sx={{
+                                      minWidth: 0,
+                                      px: 1,
+                                      py: 0.35,
+                                      fontSize: '0.75rem',
+                                      textTransform: 'none',
+                                    }}
+                                  >
+                                    Cancel
+                                  </Button>
+                                </Stack>
+                              ) : (
+                                <Stack
+                                  direction="row"
+                                  spacing={0.5}
+                                  justifyContent="flex-end"
+                                  alignItems="center"
+                                >
+                                  <Tooltip title="Move Up">
+                                    <span>
+                                      <IconButton
+                                        size="small"
+                                        aria-label={`Move ${h.title} up`}
+                                        disabled={idx === 0}
+                                        onClick={() => handleMoveHabit(idx, 'up')}
+                                      >
+                                        <ArrowUp size={15} />
+                                      </IconButton>
+                                    </span>
+                                  </Tooltip>
+                                  <Tooltip title="Move Down">
+                                    <span>
+                                      <IconButton
+                                        size="small"
+                                        aria-label={`Move ${h.title} down`}
+                                        disabled={idx === habits.length - 1}
+                                        onClick={() => handleMoveHabit(idx, 'down')}
+                                      >
+                                        <ArrowDown size={15} />
+                                      </IconButton>
+                                    </span>
+                                  </Tooltip>
+                                  <Button
+                                    size="small"
+                                    variant="outlined"
+                                    color="inherit"
+                                    startIcon={<Edit3 size={13} />}
+                                    onClick={() => handleOpenEditHabit(h)}
+                                    sx={{
+                                      textTransform: 'none',
+                                      fontWeight: 600,
+                                      fontSize: '0.75rem',
+                                      borderColor: 'divider',
+                                      borderRadius: 1,
+                                      py: 0.35,
+                                      whiteSpace: 'nowrap',
+                                    }}
+                                  >
+                                    Rename
+                                  </Button>
+                                  <IconButton
+                                    size="small"
+                                    aria-label={`More options for ${h.title}`}
+                                    onClick={(e) => {
+                                      setHabitMenuAnchorEl(e.currentTarget);
+                                      setMenuHabit(h);
+                                    }}
+                                    sx={{
+                                      border: '1px solid',
+                                      borderColor: 'divider',
+                                      borderRadius: 1,
+                                      p: 0.6,
+                                    }}
+                                  >
+                                    <MenuIcon size={15} />
+                                  </IconButton>
+                                </Stack>
+                              )}
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })
+                    )}
+                  </TableBody>
+                </Table>
+              </TableContainer>
 
               {/* Habit 3-Line Dropdown Menu */}
               <Menu
@@ -1390,7 +1996,7 @@ export default function SubjectsHabitsPage() {
                     sx: {
                       mt: 0.5,
                       minWidth: 210,
-                      borderRadius: 2,
+                      borderRadius: 1,
                       border: '1px solid',
                       borderColor: 'divider',
                       p: 0.5,
@@ -1405,7 +2011,7 @@ export default function SubjectsHabitsPage() {
                     setMenuHabit(null);
                     if (target) handleOpenEditHabit(target);
                   }}
-                  sx={{ borderRadius: 1.5, py: 1, gap: 1.25, fontSize: '0.84rem', fontWeight: 500 }}
+                  sx={{ borderRadius: 1, py: 1, gap: 1.25, fontSize: '0.875rem', fontWeight: 500 }}
                 >
                   <Edit3 size={15} />
                   Rename Habit…
@@ -1418,7 +2024,7 @@ export default function SubjectsHabitsPage() {
                       setMenuHabit(null);
                       if (idx > 0) handleMoveHabit(idx, 'up');
                     }}
-                    sx={{ borderRadius: 1.5, py: 1, gap: 1.25, fontSize: '0.84rem', fontWeight: 500 }}
+                    sx={{ borderRadius: 1, py: 1, gap: 1.25, fontSize: '0.875rem', fontWeight: 500 }}
                   >
                     <ArrowUp size={15} />
                     Move Up
@@ -1434,7 +2040,7 @@ export default function SubjectsHabitsPage() {
                         if (idx >= 0 && idx < habits.length - 1)
                           handleMoveHabit(idx, 'down');
                       }}
-                      sx={{ borderRadius: 1.5, py: 1, gap: 1.25, fontSize: '0.84rem', fontWeight: 500 }}
+                      sx={{ borderRadius: 1, py: 1, gap: 1.25, fontSize: '0.875rem', fontWeight: 500 }}
                     >
                       <ArrowDown size={15} />
                       Move Down
@@ -1446,19 +2052,19 @@ export default function SubjectsHabitsPage() {
                     const target = menuHabit;
                     setHabitMenuAnchorEl(null);
                     setMenuHabit(null);
-                    if (target) handleDeleteHabit(target.id);
+                    if (target) setConfirmDeleteHabitId(target.id);
                   }}
                   sx={{
-                    borderRadius: 1.5,
+                    borderRadius: 1,
                     py: 1,
                     gap: 1.25,
-                    fontSize: '0.84rem',
+                    fontSize: '0.875rem',
                     fontWeight: 600,
                     color: 'error.main',
                   }}
                 >
                   <Trash2 size={15} />
-                  Delete Habit
+                  Delete Habit…
                 </MenuItem>
               </Menu>
             </Box>
@@ -1469,12 +2075,16 @@ export default function SubjectsHabitsPage() {
       {/* EDIT SUBJECT & TEACHER CONTACT MODAL */}
       {editingSubject && (
         <Box
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="edit-subject-modal-title"
           onClick={() => setEditingSubject(null)}
           sx={{
             position: 'fixed',
             inset: 0,
             zIndex: 1400,
-            bgcolor: 'rgba(0, 0, 0, 0.5)',
+            bgcolor: 'rgba(15, 23, 42, 0.45)',
+            backdropFilter: 'blur(4px)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -1486,58 +2096,71 @@ export default function SubjectsHabitsPage() {
             onClick={(e) => e.stopPropagation()}
             sx={{
               width: '100%',
-              maxWidth: 600,
+              maxWidth: 620,
               maxHeight: '90vh',
               display: 'flex',
               flexDirection: 'column',
-              borderRadius: 3,
+              borderRadius: 1,
               overflow: 'hidden',
             }}
           >
-            <Box px={3} py={2} sx={{ borderBottom: 1, borderColor: 'divider' }}>
-              <Typography variant="h6" fontWeight={700}>
-                Edit Subject &amp; Teacher Details — {editingSubject.name}
-              </Typography>
-              <Typography variant="caption" color="text.secondary">
-                Designate whether this class is taught internally or with an outside entity, and record teacher contact information.
-              </Typography>
+            <Box
+              px={3}
+              py={2}
+              sx={{
+                borderBottom: 1,
+                borderColor: 'divider',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+              }}
+            >
+              <Box>
+                <Typography id="edit-subject-modal-title" variant="h6" fontWeight={700}>
+                  Edit Subject &amp; Teacher Details — {editingSubject.name}
+                </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  Designate whether this class is taught internally or with an outside entity, and record teacher contact information.
+                </Typography>
+              </Box>
+              <IconButton
+                size="small"
+                aria-label="Close modal"
+                onClick={() => setEditingSubject(null)}
+              >
+                <X size={18} />
+              </IconButton>
             </Box>
 
             <Box p={3} sx={{ overflowY: 'auto' }}>
               <Stack spacing={2.5}>
                 <Grid container spacing={2} alignItems="center">
-                  <Grid item xs={12} sm={8}>
+                  <Grid item xs={12} sm={6}>
                     <TextField
                       fullWidth
                       size="small"
                       label="Subject Name"
                       value={editSubjectName}
                       onChange={(e) => setEditSubjectName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && editSubjectName.trim()) {
+                          e.preventDefault();
+                          handleSaveEditSubject();
+                        }
+                      }}
                       required
                     />
                   </Grid>
-                  <Grid item xs={12} sm={4}>
-                    <Stack direction="row" spacing={1.5} alignItems="center">
-                      <input
-                        type="color"
-                        value={editSubjectColor}
-                        onChange={(e) => setEditSubjectColor(e.target.value)}
-                        style={{
-                          width: 34,
-                          height: 34,
-                          padding: 0,
-                          border: 'none',
-                          borderRadius: '50%',
-                          cursor: 'pointer',
-                        }}
-                      />
-                      <TextField
-                        size="small"
-                        label="Accent Color"
-                        value={editSubjectColor}
-                        onChange={(e) => setEditSubjectColor(e.target.value)}
-                        sx={{ width: 120 }}
-                      />
+                  <Grid item xs={12} sm={6}>
+                    <Stack spacing={0.5}>
+                      <Typography variant="caption" fontWeight={700} color="text.secondary">
+                        Classical Ink Color:
+                      </Typography>
+                      {renderColorSwatches(
+                        editSubjectColor,
+                        setEditSubjectColor,
+                        `Custom color for ${editingSubject.name}`
+                      )}
                     </Stack>
                   </Grid>
                 </Grid>
@@ -1550,8 +2173,8 @@ export default function SubjectsHabitsPage() {
                     Instruction Designation
                   </Typography>
                   <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5}>
-                    <Paper
-                      variant="outlined"
+                    <ButtonBase
+                      aria-pressed={editProviderType === 'internal'}
                       onClick={() => {
                         setEditProviderType('internal');
                         if (!editTeacherName) {
@@ -1561,8 +2184,10 @@ export default function SubjectsHabitsPage() {
                       sx={{
                         flex: 1,
                         p: 1.5,
-                        borderRadius: 2,
-                        cursor: 'pointer',
+                        borderRadius: 1,
+                        textAlign: 'left',
+                        justifyContent: 'flex-start',
+                        border: '1px solid',
                         borderColor:
                           editProviderType === 'internal'
                             ? 'success.main'
@@ -1591,10 +2216,10 @@ export default function SubjectsHabitsPage() {
                           </Typography>
                         </Box>
                       </Stack>
-                    </Paper>
+                    </ButtonBase>
 
-                    <Paper
-                      variant="outlined"
+                    <ButtonBase
+                      aria-pressed={editProviderType === 'external'}
                       onClick={() => {
                         setEditProviderType('external');
                         if (!editOutsideEntity) {
@@ -1604,8 +2229,10 @@ export default function SubjectsHabitsPage() {
                       sx={{
                         flex: 1,
                         p: 1.5,
-                        borderRadius: 2,
-                        cursor: 'pointer',
+                        borderRadius: 1,
+                        textAlign: 'left',
+                        justifyContent: 'flex-start',
+                        border: '1px solid',
                         borderColor:
                           editProviderType === 'external' ? 'info.main' : 'divider',
                         bgcolor:
@@ -1632,7 +2259,7 @@ export default function SubjectsHabitsPage() {
                           </Typography>
                         </Box>
                       </Stack>
-                    </Paper>
+                    </ButtonBase>
                   </Stack>
 
                   {editProviderType === 'external' && (
@@ -1665,7 +2292,7 @@ export default function SubjectsHabitsPage() {
                                 setEditTeacherName('Amanda Holliday');
                               }
                             }}
-                            sx={{ height: 22, fontSize: '0.7rem', fontWeight: 700, cursor: 'pointer' }}
+                            sx={{ height: 22, fontSize: '0.75rem', fontWeight: 700, cursor: 'pointer' }}
                           />
                         ))}
                       </Stack>
@@ -1749,7 +2376,11 @@ export default function SubjectsHabitsPage() {
                 gap: 1.5,
               }}
             >
-              <Button onClick={() => setEditingSubject(null)} color="inherit">
+              <Button
+                onClick={() => setEditingSubject(null)}
+                color="inherit"
+                sx={{ textTransform: 'none', fontWeight: 600 }}
+              >
                 Cancel
               </Button>
               <Button
@@ -1758,7 +2389,7 @@ export default function SubjectsHabitsPage() {
                 onClick={handleSaveEditSubject}
                 disabled={savingSubjectEdit}
                 startIcon={<Save size={16} />}
-                sx={{ fontWeight: 700, textTransform: 'none' }}
+                sx={{ fontWeight: 700, textTransform: 'none', borderRadius: 1 }}
               >
                 {savingSubjectEdit ? 'Saving...' : 'Save Subject Info'}
               </Button>
@@ -1770,12 +2401,16 @@ export default function SubjectsHabitsPage() {
       {/* EDIT HABIT MODAL */}
       {editingHabit && (
         <Box
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="edit-habit-modal-title"
           onClick={() => setEditingHabit(null)}
           sx={{
             position: 'fixed',
             inset: 0,
             zIndex: 1400,
-            bgcolor: 'rgba(0, 0, 0, 0.5)',
+            bgcolor: 'rgba(15, 23, 42, 0.45)',
+            backdropFilter: 'blur(4px)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -1785,19 +2420,43 @@ export default function SubjectsHabitsPage() {
           <Paper
             elevation={12}
             onClick={(e) => e.stopPropagation()}
-            sx={{ width: '100%', maxWidth: 420, borderRadius: 3, overflow: 'hidden' }}
+            sx={{ width: '100%', maxWidth: 420, borderRadius: 1, overflow: 'hidden' }}
           >
-            <Box px={3} py={2} sx={{ borderBottom: 1, borderColor: 'divider' }}>
-              <Typography variant="h6" fontWeight={700}>
+            <Box
+              px={3}
+              py={2}
+              sx={{
+                borderBottom: 1,
+                borderColor: 'divider',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+              }}
+            >
+              <Typography id="edit-habit-modal-title" variant="h6" fontWeight={700}>
                 Edit Habit Tracker
               </Typography>
+              <IconButton
+                size="small"
+                aria-label="Close modal"
+                onClick={() => setEditingHabit(null)}
+              >
+                <X size={18} />
+              </IconButton>
             </Box>
             <Box p={3}>
               <TextField
                 fullWidth
+                autoFocus
                 label="Habit Title"
                 value={editHabitTitle}
                 onChange={(e) => setEditHabitTitle(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && editHabitTitle.trim()) {
+                    e.preventDefault();
+                    handleSaveEditHabit();
+                  }
+                }}
                 required
               />
             </Box>
@@ -1812,7 +2471,11 @@ export default function SubjectsHabitsPage() {
                 gap: 1.5,
               }}
             >
-              <Button onClick={() => setEditingHabit(null)} color="inherit">
+              <Button
+                onClick={() => setEditingHabit(null)}
+                color="inherit"
+                sx={{ textTransform: 'none', fontWeight: 600 }}
+              >
                 Cancel
               </Button>
               <Button
@@ -1821,7 +2484,7 @@ export default function SubjectsHabitsPage() {
                 onClick={handleSaveEditHabit}
                 disabled={savingHabitEdit}
                 startIcon={<Save size={16} />}
-                sx={{ fontWeight: 700 }}
+                sx={{ fontWeight: 700, textTransform: 'none', borderRadius: 1 }}
               >
                 {savingHabitEdit ? 'Saving...' : 'Save Changes'}
               </Button>
@@ -1832,3 +2495,4 @@ export default function SubjectsHabitsPage() {
     </Box>
   );
 }
+

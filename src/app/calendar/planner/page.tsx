@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState, Suspense } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import {
   Box,
@@ -16,6 +16,7 @@ import {
   Menu,
   MenuItem,
   Paper,
+  Skeleton,
   Stack,
   TextField,
   Typography,
@@ -24,6 +25,8 @@ import {
 import {
   ChevronLeft,
   ChevronRight,
+  ChevronUp,
+  ChevronDown,
   Printer,
   Plus,
   Edit2,
@@ -39,12 +42,20 @@ import {
   Repeat,
   Copy,
   Menu as MenuIcon,
+  Calendar as CalendarIcon,
+  Columns,
+  LayoutGrid,
+  BookOpen,
+  Check,
+  History,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { PageHeading } from 'src/components/base/page-heading';
 import { createClient } from 'src/services/supabase/client';
 import { Json } from 'src/services/supabase/types';
 import { useSchoolSettings } from 'src/contexts/school-settings';
+import { getCachedActiveUserName, resolveAndSyncActiveUser } from 'src/utils/active-user';
+import { expandTasksForDateRange } from 'src/utils/task-recurrence';
 import { ItemIcon } from 'src/components/base/item-icon';
 import {
   FormattedParentNote,
@@ -110,6 +121,7 @@ interface ParentNote {
 
 type AssignmentCategory = string;
 type AssignmentPriority = 'low' | 'medium' | 'high';
+type ScreenViewMode = 'binder_2page' | 'binder_spread' | 'five_day';
 
 interface SchoolAssignment extends GradebookAssignment {
   priority: AssignmentPriority;
@@ -145,14 +157,14 @@ interface WeeklySettings {
 }
 
 const DEFAULT_SUBJECTS: Subject[] = [
-  { id: 'sub-1', name: 'Math', sort_order: 1, color: '#0C74E4' },
-  { id: 'sub-2', name: 'Reading', sort_order: 2, color: '#02876f' },
-  { id: 'sub-3', name: 'Language Arts', sort_order: 3, color: '#ea2012' },
-  { id: 'sub-4', name: 'Science', sort_order: 4, color: '#018a3c' },
-  { id: 'sub-5', name: 'History', sort_order: 5, color: '#894AE0' },
-  { id: 'sub-6', name: 'Spelling', sort_order: 6, color: '#D97706' },
-  { id: 'sub-7', name: 'Bible', sort_order: 7, color: '#4F46E5' },
-  { id: 'sub-8', name: 'P.E. / Art', sort_order: 8, color: '#DB2777' },
+  { id: 'sub-1', name: 'Math', sort_order: 1, color: '#1b5698' },
+  { id: 'sub-2', name: 'Reading', sort_order: 2, color: '#0d735c' },
+  { id: 'sub-3', name: 'Language Arts', sort_order: 3, color: '#b8422e' },
+  { id: 'sub-4', name: 'Science', sort_order: 4, color: '#1e6f3d' },
+  { id: 'sub-5', name: 'History', sort_order: 5, color: '#6c43b8' },
+  { id: 'sub-6', name: 'Spelling', sort_order: 6, color: '#b85d0c' },
+  { id: 'sub-7', name: 'Bible', sort_order: 7, color: '#2e4a8f' },
+  { id: 'sub-8', name: 'P.E. / Art', sort_order: 8, color: '#9c2d7c' },
 ];
 
 const DEFAULT_HABITS: Habit[] = [
@@ -170,6 +182,18 @@ function formatDateStr(d: Date): string {
   const mm = String(d.getMonth() + 1).padStart(2, '0');
   const dd = String(d.getDate()).padStart(2, '0');
   return `${yyyy}-${mm}-${dd}`;
+}
+
+function getMondayForDateStr(dateStr: string): string {
+  const parsed = new Date(`${dateStr}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) {
+    return getCurrentWeekMonday();
+  }
+  const day = parsed.getDay(); // 0 = Sun, 1 = Mon, ..., 6 = Sat
+  const diff = day === 0 ? 1 : 1 - day;
+  const monday = new Date(parsed);
+  monday.setDate(parsed.getDate() + diff);
+  return formatDateStr(monday);
 }
 
 function getCurrentWeekMonday(): string {
@@ -195,10 +219,7 @@ function PlannerContent() {
   const theme = useTheme();
   const supabase = createClient();
   const { branding } = useSchoolSettings();
-  const activeUserName =
-    typeof window !== 'undefined'
-      ? localStorage.getItem('school_active_user_name') || 'Blake Womble'
-      : 'Blake Womble';
+  const activeUserName = getCachedActiveUserName();
 
   const weekParam = searchParams.get('week');
   const initialWeek = weekParam || getCurrentWeekMonday();
@@ -230,6 +251,17 @@ function PlannerContent() {
     subject_overrides: {},
   });
 
+  // On-Screen View Mode & Page Jump / Date Picker Refs (never affects @media print)
+  const [screenViewMode, setScreenViewMode] = useState<ScreenViewMode>('binder_2page');
+  const datePickerInputRef = useRef<HTMLInputElement | null>(null);
+  const page1Ref = useRef<HTMLDivElement | null>(null);
+  const page2Ref = useRef<HTMLDivElement | null>(null);
+
+  // Debounced Sidebar Save State
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const pendingSettingsRef = useRef<WeeklySettings | null>(null);
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   // Week Counters & Populate / Reset Controls State
   const [showCountersPanel, setShowCountersPanel] = useState(false);
   const [populatingWeek, setPopulatingWeek] = useState(false);
@@ -259,6 +291,9 @@ function PlannerContent() {
   const [cellNoteDesc, setCellNoteDesc] = useState('');
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [savingNote, setSavingNote] = useState(false);
+  const [showFullWeekSyllabusInCell, setShowFullWeekSyllabusInCell] = useState(false);
+  const [showQuickAddAssignment, setShowQuickAddAssignment] = useState(false);
+  const [confirmDeleteNoteId, setConfirmDeleteNoteId] = useState<string | null>(null);
 
   // New School Assignment input inside cell modal
   const [assignmentTitle, setAssignmentTitle] = useState('');
@@ -332,6 +367,7 @@ function PlannerContent() {
   async function loadPlannerData(monStr: string) {
     setLoading(true);
     try {
+      void resolveAndSyncActiveUser(supabase);
       // 1. Fetch Subjects
       const { data: subData } = await supabase
         .from('subjects')
@@ -430,14 +466,22 @@ function PlannerContent() {
 
       if (holData) setHolidays(holData as Holiday[]);
 
-      // 6. Fetch Tasks for this week
+      // 6. Fetch Tasks (including recurring tasks) for this week
       const { data: taskData } = await supabase
         .from('tasks')
-        .select('*')
-        .gte('due_date', startDate)
-        .lte('due_date', endDate);
+        .select('*');
 
-      if (taskData) setTasksList(taskData as PlannerTask[]);
+      if (taskData) {
+        const expanded = expandTasksForDateRange(taskData, startDate, endDate);
+        setTasksList(
+          expanded.map((occ) => ({
+            id: occ.occurrenceId,
+            title: occ.title,
+            due_date: occ.occurrenceDate,
+            status: occ.isCompleted ? 'completed' : 'pending',
+          }))
+        );
+      }
 
       // 7. Fetch Weekly Planner Settings
       const { data: settingsData } = await supabase
@@ -500,8 +544,113 @@ function PlannerContent() {
     loadPlannerData(weekStartDate);
   }, [weekStartDate]);
 
+  // Close active drawer/modals on Escape key
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (confirmResetOpen) {
+          setConfirmResetOpen(false);
+        } else if (openPopulateModal) {
+          setOpenPopulateModal(false);
+        } else if (openCellModal) {
+          setOpenCellModal(false);
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [confirmResetOpen, openPopulateModal, openCellModal]);
+
+  const persistSettingsToDb = useCallback(
+    async (newSettings: WeeklySettings) => {
+      const targetWeek = newSettings.week_start_date || weekStartDate;
+      setSaveStatus('saving');
+      try {
+        const payload: {
+          id?: string;
+          week_start_date: string;
+          todos: string[];
+          priorities: string[];
+          for_next_month: string;
+          notes: string;
+          subject_overrides: Json;
+        } = {
+          week_start_date: targetWeek,
+          todos: newSettings.todos,
+          priorities: newSettings.priorities,
+          for_next_month: newSettings.for_next_month,
+          notes: newSettings.notes,
+          subject_overrides: JSON.parse(JSON.stringify(newSettings.subject_overrides || {})) as Json,
+        };
+
+        if (newSettings.id) {
+          payload.id = newSettings.id;
+        }
+
+        const { data, error } = await supabase
+          .from('weekly_planner_settings')
+          .upsert(payload, { onConflict: 'week_start_date' })
+          .select('id')
+          .single();
+
+        if (error) {
+          console.error('Error saving weekly planner settings:', error.message);
+          setSaveStatus('error');
+        } else {
+          if (data && data.id) {
+            setPlannerSettings((prev) => ({ ...prev, id: data.id }));
+          }
+          setSaveStatus('saved');
+        }
+      } catch (err) {
+        console.error('Failed to save settings:', err);
+        setSaveStatus('error');
+      }
+    },
+    [supabase, weekStartDate]
+  );
+
+  const flushPendingSettingsSave = useCallback(async () => {
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+    }
+    if (pendingSettingsRef.current) {
+      const toFlush = pendingSettingsRef.current;
+      pendingSettingsRef.current = null;
+      await persistSettingsToDb(toFlush);
+    }
+  }, [persistSettingsToDb]);
+
+  const handleQueueSettingsSave = (newSettings: WeeklySettings) => {
+    setPlannerSettings(newSettings);
+    pendingSettingsRef.current = newSettings;
+    setSaveStatus('saving');
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current);
+    }
+    saveTimerRef.current = setTimeout(() => {
+      saveTimerRef.current = null;
+      const latest = pendingSettingsRef.current;
+      pendingSettingsRef.current = null;
+      if (latest) {
+        void persistSettingsToDb(latest);
+      }
+    }, 600);
+  };
+
+  const handleSaveSettings = async (newSettings: WeeklySettings) => {
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+    }
+    pendingSettingsRef.current = null;
+    setPlannerSettings(newSettings);
+    await persistSettingsToDb(newSettings);
+  };
+
   const handlePrevWeek = async () => {
-    await handleSaveSettings(plannerSettings);
+    await flushPendingSettingsSave();
     const cur = new Date(weekStartDate + 'T00:00:00');
     cur.setDate(cur.getDate() - 7);
     const newStr = formatDateStr(cur);
@@ -510,7 +659,7 @@ function PlannerContent() {
   };
 
   const handleNextWeek = async () => {
-    await handleSaveSettings(plannerSettings);
+    await flushPendingSettingsSave();
     const cur = new Date(weekStartDate + 'T00:00:00');
     cur.setDate(cur.getDate() + 7);
     const newStr = formatDateStr(cur);
@@ -519,30 +668,68 @@ function PlannerContent() {
   };
 
   const handleCurrentWeek = async () => {
-    await handleSaveSettings(plannerSettings);
+    await flushPendingSettingsSave();
     const currentMon = getCurrentWeekMonday();
     setWeekStartDate(currentMon);
     router.replace(`/calendar/planner?week=${currentMon}`);
   };
 
+  const handleJumpToPickedDate = async (pickedDateStr: string) => {
+    if (!pickedDateStr) return;
+    await flushPendingSettingsSave();
+    const targetMon = getMondayForDateStr(pickedDateStr);
+    setWeekStartDate(targetMon);
+    router.replace(`/calendar/planner?week=${targetMon}`);
+  };
+
   const handleOpenCellEditor = (subject: Subject, dateStr: string) => {
     setSelectedSubject(subject);
     setSelectedDate(dateStr);
+    setConfirmDeleteNoteId(null);
+    setShowFullWeekSyllabusInCell(false);
+    setShowQuickAddAssignment(false);
 
     const squareNotes = parentNotes.filter(
       (n) => n.subject_id === subject.id && n.note_date === dateStr
     );
 
-    setEditingNoteId(null);
-    setCellNoteCategory('school_work');
-    setCellNoteHeader('');
-    setCellNoteDesc('');
-    setIsFormOpen(squareNotes.length === 0);
+    if (squareNotes.length === 1) {
+      const singleNote = squareNotes[0];
+      const detectedCat = getPlannerNoteCategory(singleNote.title, singleNote.description);
+      setEditingNoteId(singleNote.id);
+      setCellNoteCategory(detectedCat);
+      setCellNoteHeader(stripParentNoteMarker(singleNote.title));
+      setCellNoteDesc(stripParentNoteMarker(singleNote.description));
+      setIsFormOpen(true);
+    } else {
+      setEditingNoteId(null);
+      setCellNoteCategory('school_work');
+      setCellNoteHeader('');
+      setCellNoteDesc('');
+      setIsFormOpen(squareNotes.length === 0);
+    }
 
     setAssignmentTitle('');
     setAssignmentCategory('homework');
     setAssignmentPriority('medium');
     setOpenCellModal(true);
+  };
+
+  const handleStepCellDay = (delta: -1 | 1) => {
+    if (!selectedSubject || !selectedDate) return;
+    const curIdx = weekDates.findIndex((wd) => wd.dateStr === selectedDate);
+    if (curIdx < 0) return;
+    const nextIdx = (curIdx + delta + weekDates.length) % weekDates.length;
+    handleOpenCellEditor(selectedSubject, weekDates[nextIdx].dateStr);
+  };
+
+  const handleStepCellSubject = (delta: -1 | 1) => {
+    if (!selectedSubject || !selectedDate) return;
+    const activeSubList = subjects.length > 0 ? subjects : DEFAULT_SUBJECTS;
+    const curIdx = activeSubList.findIndex((s) => s.id === selectedSubject.id);
+    if (curIdx < 0) return;
+    const nextIdx = (curIdx + delta + activeSubList.length) % activeSubList.length;
+    handleOpenCellEditor(activeSubList[nextIdx], selectedDate);
   };
 
   const handleStartEditNote = (note: ParentNote) => {
@@ -570,10 +757,7 @@ function PlannerContent() {
     }
 
     setSavingNote(true);
-    const activeUserName =
-      typeof window !== 'undefined'
-        ? localStorage.getItem('school_active_user_name') || 'Blake Womble'
-        : 'Blake Womble';
+    const activeUserName = getCachedActiveUserName();
     const nowIso = new Date().toISOString();
     const encoded = encodePlannerNoteFields(cellNoteHeader, cellNoteDesc, cellNoteCategory);
     const labelText = cellNoteCategory === 'parent_note' ? 'Parent note' : 'School work';
@@ -646,6 +830,7 @@ function PlannerContent() {
 
   const handleDeleteSingleParentNote = async (noteId: string) => {
     setSavingNote(true);
+    setConfirmDeleteNoteId(null);
     const target = parentNotes.find((n) => n.id === noteId);
     const labelText =
       target && getPlannerNoteCategory(target.title, target.description) === 'parent_note'
@@ -657,13 +842,51 @@ function PlannerContent() {
         toast.error(`Error deleting ${labelText.toLowerCase()}: ${error.message}`);
       } else {
         setParentNotes((prev) => prev.filter((n) => n.id !== noteId));
-        toast.success(`${labelText} deleted!`);
         if (editingNoteId === noteId) {
           setEditingNoteId(null);
           setCellNoteHeader('');
           setCellNoteDesc('');
           setIsFormOpen(false);
         }
+        toast.success(
+          (t) => (
+            <Stack direction="row" spacing={1.25} alignItems="center">
+              <Typography variant="body2" fontWeight={600}>
+                {labelText} deleted
+              </Typography>
+              {target && (
+                <Button
+                  size="small"
+                  variant="outlined"
+                  onClick={async () => {
+                    toast.dismiss(t.id);
+                    const { data: restored } = await supabase
+                      .from('parent_notes')
+                      .insert({
+                        subject_id: target.subject_id,
+                        note_date: target.note_date,
+                        title: target.title ?? null,
+                        description: target.description,
+                        created_by: target.created_by || activeUserName,
+                        updated_by: activeUserName,
+                        updated_at: new Date().toISOString(),
+                      })
+                      .select('*')
+                      .single();
+                    if (restored) {
+                      setParentNotes((prev) => [...prev, restored as ParentNote]);
+                      toast.success(`${labelText} restored!`);
+                    }
+                  }}
+                  sx={{ minWidth: 0, px: 1, py: 0.25, fontSize: '0.75rem', fontWeight: 700 }}
+                >
+                  Undo
+                </Button>
+              )}
+            </Stack>
+          ),
+          { duration: 5000 }
+        );
       }
     } catch {
       toast.error(`Failed to delete ${labelText.toLowerCase()}`);
@@ -750,52 +973,12 @@ function PlannerContent() {
         setSchoolAssignments((prev) => [...prev, data as SchoolAssignment]);
         toast.success('School assignment added!');
         setAssignmentTitle('');
+        setShowQuickAddAssignment(false);
       }
     } catch {
       toast.error('Error creating assignment');
     } finally {
       setSavingAssignment(false);
-    }
-  };
-
-  const handleSaveSettings = async (newSettings: WeeklySettings) => {
-    setPlannerSettings(newSettings);
-    const targetWeek = newSettings.week_start_date || weekStartDate;
-    try {
-      const payload: {
-        id?: string;
-        week_start_date: string;
-        todos: string[];
-        priorities: string[];
-        for_next_month: string;
-        notes: string;
-        subject_overrides: Json;
-      } = {
-        week_start_date: targetWeek,
-        todos: newSettings.todos,
-        priorities: newSettings.priorities,
-        for_next_month: newSettings.for_next_month,
-        notes: newSettings.notes,
-        subject_overrides: JSON.parse(JSON.stringify(newSettings.subject_overrides || {})) as Json,
-      };
-
-      if (newSettings.id) {
-        payload.id = newSettings.id;
-      }
-
-      const { data, error } = await supabase
-        .from('weekly_planner_settings')
-        .upsert(payload, { onConflict: 'week_start_date' })
-        .select('id')
-        .single();
-
-      if (error) {
-        console.error('Error saving weekly planner settings:', error.message);
-      } else if (data && data.id) {
-        setPlannerSettings((prev) => ({ ...prev, id: data.id }));
-      }
-    } catch (err) {
-      console.error('Failed to save settings:', err);
     }
   };
 
@@ -1277,10 +1460,7 @@ function PlannerContent() {
 
   const handlePopulateWeek = async (overwriteExisting = false, alsoPullForward = false) => {
     setPopulatingWeek(true);
-    const activeUserName =
-      typeof window !== 'undefined'
-        ? localStorage.getItem('school_active_user_name') || 'Blake Womble'
-        : 'Blake Womble';
+    const activeUserName = getCachedActiveUserName();
     const nowIso = new Date().toISOString();
 
     try {
@@ -1569,9 +1749,25 @@ function PlannerContent() {
 
   if (loading) {
     return (
-      <Box display="flex" justifyContent="center" alignItems="center" minHeight="50vh">
-        <CircularProgress />
-      </Box>
+      <Stack spacing={3} className="no-print" sx={{ py: 1 }}>
+        <Card elevation={0} sx={{ p: 2.5, borderRadius: 1, border: '1px solid', borderColor: 'divider' }}>
+          <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" alignItems={{ xs: 'flex-start', md: 'center' }} spacing={2}>
+            <Stack direction="row" spacing={1.5} alignItems="center">
+              <Skeleton variant="text" width={180} height={40} />
+              <Skeleton variant="rounded" width={210} height={36} sx={{ borderRadius: 1 }} />
+              <Skeleton variant="rounded" width={140} height={28} sx={{ borderRadius: 1 }} />
+            </Stack>
+            <Stack direction="row" spacing={1.25}>
+              <Skeleton variant="rounded" width={135} height={38} sx={{ borderRadius: 1 }} />
+              <Skeleton variant="rounded" width={125} height={38} sx={{ borderRadius: 1 }} />
+            </Stack>
+          </Stack>
+        </Card>
+        <Card elevation={0} sx={{ p: 3, borderRadius: 1, border: '1px solid', borderColor: 'divider' }}>
+          <Skeleton variant="rounded" width="100%" height={52} sx={{ mb: 2, borderRadius: 1 }} />
+          <Skeleton variant="rounded" width="100%" height={680} sx={{ borderRadius: 1 }} />
+        </Card>
+      </Stack>
     );
   }
 
@@ -1651,8 +1847,6 @@ function PlannerContent() {
   return (
     <Box
       sx={{
-        transition: 'padding-right 0.3s ease',
-        pr: openCellModal ? { xs: 0, md: '500px' } : 0,
         overflowX: 'auto',
         maxWidth: '100%',
       }}
@@ -1662,8 +1856,9 @@ function PlannerContent() {
         <Card
           elevation={0}
           sx={{
-            p: { xs: 2, sm: 2.5 },
-            borderRadius: 2.5,
+            px: { xs: 1.5, sm: 2 },
+            py: { xs: 1.25, sm: 1.5 },
+            borderRadius: 1,
             border: '1px solid',
             borderColor: 'divider',
           }}
@@ -1672,17 +1867,24 @@ function PlannerContent() {
             direction={{ xs: 'column', md: 'row' }}
             alignItems={{ xs: 'stretch', md: 'center' }}
             justifyContent="space-between"
-            spacing={2}
+            spacing={1.25}
+             sx={{ flexWrap: 'nowrap' }}
           >
-            {/* Left: Title + Inline Week Stepper + Sequence Status Pill */}
+            {/* Left: Title + Inline Week Stepper / Date Picker + Sequence Status Pill */}
             <Stack
               direction="row"
               alignItems="center"
-              spacing={1.5}
-              flexWrap="wrap"
+              spacing={1}
+              flexWrap={{ xs: 'wrap', md: 'nowrap' }}
               useFlexGap
+              sx={{ minWidth: 0 }}
             >
-              <Typography variant="h4" fontWeight={800} letterSpacing="-0.02em" sx={{ mr: 0.5 }}>
+              <Typography
+                variant="h5"
+                fontWeight={600}
+                letterSpacing="-0.02em"
+                sx={{ whiteSpace: 'nowrap', flexShrink: 0, fontSize: { xs: '1.15rem', lg: '1.3rem' } }}
+              >
                 Weekly Binder
               </Typography>
 
@@ -1693,37 +1895,80 @@ function PlannerContent() {
                   bgcolor: 'action.hover',
                   border: '1px solid',
                   borderColor: 'divider',
-                  borderRadius: 2,
-                  p: 0.4,
+                  borderRadius: 1,
+                  p: 0.25,
+                  position: 'relative',
+                  flexShrink: 0,
                 }}
               >
                 <IconButton
                   size="small"
                   onClick={handlePrevWeek}
                   title="Previous Week"
-                  sx={{ borderRadius: 1.5, p: 0.6 }}
+                  aria-label="Previous Week"
+                  sx={{ borderRadius: 1, p: 0.45 }}
                 >
-                  <ChevronLeft size={18} />
+                  <ChevronLeft size={16} />
                 </IconButton>
-                <Typography
-                  variant="body2"
-                  fontWeight={700}
+
+                <Button
+                  size="small"
+                  color="inherit"
+                  onClick={() => {
+                    const inputEl = datePickerInputRef.current;
+                    if (!inputEl) return;
+                    if (typeof inputEl.showPicker === 'function') {
+                      inputEl.showPicker();
+                    } else {
+                      inputEl.focus();
+                      inputEl.click();
+                    }
+                  }}
+                  title="Click to jump to any week"
+                  aria-label={`Jump to week, currently ${formatWeekRangeLabel()}`}
+                  startIcon={<CalendarIcon size={13} />}
                   sx={{
-                    px: 1.5,
-                    minWidth: 155,
-                    textAlign: 'center',
+                    px: 1,
+                    py: 0.25,
+                    minWidth: 0,
+                    fontWeight: 700,
+                    fontSize: '0.8125rem',
+                    textTransform: 'none',
+                    borderRadius: 1,
                     fontVariantNumeric: 'tabular-nums',
+                    whiteSpace: 'nowrap',
                   }}
                 >
                   {formatWeekRangeLabel()}
-                </Typography>
+                </Button>
+
+                <input
+                  ref={datePickerInputRef}
+                  type="date"
+                  value={weekStartDate}
+                  aria-label="Select week date"
+                  onChange={(e) => {
+                    if (e.target.value) {
+                      void handleJumpToPickedDate(e.target.value);
+                    }
+                  }}
+                  style={{
+                    position: 'absolute',
+                    opacity: 0,
+                    width: 1,
+                    height: 1,
+                    pointerEvents: 'none',
+                  }}
+                />
+
                 <IconButton
                   size="small"
                   onClick={handleNextWeek}
                   title="Next Week"
-                  sx={{ borderRadius: 1.5, p: 0.6 }}
+                  aria-label="Next Week"
+                  sx={{ borderRadius: 1, p: 0.45 }}
                 >
-                  <ChevronRight size={18} />
+                  <ChevronRight size={16} />
                 </IconButton>
               </Box>
 
@@ -1733,9 +1978,20 @@ function PlannerContent() {
                   size="small"
                   color="primary"
                   onClick={handleCurrentWeek}
-                  sx={{ textTransform: 'none', fontWeight: 700, borderRadius: 1.5, py: 0.5, px: 1.25 }}
+                  title="Jump back to current week"
+                  sx={{
+                    textTransform: 'none',
+                    fontWeight: 700,
+                    fontSize: '0.75rem',
+                    borderRadius: 1,
+                    py: 0.4,
+                    px: 1,
+                    minWidth: 0,
+                    whiteSpace: 'nowrap',
+                    flexShrink: 0,
+                  }}
                 >
-                  This Week
+                  Today
                 </Button>
               )}
 
@@ -1746,46 +2002,197 @@ function PlannerContent() {
                 onClick={() => setShowCountersPanel((prev) => !prev)}
                 sx={{
                   fontWeight: 600,
-                  fontSize: '0.78rem',
-                  borderRadius: 1.5,
+                  fontSize: '0.75rem',
+                  borderRadius: 1,
                   cursor: 'pointer',
                   fontVariantNumeric: 'tabular-nums',
+                  whiteSpace: 'nowrap',
+                  flexShrink: 0,
                   bgcolor: showCountersPanel ? 'action.selected' : 'transparent',
                 }}
               />
+
+              {saveStatus !== 'idle' && (
+                <Chip
+                  size="small"
+                  variant="outlined"
+                  color={saveStatus === 'error' ? 'error' : saveStatus === 'saved' ? 'success' : 'default'}
+                  icon={saveStatus === 'saved' ? <Check size={12} /> : undefined}
+                  label={
+                    saveStatus === 'saving'
+                      ? 'Saving…'
+                      : saveStatus === 'saved'
+                      ? 'Saved'
+                      : 'Retry save'
+                  }
+                  onClick={
+                    saveStatus === 'error'
+                      ? () => void persistSettingsToDb(plannerSettings)
+                      : undefined
+                  }
+                  sx={{
+                    fontWeight: 600,
+                    fontSize: '0.75rem',
+                    borderRadius: 1,
+                    height: 24,
+                    whiteSpace: 'nowrap',
+                    flexShrink: 0,
+                  }}
+                />
+              )}
             </Stack>
 
-            {/* Right: 1 Primary CTA (Print Binder) + 1 3-Line Menu (Week Tools) */}
-            <Stack direction="row" spacing={1.25} alignItems="center">
+            {/* Right: Screen View Mode Toggle + Populate (when empty) + Print Binder + Week Tools */}
+            <Stack
+              direction="row"
+              spacing={0.75}
+              alignItems="center"
+              flexWrap={{ xs: 'wrap', md: 'nowrap' }}
+              useFlexGap
+              sx={{ flexShrink: 0 }}
+            >
+              {/* Screen-Only Layout Switcher (Print Binder always prints the exact 2-page binder) */}
+              <Box
+                role="group"
+                aria-label="On-screen view mode"
+                sx={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  bgcolor: 'action.hover',
+                  border: '1px solid',
+                  borderColor: 'divider',
+                  borderRadius: 1,
+                  p: 0.25,
+                  gap: 0.25,
+                  flexShrink: 0,
+                }}
+              >
+                <Button
+                  size="small"
+                  variant={screenViewMode === 'binder_2page' ? 'contained' : 'text'}
+                  color={screenViewMode === 'binder_2page' ? 'primary' : 'inherit'}
+                  startIcon={<BookOpen size={13} />}
+                  onClick={() => setScreenViewMode('binder_2page')}
+                  title="2-Page Binder View (Default)"
+                  sx={{
+                    textTransform: 'none',
+                    fontWeight: 600,
+                    fontSize: '0.75rem',
+                    borderRadius: 1,
+                    py: 0.35,
+                    px: 0.85,
+                    minWidth: 0,
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  2-Page
+                </Button>
+                <Button
+                  size="small"
+                  variant={screenViewMode === 'binder_spread' ? 'contained' : 'text'}
+                  color={screenViewMode === 'binder_spread' ? 'primary' : 'inherit'}
+                  startIcon={<Columns size={13} />}
+                  onClick={() => setScreenViewMode('binder_spread')}
+                  title="Side-by-Side 2-Page Spread"
+                  sx={{
+                    textTransform: 'none',
+                    fontWeight: 600,
+                    fontSize: '0.75rem',
+                    borderRadius: 1,
+                    py: 0.35,
+                    px: 0.85,
+                    minWidth: 0,
+                    whiteSpace: 'nowrap',
+                    display: { xs: 'none', lg: 'inline-flex' },
+                  }}
+                >
+                  Spread
+                </Button>
+                <Button
+                  size="small"
+                  variant={screenViewMode === 'five_day' ? 'contained' : 'text'}
+                  color={screenViewMode === 'five_day' ? 'primary' : 'inherit'}
+                  startIcon={<LayoutGrid size={13} />}
+                  onClick={() => setScreenViewMode('five_day')}
+                  title="Unified 5-Day Mon–Fri Grid (Screen Only)"
+                  sx={{
+                    textTransform: 'none',
+                    fontWeight: 600,
+                    fontSize: '0.75rem',
+                    borderRadius: 1,
+                    py: 0.35,
+                    px: 0.85,
+                    minWidth: 0,
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  5-Day
+                </Button>
+              </Box>
+
+              {parentNotes.length === 0 && (
+                <Button
+                  size="small"
+                  variant="outlined"
+                  color="primary"
+                  startIcon={<Sparkles size={14} />}
+                  disabled={populatingWeek}
+                  onClick={() => handleOpenPopulateOrPullModal('populate_and_pull', false)}
+                  sx={{
+                    fontWeight: 700,
+                    fontSize: '0.75rem',
+                    textTransform: 'none',
+                    borderRadius: 1,
+                    px: 1.15,
+                    py: 0.55,
+                    minWidth: 0,
+                    whiteSpace: 'nowrap',
+                    flexShrink: 0,
+                  }}
+                >
+                  {populatingWeek ? 'Populating…' : 'Populate'}
+                </Button>
+              )}
+
               <Button
+                size="small"
                 variant="contained"
                 color="primary"
-                startIcon={<Printer size={17} />}
+                startIcon={<Printer size={15} />}
                 onClick={handlePrint}
                 sx={{
                   fontWeight: 700,
+                  fontSize: '0.8125rem',
                   textTransform: 'none',
-                  borderRadius: 2,
-                  px: 2.25,
-                  py: 0.9,
+                  borderRadius: 1,
+                  px: 1.35,
+                  py: 0.55,
+                  minWidth: 0,
+                  whiteSpace: 'nowrap',
+                  flexShrink: 0,
                 }}
               >
                 Print Binder
               </Button>
 
               <Button
+                size="small"
                 variant="outlined"
                 color="inherit"
-                startIcon={<MenuIcon size={17} />}
+                startIcon={<MenuIcon size={15} />}
                 onClick={(e) => setToolsMenuAnchorEl(e.currentTarget)}
                 sx={{
                   fontWeight: 700,
+                  fontSize: '0.8125rem',
                   textTransform: 'none',
-                  borderRadius: 2,
-                  px: 1.75,
-                  py: 0.9,
+                  borderRadius: 1,
+                  px: 1.15,
+                  py: 0.55,
+                  minWidth: 0,
                   borderColor: 'divider',
                   bgcolor: 'background.paper',
+                  whiteSpace: 'nowrap',
+                  flexShrink: 0,
                   '&:hover': {
                     borderColor: 'primary.main',
                     bgcolor: 'action.hover',
@@ -1806,7 +2213,7 @@ function PlannerContent() {
                     mt: 1,
                     minWidth: 325,
                     width: 'max-content',
-                    borderRadius: 2.5,
+                    borderRadius: 1,
                     p: 0.75,
                     border: '1px solid',
                     borderColor: 'divider',
@@ -1829,7 +2236,7 @@ function PlannerContent() {
                     setToolsMenuAnchorEl(null);
                     handleOpenPopulateOrPullModal('populate_and_pull', false);
                   }}
-                  sx={{ borderRadius: 1.5, py: 1, gap: 1.5 }}
+                  sx={{ borderRadius: 1, py: 1, gap: 1.5 }}
                 >
                   <Sparkles size={16} color={theme.palette.primary.main} />
                   <Typography variant="body2" fontWeight={600} flexGrow={1}>
@@ -1843,7 +2250,7 @@ function PlannerContent() {
                     setToolsMenuAnchorEl(null);
                     handleOpenPopulateOrPullModal('pull_only', false);
                   }}
-                  sx={{ borderRadius: 1.5, py: 1, gap: 1.5 }}
+                  sx={{ borderRadius: 1, py: 1, gap: 1.5 }}
                 >
                   <Copy size={16} color={theme.palette.primary.main} />
                   <Typography variant="body2" fontWeight={600} flexGrow={1}>
@@ -1856,7 +2263,7 @@ function PlannerContent() {
                     setToolsMenuAnchorEl(null);
                     setShowCountersPanel((prev) => !prev);
                   }}
-                  sx={{ borderRadius: 1.5, py: 1, gap: 1.5 }}
+                  sx={{ borderRadius: 1, py: 1, gap: 1.5 }}
                 >
                   <Sliders size={16} color={theme.palette.primary.main} />
                   <Typography variant="body2" fontWeight={600} flexGrow={1}>
@@ -1880,7 +2287,7 @@ function PlannerContent() {
                     setToolsMenuAnchorEl(null);
                     router.push('/automations');
                   }}
-                  sx={{ borderRadius: 1.5, py: 1, gap: 1.5 }}
+                  sx={{ borderRadius: 1, py: 1, gap: 1.5 }}
                 >
                   <Repeat size={16} />
                   <Typography variant="body2" fontWeight={600}>
@@ -1893,11 +2300,24 @@ function PlannerContent() {
                     setToolsMenuAnchorEl(null);
                     router.push('/subjects-habits');
                   }}
-                  sx={{ borderRadius: 1.5, py: 1, gap: 1.5 }}
+                  sx={{ borderRadius: 1, py: 1, gap: 1.5 }}
                 >
                   <Settings size={16} />
                   <Typography variant="body2" fontWeight={600}>
                     Subjects &amp; Habit Trackers →
+                  </Typography>
+                </MenuItem>
+
+                <MenuItem
+                  onClick={() => {
+                    setToolsMenuAnchorEl(null);
+                    router.push('/audit-log');
+                  }}
+                  sx={{ borderRadius: 1, py: 1, gap: 1.5 }}
+                >
+                  <History size={16} />
+                  <Typography variant="body2" fontWeight={600}>
+                    Audit Log &amp; Change History →
                   </Typography>
                 </MenuItem>
 
@@ -1909,7 +2329,7 @@ function PlannerContent() {
                     setToolsMenuAnchorEl(null);
                     setConfirmResetOpen(true);
                   }}
-                  sx={{ borderRadius: 1.5, py: 1, gap: 1.5, color: 'error.main' }}
+                  sx={{ borderRadius: 1, py: 1, gap: 1.5, color: 'error.main' }}
                 >
                   <RotateCcw size={16} />
                   <Typography variant="body2" fontWeight={600}>
@@ -1933,10 +2353,10 @@ function PlannerContent() {
                   mb={2}
                 >
                   <Box>
-                    <Typography variant="subtitle1" fontWeight={800}>
+                    <Typography variant="subtitle1" fontWeight={700}>
                       Week Sequence &amp; Math Syllabus Days ({formatWeekRangeLabel()})
                     </Typography>
-                    <Typography variant="caption" color="text.secondary" sx={{ textTransform: 'none' }}>
+                    <Typography variant="caption" color="text.secondary" sx={{ textTransform: 'none', fontSize: '0.75rem' }}>
                       Skipped or repeating a week or Math class? Adjust the numbers below and click <strong>Sync / Overwrite Placeholders</strong> to update this week&apos;s grid.
                     </Typography>
                   </Box>
@@ -1948,7 +2368,7 @@ function PlannerContent() {
                       startIcon={<Repeat size={15} />}
                       disabled={populatingWeek}
                       onClick={() => handleOpenPopulateOrPullModal('populate_and_pull', true)}
-                      sx={{ fontWeight: 700, textTransform: 'none' }}
+                      sx={{ fontWeight: 700, textTransform: 'none', borderRadius: 1 }}
                     >
                       Sync / Overwrite Placeholders…
                     </Button>
@@ -1956,6 +2376,7 @@ function PlannerContent() {
                       size="small"
                       onClick={() => setShowCountersPanel(false)}
                       title="Close panel"
+                      aria-label="Close week sequence panel"
                     >
                       <X size={18} />
                     </IconButton>
@@ -1978,17 +2399,30 @@ function PlannerContent() {
 
                       return (
                         <Grid item xs={12} md={6} key={sub.id}>
-                          <Paper variant="outlined" sx={{ p: 2, borderRadius: 2, borderLeft: `4px solid ${sub.color || '#0C74E4'}` }}>
+                          <Paper variant="outlined" sx={{ p: 2, borderRadius: 1 }}>
                             <Stack direction="row" justifyContent="space-between" alignItems="center" mb={1.5}>
-                              <Typography variant="subtitle2" fontWeight={800}>
-                                {sub.name} — Syllabus Day Selector
-                              </Typography>
+                              <Stack direction="row" spacing={1} alignItems="center">
+                                <Box
+                                  component="span"
+                                  sx={{
+                                    width: 8,
+                                    height: 8,
+                                    borderRadius: '50%',
+                                    bgcolor: sub.color || '#1b5698',
+                                    display: 'inline-block',
+                                    flexShrink: 0,
+                                  }}
+                                />
+                                <Typography variant="subtitle2" fontWeight={700}>
+                                  {sub.name} — Syllabus Day Selector
+                                </Typography>
+                              </Stack>
                               <Chip
                                 size="small"
                                 label="Tue & Thu Classes"
                                 color="primary"
                                 variant="outlined"
-                                sx={{ fontWeight: 700, fontSize: '0.68rem' }}
+                                sx={{ fontWeight: 700, fontSize: '0.75rem', borderRadius: 1 }}
                               />
                             </Stack>
 
@@ -2023,7 +2457,7 @@ function PlannerContent() {
                                   ))}
                                 </TextField>
                                 {tueSyl && (
-                                  <Typography variant="caption" color="text.secondary" display="block" mt={0.5}>
+                                  <Typography variant="caption" color="text.secondary" display="block" mt={0.5} sx={{ fontSize: '0.75rem' }}>
                                     Mon HW: <strong>{tueSyl.workbook}</strong>
                                   </Typography>
                                 )}
@@ -2058,7 +2492,7 @@ function PlannerContent() {
                                   ))}
                                 </TextField>
                                 {thuSyl && (
-                                  <Typography variant="caption" color="text.secondary" display="block" mt={0.5}>
+                                  <Typography variant="caption" color="text.secondary" display="block" mt={0.5} sx={{ fontSize: '0.75rem' }}>
                                     Wed HW: <strong>{thuSyl.workbook}</strong>
                                   </Typography>
                                 )}
@@ -2132,9 +2566,8 @@ function PlannerContent() {
                           variant="outlined"
                           sx={{
                             p: 2,
-                            borderRadius: 2,
+                            borderRadius: 1,
                             height: '100%',
-                            borderLeft: `4px solid ${sub.color || '#0C74E4'}`,
                           }}
                         >
                           <Stack
@@ -2145,17 +2578,30 @@ function PlannerContent() {
                             spacing={1}
                           >
                             <Box>
-                              <Typography variant="subtitle2" fontWeight={800} sx={{ lineHeight: 1.2 }}>
-                                {sub.name}
-                                {hasClassSyllabus ? ' — Syllabus Week & Class Selector' : ''}
-                              </Typography>
+                              <Stack direction="row" spacing={1} alignItems="center">
+                                <Box
+                                  component="span"
+                                  sx={{
+                                    width: 8,
+                                    height: 8,
+                                    borderRadius: '50%',
+                                    bgcolor: sub.color || '#1b5698',
+                                    display: 'inline-block',
+                                    flexShrink: 0,
+                                  }}
+                                />
+                                <Typography variant="subtitle2" fontWeight={700} sx={{ lineHeight: 1.2 }}>
+                                  {sub.name}
+                                  {hasClassSyllabus ? ' — Syllabus Week & Class Selector' : ''}
+                                </Typography>
+                              </Stack>
                               {officialCourseName && (
                                 <Typography
                                   variant="caption"
                                   sx={{
                                     fontStyle: 'italic',
                                     color: 'text.secondary',
-                                    fontSize: '0.7rem',
+                                    fontSize: '0.75rem',
                                     display: 'block',
                                     mt: 0.15,
                                   }}
@@ -2170,7 +2616,7 @@ function PlannerContent() {
                                 label={`${classSyllabusWeeks.length} Wks · ${classSyllabusDays.length} Classes`}
                                 color="success"
                                 variant="outlined"
-                                sx={{ fontWeight: 700, fontSize: '0.68rem' }}
+                                sx={{ fontWeight: 700, fontSize: '0.75rem', borderRadius: 1 }}
                               />
                             )}
                           </Stack>
@@ -2237,7 +2683,7 @@ function PlannerContent() {
                                     fontWeight={700}
                                     display="block"
                                     mt={0.5}
-                                    sx={{ fontSize: '0.68rem' }}
+                                    sx={{ fontSize: '0.75rem' }}
                                   >
                                     Quiz/Assn: {selectedApiWeek.linked_assessments.map((a) => a.name).join(', ')}
                                   </Typography>
@@ -2328,7 +2774,7 @@ function PlannerContent() {
                                   p={1}
                                   sx={{
                                     bgcolor: 'action.hover',
-                                    borderRadius: 1.5,
+                                    borderRadius: 1,
                                     border: '1px solid',
                                     borderColor: 'divider',
                                   }}
@@ -2344,7 +2790,7 @@ function PlannerContent() {
                                         variant="caption"
                                         display="block"
                                         color="text.secondary"
-                                        sx={{ fontSize: '0.7rem', lineHeight: 1.35 }}
+                                        sx={{ fontSize: '0.75rem', lineHeight: 1.35 }}
                                       >
                                         <strong>
                                           {dayLabel} (Class {cNum}):
@@ -2436,12 +2882,16 @@ function PlannerContent() {
         </Card>
       </Box>
 
-      {/* PRINTABLE 2-PAGE BINDER PLANNER WRAPPER */}
-      <Box className="planner-print-root">
+      {/* PRINTABLE 2-PAGE BINDER PLANNER WRAPPER (Always used by @media print) */}
+      <Box
+        className={`planner-print-root ${screenViewMode === 'binder_spread' ? 'spread-mode' : ''} ${
+          screenViewMode === 'five_day' ? 'screen-hidden-print-only' : ''
+        }`}
+      >
         {/* ========================================================================= */}
         {/* PAGE 1: MONDAY, TUESDAY, WEDNESDAY (3 COLUMNS x 8 SUBJECT ROWS)          */}
         {/* ========================================================================= */}
-        <Box className="print-page page-break">
+        <Box ref={page1Ref} className="print-page page-break">
           {/* Header Bar: WEEKLY Assignments in Raleway & Sacramento Fonts */}
           <Box className="planner-header">
             <Typography
@@ -2578,21 +3028,31 @@ function PlannerContent() {
                       )}
                     </td>
                     {page1Days.map((d) => {
-                      const cellNote = parentNotes.find(
-                        (n) => n.subject_id === subject.id && n.note_date === d.dateStr
-                      );
                       const cellSchoolAssignments = schoolAssignments.filter(
                         (a) =>
                           a.subject_id === subject.id &&
                           a.due_date === d.dateStr &&
                           a.workflow_status !== 'staged'
                       );
+                      const isSelectedCell =
+                        openCellModal &&
+                        selectedSubject?.id === subject.id &&
+                        selectedDate === d.dateStr;
 
                       return (
                         <td
                           key={d.dateStr}
-                          className="assignment-cell"
+                          className={`assignment-cell ${isSelectedCell ? 'active-cell-screen' : ''}`}
+                          tabIndex={0}
+                          role="button"
+                          aria-label={`${subject.name}, ${d.dayName} ${d.formatted}`}
                           onClick={() => handleOpenCellEditor(subject, d.dateStr)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              handleOpenCellEditor(subject, d.dateStr);
+                            }
+                          }}
                         >
                           {(() => {
                             const squareNotes = parentNotes.filter(
@@ -2642,7 +3102,7 @@ function PlannerContent() {
         {/* ========================================================================= */}
         {/* PAGE 2: THURSDAY, FRIDAY + RIGHT SIDEBAR (TO-DO, PRIORITIES, HABITS, NOTES) */}
         {/* ========================================================================= */}
-        <Box className="print-page">
+        <Box ref={page2Ref} className="print-page">
           {/* Header Bar */}
           <Box className="planner-header">
             <Typography variant="body1" fontWeight={700} className="week-header-text">
@@ -2756,60 +3216,70 @@ function PlannerContent() {
                           )}
                         </td>
                         {page2Days.map((d) => {
-                          const cellNote = parentNotes.find(
-                            (n) => n.subject_id === subject.id && n.note_date === d.dateStr
-                          );
                           const cellSchoolAssignments = schoolAssignments.filter(
                             (a) =>
                               a.subject_id === subject.id &&
                               a.due_date === d.dateStr &&
                               a.workflow_status !== 'staged'
                           );
+                          const isSelectedCell =
+                            openCellModal &&
+                            selectedSubject?.id === subject.id &&
+                            selectedDate === d.dateStr;
 
-                        return (
-                          <td
-                            key={d.dateStr}
-                            className="assignment-cell"
-                            onClick={() => handleOpenCellEditor(subject, d.dateStr)}
-                          >
-                            {(() => {
-                              const squareNotes = parentNotes.filter(
-                                (n) => n.subject_id === subject.id && n.note_date === d.dateStr
-                              );
-                              if (squareNotes.length === 0) return null;
-                              return squareNotes.map((noteItem) => (
-                                <Box key={noteItem.id} className="parent-note-item" sx={{ mb: 1 }}>
-                                  <FormattedParentNote
-                                    noteId={noteItem.id}
-                                    title={noteItem.title}
-                                    description={noteItem.description}
-                                    color={branding.notes.color}
-                                    iconName={branding.notes.icon}
-                                    parentNoteColor={branding.parentNotes.color}
-                                    parentNoteIconName={branding.parentNotes.icon}
-                                    onToggleCheckbox={handleToggleParentNoteCheckbox}
-                                  />
-                                </Box>
-                              ));
-                            })()}
-                            {cellSchoolAssignments.map((a) => (
-                              <div
-                                key={a.id}
-                                className="school-assignment-item"
-                                style={{ color: branding.assignments.color, cursor: 'pointer' }}
-                                onClick={(e) => handleOpenAssignmentFromPlanner(a, e)}
-                                title="Click to grade or edit assignment"
-                              >
-                                <ItemIcon name={branding.assignments.icon} size={11} color={branding.assignments.color} style={{ marginRight: 4, display: 'inline' }} />
-                                [{a.category.toUpperCase()}] {a.title}
-                                {typeof a.percentage_score === 'number'
-                                  ? ` • ${a.percentage_score.toFixed(0)}%`
-                                  : ''}
-                              </div>
-                            ))}
-                          </td>
-                        );
-                      })}
+                          return (
+                            <td
+                              key={d.dateStr}
+                              className={`assignment-cell ${isSelectedCell ? 'active-cell-screen' : ''}`}
+                              tabIndex={0}
+                              role="button"
+                              aria-label={`${subject.name}, ${d.dayName} ${d.formatted}`}
+                              onClick={() => handleOpenCellEditor(subject, d.dateStr)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                  e.preventDefault();
+                                  handleOpenCellEditor(subject, d.dateStr);
+                                }
+                              }}
+                            >
+                              {(() => {
+                                const squareNotes = parentNotes.filter(
+                                  (n) => n.subject_id === subject.id && n.note_date === d.dateStr
+                                );
+                                if (squareNotes.length === 0) return null;
+                                return squareNotes.map((noteItem) => (
+                                  <Box key={noteItem.id} className="parent-note-item" sx={{ mb: 1 }}>
+                                    <FormattedParentNote
+                                      noteId={noteItem.id}
+                                      title={noteItem.title}
+                                      description={noteItem.description}
+                                      color={branding.notes.color}
+                                      iconName={branding.notes.icon}
+                                      parentNoteColor={branding.parentNotes.color}
+                                      parentNoteIconName={branding.parentNotes.icon}
+                                      onToggleCheckbox={handleToggleParentNoteCheckbox}
+                                    />
+                                  </Box>
+                                ));
+                              })()}
+                              {cellSchoolAssignments.map((a) => (
+                                <div
+                                  key={a.id}
+                                  className="school-assignment-item"
+                                  style={{ color: branding.assignments.color, cursor: 'pointer' }}
+                                  onClick={(e) => handleOpenAssignmentFromPlanner(a, e)}
+                                  title="Click to grade or edit assignment"
+                                >
+                                  <ItemIcon name={branding.assignments.icon} size={11} color={branding.assignments.color} style={{ marginRight: 4, display: 'inline' }} />
+                                  [{a.category.toUpperCase()}] {a.title}
+                                  {typeof a.percentage_score === 'number'
+                                    ? ` • ${a.percentage_score.toFixed(0)}%`
+                                    : ''}
+                                </div>
+                              ))}
+                            </td>
+                          );
+                        })}
                       </tr>
                     );
                   })}
@@ -2829,12 +3299,14 @@ function PlannerContent() {
                       <input
                         type="text"
                         className="sidebar-input"
+                        aria-label={`To-Do item ${idx + 1}`}
                         value={todoText}
                         onChange={(e) => {
                           const updated = [...plannerSettings.todos];
                           updated[idx] = e.target.value;
-                          handleSaveSettings({ ...plannerSettings, todos: updated });
+                          handleQueueSettingsSave({ ...plannerSettings, todos: updated });
                         }}
+                        onBlur={() => void flushPendingSettingsSave()}
                       />
                     </div>
                   ))}
@@ -2851,12 +3323,14 @@ function PlannerContent() {
                       <input
                         type="text"
                         className="sidebar-input"
+                        aria-label={`Top priority ${idx + 1}`}
                         value={pText}
                         onChange={(e) => {
                           const updated = [...plannerSettings.priorities];
                           updated[idx] = e.target.value;
-                          handleSaveSettings({ ...plannerSettings, priorities: updated });
+                          handleQueueSettingsSave({ ...plannerSettings, priorities: updated });
                         }}
+                        onBlur={() => void flushPendingSettingsSave()}
                       />
                     </div>
                   ))}
@@ -2899,10 +3373,12 @@ function PlannerContent() {
                 <div className="sidebar-header-badge">FOR NEXT MONTH</div>
                 <textarea
                   className="sidebar-textarea sidebar-textarea-next-month"
+                  aria-label="For next month notes"
                   value={plannerSettings.for_next_month}
                   onChange={(e) =>
-                    handleSaveSettings({ ...plannerSettings, for_next_month: e.target.value })
+                    handleQueueSettingsSave({ ...plannerSettings, for_next_month: e.target.value })
                   }
+                  onBlur={() => void flushPendingSettingsSave()}
                   rows={4}
                 />
               </Box>
@@ -2951,10 +3427,12 @@ function PlannerContent() {
                 )}
                 <textarea
                   className="sidebar-textarea sidebar-textarea-notes"
+                  aria-label="Weekly notes"
                   value={plannerSettings.notes.replace(/\n*\[Activity Supplies\][\s\S]*$/i, '').trim()}
                   onChange={(e) =>
-                    handleSaveSettings({ ...plannerSettings, notes: e.target.value })
+                    handleQueueSettingsSave({ ...plannerSettings, notes: e.target.value })
                   }
+                  onBlur={() => void flushPendingSettingsSave()}
                   rows={weekActivitySupplies.length > 0 ? 4 : 6}
                 />
               </Box>
@@ -2962,6 +3440,419 @@ function PlannerContent() {
           </Box>
         </Box>
       </Box>
+
+      {/* SCREEN-ONLY UNIFIED 5-DAY (MON-FRI) GRID VIEW (Hidden when printing) */}
+      {screenViewMode === 'five_day' && (
+        <Box className="no-print planner-print-root">
+          <Box className="print-page" sx={{ minHeight: 'auto', mb: 3 }}>
+            <Box className="planner-header" sx={{ justifyContent: 'space-between !important', px: '16px !important' }}>
+              <Box display="flex" alignItems="center">
+                <Typography
+                  component="span"
+                  sx={{
+                    fontFamily: "'Raleway', sans-serif",
+                    fontWeight: 400,
+                    fontSize: '20px',
+                    letterSpacing: '0.18em',
+                    textTransform: 'uppercase',
+                    color: '#151821',
+                    lineHeight: 1,
+                  }}
+                >
+                  WEEKLY
+                </Typography>
+                <Typography
+                  component="span"
+                  sx={{
+                    fontFamily: "'Sacramento', cursive",
+                    fontWeight: 400,
+                    fontSize: '36px',
+                    color: '#151821',
+                    lineHeight: 1,
+                    ml: 1.5,
+                    mt: '-4px',
+                  }}
+                >
+                  Assignments
+                </Typography>
+              </Box>
+              <Typography variant="body2" fontWeight={700} className="week-header-text">
+                WEEK OF: {weekStartDate} (MON–FRI UNIFIED VIEW)
+              </Typography>
+            </Box>
+
+            <Box sx={{ overflowX: 'auto' }}>
+              <table className="planner-table" style={{ minWidth: 880 }}>
+                <thead>
+                  <tr>
+                    <th className="subject-header-col">SUBJECT</th>
+                    {weekDates.map((d, idx) => (
+                      <th
+                        key={d.dateStr}
+                        className={`day-header-col ${idx === weekDates.length - 1 ? 'friday-col' : ''}`}
+                      >
+                        {d.dayName} [{d.formatted}]
+                      </th>
+                    ))}
+                  </tr>
+                  <tr className="all-day-events-row" style={{ height: syncedAllDayMinHeight }}>
+                    <td className="all-day-label-cell">HOLIDAYS &amp; TASKS</td>
+                    {weekDates.map((d) => {
+                      const dayHolidays = holidays.filter((h) => h.holiday_date === d.dateStr);
+                      const dayTasks = tasksList.filter((t) => t.due_date === d.dateStr);
+                      const dayGoogleEvents = googleEvents.filter((g) => g.event_date === d.dateStr);
+                      const hasEvents =
+                        dayHolidays.length > 0 || dayTasks.length > 0 || dayGoogleEvents.length > 0;
+
+                      return (
+                        <td
+                          key={d.dateStr}
+                          className="all-day-events-cell"
+                          style={{ height: syncedAllDayMinHeight }}
+                        >
+                          <div
+                            className="all-day-items-wrapper"
+                            style={{ minHeight: syncedAllDayMinHeight }}
+                          >
+                            {dayHolidays.map((h) => (
+                              <div
+                                key={h.id}
+                                className="holiday-banner-top"
+                                style={{ backgroundColor: branding.holidays.color }}
+                                title={h.title}
+                              >
+                                <ItemIcon
+                                  name={branding.holidays.icon}
+                                  size={10}
+                                  color="#ffffff"
+                                  style={{ marginRight: 3, flexShrink: 0 }}
+                                />
+                                <span className="banner-text">{h.title}</span>
+                              </div>
+                            ))}
+                            {dayGoogleEvents.map((g) => (
+                              <div
+                                key={g.id}
+                                className="task-banner-top"
+                                style={{ backgroundColor: g.color || '#4285F4' }}
+                                title={g.title}
+                              >
+                                <ItemIcon
+                                  name="Calendar"
+                                  size={10}
+                                  color="#ffffff"
+                                  style={{ marginRight: 3, flexShrink: 0 }}
+                                />
+                                <span className="banner-text">{g.title}</span>
+                              </div>
+                            ))}
+                            {dayTasks.map((t) => (
+                              <div
+                                key={t.id}
+                                className="task-banner-top"
+                                style={{ backgroundColor: branding.tasks.color }}
+                                title={t.title}
+                              >
+                                <ItemIcon
+                                  name={branding.tasks.icon}
+                                  size={10}
+                                  color="#ffffff"
+                                  style={{ marginRight: 3, flexShrink: 0 }}
+                                />
+                                <span className="banner-text">
+                                  {t.status === 'completed' ? '✓' : '☐'} {t.title}
+                                </span>
+                              </div>
+                            ))}
+                            {!hasEvents && <div className="all-day-empty">—</div>}
+                          </div>
+                        </td>
+                      );
+                    })}
+                  </tr>
+                </thead>
+                <tbody>
+                  {displaySubjects.map((subject) => {
+                    const subCfg = parseRecurringConfig(subject.recurring_config, subject.name);
+                    const officialSubtitle = getOfficialCourseSubtitle(subCfg);
+                    return (
+                      <tr key={subject.id}>
+                        <td className="subject-name-cell">
+                          <Typography
+                            variant="body2"
+                            fontWeight={700}
+                            sx={{ lineHeight: 1.2, color: '#0f172a' }}
+                          >
+                            {subject.name}
+                          </Typography>
+                          {officialSubtitle && (
+                            <Typography
+                              variant="caption"
+                              sx={{
+                                display: 'block',
+                                fontStyle: 'italic',
+                                fontWeight: 500,
+                                fontSize: '0.66rem',
+                                color: '#475569',
+                                lineHeight: 1.15,
+                                mt: 0.25,
+                              }}
+                            >
+                              {officialSubtitle}
+                            </Typography>
+                          )}
+                          {subject.link && (
+                            <Typography
+                              component="a"
+                              href={subject.link}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={(e) => e.stopPropagation()}
+                              className="no-print"
+                              sx={{
+                                display: 'inline-block',
+                                fontSize: '0.62rem',
+                                fontWeight: 700,
+                                color: '#0284c7',
+                                textDecoration: 'none',
+                                mt: 0.35,
+                                '&:hover': { textDecoration: 'underline' },
+                              }}
+                            >
+                              {subject.link.includes('zoom.us')
+                                ? 'Zoom Link ↗'
+                                : subject.link.includes('adobeconnect.com')
+                                ? 'Live Classroom ↗'
+                                : 'Class Link ↗'}
+                            </Typography>
+                          )}
+                        </td>
+                        {weekDates.map((d) => {
+                          const cellSchoolAssignments = schoolAssignments.filter(
+                            (a) =>
+                              a.subject_id === subject.id &&
+                              a.due_date === d.dateStr &&
+                              a.workflow_status !== 'staged'
+                          );
+                          const isSelectedCell =
+                            openCellModal &&
+                            selectedSubject?.id === subject.id &&
+                            selectedDate === d.dateStr;
+
+                          return (
+                            <td
+                              key={d.dateStr}
+                              className={`assignment-cell ${isSelectedCell ? 'active-cell-screen' : ''}`}
+                              tabIndex={0}
+                              role="button"
+                              aria-label={`${subject.name}, ${d.dayName} ${d.formatted}`}
+                              onClick={() => handleOpenCellEditor(subject, d.dateStr)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                  e.preventDefault();
+                                  handleOpenCellEditor(subject, d.dateStr);
+                                }
+                              }}
+                            >
+                              {(() => {
+                                const squareNotes = parentNotes.filter(
+                                  (n) => n.subject_id === subject.id && n.note_date === d.dateStr
+                                );
+                                if (squareNotes.length === 0) return null;
+                                return squareNotes.map((noteItem) => (
+                                  <Box key={noteItem.id} className="parent-note-item" sx={{ mb: 1 }}>
+                                    <FormattedParentNote
+                                      noteId={noteItem.id}
+                                      title={noteItem.title}
+                                      description={noteItem.description}
+                                      color={branding.notes.color}
+                                      iconName={branding.notes.icon}
+                                      parentNoteColor={branding.parentNotes.color}
+                                      parentNoteIconName={branding.parentNotes.icon}
+                                      onToggleCheckbox={handleToggleParentNoteCheckbox}
+                                    />
+                                  </Box>
+                                ));
+                              })()}
+                              {cellSchoolAssignments.map((a) => (
+                                <div
+                                  key={a.id}
+                                  className="school-assignment-item"
+                                  style={{ color: branding.assignments.color, cursor: 'pointer' }}
+                                  onClick={(e) => handleOpenAssignmentFromPlanner(a, e)}
+                                  title="Click to grade or edit assignment"
+                                >
+                                  <ItemIcon
+                                    name={branding.assignments.icon}
+                                    size={11}
+                                    color={branding.assignments.color}
+                                    style={{ marginRight: 4, display: 'inline' }}
+                                  />
+                                  [{a.category.toUpperCase()}] {a.title}
+                                  {typeof a.percentage_score === 'number'
+                                    ? ` • ${a.percentage_score.toFixed(0)}%`
+                                    : ''}
+                                </div>
+                              ))}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </Box>
+
+            {/* Bottom Binder Sidebar Strip in 5-Day Grid Mode */}
+            <Grid container spacing={2.5} sx={{ mt: 2, pt: 2, borderTop: '1px solid #e0e0e0' }}>
+              <Grid item xs={12} sm={6} md={3}>
+                <div className="sidebar-header-badge">TO DO</div>
+                <div className="todo-list">
+                  {plannerSettings.todos.map((todoText, idx) => (
+                    <div key={idx} className="todo-item">
+                      <div className="checkbox-square" />
+                      <input
+                        type="text"
+                        className="sidebar-input"
+                        aria-label={`To-Do item ${idx + 1}`}
+                        value={todoText}
+                        onChange={(e) => {
+                          const updated = [...plannerSettings.todos];
+                          updated[idx] = e.target.value;
+                          handleQueueSettingsSave({ ...plannerSettings, todos: updated });
+                        }}
+                        onBlur={() => void flushPendingSettingsSave()}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </Grid>
+
+              <Grid item xs={12} sm={6} md={3}>
+                <Box mb={2}>
+                  <div className="sidebar-header-badge">TOP 3 PRIORITY</div>
+                  <div className="todo-list">
+                    {plannerSettings.priorities.map((pText, idx) => (
+                      <div key={idx} className="todo-item">
+                        <div className="checkbox-square" />
+                        <input
+                          type="text"
+                          className="sidebar-input"
+                          aria-label={`Top priority ${idx + 1}`}
+                          value={pText}
+                          onChange={(e) => {
+                            const updated = [...plannerSettings.priorities];
+                            updated[idx] = e.target.value;
+                            handleQueueSettingsSave({ ...plannerSettings, priorities: updated });
+                          }}
+                          onBlur={() => void flushPendingSettingsSave()}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </Box>
+                <Box>
+                  <div className="sidebar-header-badge">HABITS</div>
+                  <table className="habits-table">
+                    <thead>
+                      <tr>
+                        <th className="habit-name-head"></th>
+                        <th>S</th>
+                        <th>M</th>
+                        <th>T</th>
+                        <th>W</th>
+                        <th>T</th>
+                        <th>F</th>
+                        <th>S</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {displayHabits.map((habit) => (
+                        <tr key={habit.id}>
+                          <td className="habit-title-cell">{habit.title}</td>
+                          {Array.from({ length: 7 }).map((_, bIdx) => (
+                            <td key={bIdx} className="bubble-cell">
+                              <div className="bubble-circle" />
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </Box>
+              </Grid>
+
+              <Grid item xs={12} sm={6} md={3}>
+                <div className="sidebar-header-badge">FOR NEXT MONTH</div>
+                <textarea
+                  className="sidebar-textarea sidebar-textarea-next-month"
+                  aria-label="For next month notes"
+                  value={plannerSettings.for_next_month}
+                  onChange={(e) =>
+                    handleQueueSettingsSave({ ...plannerSettings, for_next_month: e.target.value })
+                  }
+                  onBlur={() => void flushPendingSettingsSave()}
+                  rows={6}
+                />
+              </Grid>
+
+              <Grid item xs={12} sm={6} md={3}>
+                <div className="sidebar-header-badge">NOTES</div>
+                {weekActivitySupplies.length > 0 && (
+                  <Box
+                    sx={{
+                      px: 0.75,
+                      py: 0.6,
+                      mb: 0.5,
+                      borderBottom: '1px dashed rgba(0, 0, 0, 0.25)',
+                      bgcolor: 'rgba(46, 125, 50, 0.06)',
+                      fontSize: '0.66rem',
+                      lineHeight: 1.3,
+                      color: '#111',
+                    }}
+                  >
+                    <div
+                      style={{
+                        fontWeight: 800,
+                        fontSize: '0.64rem',
+                        letterSpacing: '0.03em',
+                        textTransform: 'uppercase',
+                        color: '#1b5e20',
+                        marginBottom: 3,
+                      }}
+                    >
+                      Activity Supplies Needed
+                    </div>
+                    {weekActivitySupplies.map((supEntry) => (
+                      <div key={supEntry.id} style={{ marginBottom: 4 }}>
+                        <div style={{ fontWeight: 700 }}>
+                          • {supEntry.weekdayLabel.slice(0, 3)}
+                          {supEntry.classNumber ? ` (Class ${supEntry.classNumber})` : ''} —{' '}
+                          {supEntry.activityName}:
+                        </div>
+                        <div style={{ paddingLeft: 8, color: '#222' }}>
+                          {supEntry.supplies.join(', ')}
+                        </div>
+                      </div>
+                    ))}
+                  </Box>
+                )}
+                <textarea
+                  className="sidebar-textarea sidebar-textarea-notes"
+                  aria-label="Weekly notes"
+                  value={plannerSettings.notes.replace(/\n*\[Activity Supplies\][\s\S]*$/i, '').trim()}
+                  onChange={(e) =>
+                    handleQueueSettingsSave({ ...plannerSettings, notes: e.target.value })
+                  }
+                  onBlur={() => void flushPendingSettingsSave()}
+                  rows={weekActivitySupplies.length > 0 ? 4 : 6}
+                />
+              </Grid>
+            </Grid>
+          </Box>
+        </Box>
+      )}
 
       {/* CELL PARENT NOTES & ASSIGNMENT EDITOR SIDE PANEL (React 19 safe, no MUI Modal/Slide ref access) */}
       {openCellModal && (
@@ -2983,91 +3874,181 @@ function PlannerContent() {
             borderColor: 'divider',
           }}
         >
-          {/* Drawer Header */}
+          {/* Drawer Header with Subject & Day Steppers */}
           <Box
             px={3}
-            py={2}
-            display="flex"
-            alignItems="center"
-            justifyContent="space-between"
+            py={1.75}
             sx={{ borderBottom: 1, borderColor: 'divider', bgcolor: 'background.paper' }}
           >
-            <Box>
-              <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
-                <Typography variant="h6" fontWeight={800} fontSize="1.05rem" color="text.primary">
-                  {selectedSubject?.name}
-                </Typography>
-                {selectedSubject?.link && (
-                  <Chip
-                    label={
-                      selectedSubject.link.includes('zoom.us')
-                        ? 'Zoom Link ↗'
-                        : selectedSubject.link.includes('adobeconnect.com')
-                        ? 'Live Classroom ↗'
-                        : 'Class Link ↗'
-                    }
-                    size="small"
-                    color="info"
-                    variant="outlined"
-                    component="a"
-                    href={selectedSubject.link}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    clickable
-                    sx={{ height: 22, fontSize: '0.68rem', fontWeight: 700 }}
+            <Box
+              display="flex"
+              alignItems="flex-start"
+              justifyContent="space-between"
+              gap={1}
+            >
+              <Box sx={{ minWidth: 0, flex: 1 }}>
+                <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+                  <Box
+                    sx={{
+                      width: 10,
+                      height: 10,
+                      borderRadius: '50%',
+                      bgcolor: selectedSubject?.color || 'primary.main',
+                      flexShrink: 0,
+                    }}
                   />
+                  <Typography variant="h6" fontWeight={700} fontSize="1.125rem" color="text.primary" noWrap>
+                    {selectedSubject?.name}
+                  </Typography>
+                  {selectedSubject?.link && (
+                    <Chip
+                      label={
+                        selectedSubject.link.includes('zoom.us')
+                          ? 'Zoom Link ↗'
+                          : selectedSubject.link.includes('adobeconnect.com')
+                          ? 'Live Classroom ↗'
+                          : 'Class Link ↗'
+                      }
+                      size="small"
+                      color="info"
+                      variant="outlined"
+                      component="a"
+                      href={selectedSubject.link}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      clickable
+                      sx={{ height: 22, fontSize: '0.75rem', fontWeight: 700 }}
+                    />
+                  )}
+                </Stack>
+                <Typography variant="caption" color="text.secondary" fontWeight={600} display="block" mt={0.25}>
+                  {weekDates.find((wd) => wd.dateStr === selectedDate)?.dayName || ''} · {selectedDate}
+                </Typography>
+              </Box>
+              <Stack direction="row" spacing={0.75} alignItems="center">
+                {!isFormOpen && (
+                  <>
+                    <Button
+                      size="small"
+                      variant="contained"
+                      onClick={() => handleAddNewNoteForm('school_work')}
+                      startIcon={<Plus size={15} />}
+                      sx={{
+                        fontWeight: 700,
+                        px: 1.25,
+                        borderRadius: 1,
+                        textTransform: 'none',
+                        bgcolor: branding.notes.color,
+                        color: '#ffffff',
+                        '&:hover': { bgcolor: branding.notes.color, opacity: 0.9 },
+                      }}
+                    >
+                      School Work
+                    </Button>
+                    <Button
+                      size="small"
+                      variant="contained"
+                      onClick={() => handleAddNewNoteForm('parent_note')}
+                      startIcon={<ItemIcon name={branding.parentNotes.icon} size={14} color="#ffffff" />}
+                      sx={{
+                        fontWeight: 700,
+                        px: 1.25,
+                        borderRadius: 1,
+                        textTransform: 'none',
+                        bgcolor: branding.parentNotes.color,
+                        color: '#ffffff',
+                        '&:hover': { bgcolor: branding.parentNotes.color, opacity: 0.9 },
+                      }}
+                    >
+                      Parent Note
+                    </Button>
+                  </>
                 )}
+                <IconButton
+                  size="small"
+                  aria-label="Close cell panel"
+                  onClick={() => setOpenCellModal(false)}
+                >
+                  <X size={20} />
+                </IconButton>
               </Stack>
-              <Typography variant="caption" color="text.secondary" fontWeight={600}>
-                {selectedDate}
-              </Typography>
             </Box>
-            <Stack direction="row" spacing={1} alignItems="center">
-              {!isFormOpen && (
-                <>
-                  <Button
-                    size="small"
-                    variant="contained"
-                    onClick={() => handleAddNewNoteForm('school_work')}
-                    startIcon={<Plus size={15} />}
-                    sx={{
-                      fontWeight: 700,
-                      px: 1.25,
-                      textTransform: 'none',
-                      bgcolor: branding.notes.color,
-                      color: '#ffffff',
-                      '&:hover': { bgcolor: branding.notes.color, opacity: 0.9 },
-                    }}
-                  >
-                    School Work
-                  </Button>
-                  <Button
-                    size="small"
-                    variant="contained"
-                    onClick={() => handleAddNewNoteForm('parent_note')}
-                    startIcon={<ItemIcon name={branding.parentNotes.icon} size={14} color="#ffffff" />}
-                    sx={{
-                      fontWeight: 700,
-                      px: 1.25,
-                      textTransform: 'none',
-                      bgcolor: branding.parentNotes.color,
-                      color: '#ffffff',
-                      '&:hover': { bgcolor: branding.parentNotes.color, opacity: 0.9 },
-                    }}
-                  >
-                    Parent Note
-                  </Button>
-                </>
-              )}
-              <IconButton size="small" onClick={() => setOpenCellModal(false)}>
-                <X size={20} />
-              </IconButton>
+
+            {/* Quick Day & Subject Steppers (no need to close drawer to move across the week or down subjects) */}
+            <Stack
+              direction="row"
+              justifyContent="space-between"
+              alignItems="center"
+              spacing={1}
+              mt={1.25}
+              pt={1.25}
+              sx={{ borderTop: '1px dashed', borderColor: 'divider' }}
+            >
+              <Stack direction="row" spacing={0.5} alignItems="center">
+                <Button
+                  size="small"
+                  variant="outlined"
+                  color="inherit"
+                  disabled={weekDates.findIndex((wd) => wd.dateStr === selectedDate) <= 0}
+                  onClick={() => handleStepCellDay(-1)}
+                  startIcon={<ChevronLeft size={14} />}
+                  sx={{ textTransform: 'none', fontWeight: 600, fontSize: '0.75rem', py: 0.25, px: 1, borderRadius: 1 }}
+                >
+                  Prev Day
+                </Button>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  color="inherit"
+                  disabled={
+                    weekDates.findIndex((wd) => wd.dateStr === selectedDate) >=
+                    weekDates.length - 1
+                  }
+                  onClick={() => handleStepCellDay(1)}
+                  endIcon={<ChevronRight size={14} />}
+                  sx={{ textTransform: 'none', fontWeight: 600, fontSize: '0.75rem', py: 0.25, px: 1, borderRadius: 1 }}
+                >
+                  Next Day
+                </Button>
+              </Stack>
+
+              <Stack direction="row" spacing={0.5} alignItems="center">
+                <Button
+                  size="small"
+                  variant="outlined"
+                  color="inherit"
+                  disabled={
+                    !selectedSubject ||
+                    subjects.findIndex((s) => s.id === selectedSubject.id) <= 0
+                  }
+                  onClick={() => handleStepCellSubject(-1)}
+                  startIcon={<ChevronUp size={14} />}
+                  sx={{ textTransform: 'none', fontWeight: 600, fontSize: '0.75rem', py: 0.25, px: 1, borderRadius: 1 }}
+                >
+                  Prev Subject
+                </Button>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  color="inherit"
+                  disabled={
+                    !selectedSubject ||
+                    subjects.findIndex((s) => s.id === selectedSubject.id) >=
+                      subjects.length - 1
+                  }
+                  onClick={() => handleStepCellSubject(1)}
+                  endIcon={<ChevronDown size={14} />}
+                  sx={{ textTransform: 'none', fontWeight: 600, fontSize: '0.75rem', py: 0.25, px: 1, borderRadius: 1 }}
+                >
+                  Next Subject
+                </Button>
+              </Stack>
             </Stack>
           </Box>
 
           {/* Drawer Body Content */}
           <Box sx={{ flex: 1, overflowY: 'auto', p: 3 }}>
-            {/* Quick Syllabus Week / Class Selector for Class-Based Syllabi (e.g., Science) */}
+            {/* Quick Syllabus Day / Class Selector for Class-Based Syllabi (Scoped to This Day by default) */}
             {selectedSubject &&
               (() => {
                 const subCfg = parseRecurringConfig(
@@ -3128,8 +4109,7 @@ function PlannerContent() {
                     sx={{
                       p: 2,
                       mb: 2.5,
-                      borderRadius: 2,
-                      borderLeft: `4px solid ${selectedSubject.color || '#2e7d32'}`,
+                      borderRadius: 1,
                       bgcolor: 'action.hover',
                     }}
                   >
@@ -3138,68 +4118,34 @@ function PlannerContent() {
                       justifyContent="space-between"
                       alignItems="center"
                       mb={1.25}
+                      flexWrap="wrap"
+                      gap={1}
                     >
-                      <Typography variant="subtitle2" fontWeight={800}>
-                        {activeSyl?.course_title || `${selectedSubject.name} Syllabus`}
-                      </Typography>
+                      <Stack direction="row" spacing={1} alignItems="center">
+                        <Box
+                          sx={{
+                            width: 8,
+                            height: 8,
+                            borderRadius: '50%',
+                            bgcolor: selectedSubject.color || 'success.main',
+                            flexShrink: 0,
+                          }}
+                        />
+                        <Typography variant="subtitle2" fontWeight={700}>
+                          {activeSyl?.course_title || `${selectedSubject.name} Syllabus`}
+                        </Typography>
+                      </Stack>
                       <Chip
                         size="small"
                         label={`Week ${subResolved.week_num} · Class ${defaultCellClassNum}`}
                         color="success"
                         variant="outlined"
-                        sx={{ fontWeight: 700, fontSize: '0.68rem' }}
+                        sx={{ fontWeight: 700, fontSize: '0.75rem' }}
                       />
                     </Stack>
 
                     <Stack spacing={1.25}>
-                      {allSyllabi.length > 1 && (
-                        <TextField
-                          select
-                          size="small"
-                          label="Active Syllabus"
-                          value={activeSyl?.id || allSyllabi[0].id || ''}
-                          onChange={(e) =>
-                            handleSwitchActiveSyllabus(selectedSubject.id, e.target.value)
-                          }
-                          fullWidth
-                          SelectProps={{ native: true }}
-                        >
-                          {allSyllabi.map((s, idx) => (
-                            <option key={s.id || idx} value={s.id || `syllabus-${idx + 1}`}>
-                              {s.course_title} ({s.days.length} classes)
-                            </option>
-                          ))}
-                        </TextField>
-                      )}
-
-                      <TextField
-                        select
-                        size="small"
-                        label="Populate Full Week Schedule (Select Week 1–35)"
-                        value={subResolved.week_num}
-                        onChange={(e) => {
-                          const nextWk = Math.max(1, parseInt(e.target.value, 10) || 1);
-                          const wkMeta = weekOptionsMap.get(nextWk);
-                          const firstCls = wkMeta ? wkMeta.firstClass : (nextWk - 1) * 3 + 1;
-                          handleUpdateSubjectOverride(
-                            selectedSubject.id,
-                            { week_num: nextWk, class_num: firstCls },
-                            true
-                          );
-                        }}
-                        fullWidth
-                        SelectProps={{ native: true }}
-                      >
-                        {Array.from(weekOptionsMap.entries())
-                          .sort((a, b) => a[0] - b[0])
-                          .map(([wkNum, meta]) => (
-                            <option key={wkNum} value={wkNum}>
-                              Week {wkNum} (Classes {meta.firstClass}–{meta.lastClass})
-                              {meta.unit ? ` — ${meta.unit}` : ''}
-                            </option>
-                          ))}
-                      </TextField>
-
+                      {/* Primary Cell Action: Populate This Day Only */}
                       <TextField
                         select
                         size="small"
@@ -3369,7 +4315,7 @@ function PlannerContent() {
                         <Box
                           sx={{
                             p: 1.25,
-                            borderRadius: 1.5,
+                            borderRadius: 1,
                             bgcolor: 'background.paper',
                             border: '1px solid',
                             borderColor: 'success.light',
@@ -3385,6 +4331,86 @@ function PlannerContent() {
                           )}
                         </Box>
                       )}
+
+                      {/* Secondary Progressive-Disclosure Toggle: Full-Week Schedule Override */}
+                      <Box>
+                        <Button
+                          size="small"
+                          color="inherit"
+                          onClick={() => setShowFullWeekSyllabusInCell((prev) => !prev)}
+                          endIcon={
+                            showFullWeekSyllabusInCell ? (
+                              <ChevronUp size={14} />
+                            ) : (
+                              <ChevronDown size={14} />
+                            )
+                          }
+                          sx={{
+                            textTransform: 'none',
+                            fontWeight: 600,
+                            fontSize: '0.75rem',
+                            color: 'text.secondary',
+                            p: 0,
+                          }}
+                        >
+                          {showFullWeekSyllabusInCell
+                            ? 'Hide Full-Week Syllabus Override'
+                            : 'Adjust Full-Week Syllabus Schedule (Mon–Fri)…'}
+                        </Button>
+
+                        {showFullWeekSyllabusInCell && (
+                          <Stack spacing={1.25} mt={1.25}>
+                            {allSyllabi.length > 1 && (
+                              <TextField
+                                select
+                                size="small"
+                                label="Active Syllabus"
+                                value={activeSyl?.id || allSyllabi[0].id || ''}
+                                onChange={(e) =>
+                                  handleSwitchActiveSyllabus(selectedSubject.id, e.target.value)
+                                }
+                                fullWidth
+                                SelectProps={{ native: true }}
+                              >
+                                {allSyllabi.map((s, idx) => (
+                                  <option key={s.id || idx} value={s.id || `syllabus-${idx + 1}`}>
+                                    {s.course_title} ({s.days.length} classes)
+                                  </option>
+                                ))}
+                              </TextField>
+                            )}
+
+                            <TextField
+                              select
+                              size="small"
+                              label="Populate Full Week Schedule (Select Week 1–35)"
+                              value={subResolved.week_num}
+                              onChange={(e) => {
+                                const nextWk = Math.max(1, parseInt(e.target.value, 10) || 1);
+                                const wkMeta = weekOptionsMap.get(nextWk);
+                                const firstCls = wkMeta ? wkMeta.firstClass : (nextWk - 1) * 3 + 1;
+                                handleUpdateSubjectOverride(
+                                  selectedSubject.id,
+                                  { week_num: nextWk, class_num: firstCls },
+                                  true
+                                );
+                              }}
+                              fullWidth
+                              SelectProps={{ native: true }}
+                              helperText="Changes the week counter and refreshes all Mon/Wed/Fri cells for this subject."
+                            >
+                              {Array.from(weekOptionsMap.entries())
+                                .sort((a, b) => a[0] - b[0])
+                                .map(([wkNum, meta]) => (
+                                  <option key={wkNum} value={wkNum}>
+                                    Week {wkNum} (Classes {meta.firstClass}–{meta.lastClass})
+                                    {meta.unit ? ` — ${meta.unit}` : ''}
+                                  </option>
+                                ))}
+                            </TextField>
+                          </Stack>
+                        )}
+                      </Box>
                     </Stack>
                   </Paper>
                 );
@@ -3392,15 +4418,75 @@ function PlannerContent() {
 
             {/* Section 1: School Work & Parent Notes List / Form */}
             <Box mb={3}>
-              <Typography variant="subtitle2" fontWeight={700} color="primary.main" mb={1.5} display="flex" alignItems="center" gap={1}>
-                <FileText size={18} />
-                School Work &amp; Parent Notes
-              </Typography>
+              <Box
+                display="flex"
+                justifyContent="space-between"
+                alignItems="center"
+                mb={1.5}
+                flexWrap="wrap"
+                gap={1}
+              >
+                <Typography variant="subtitle2" fontWeight={700} color="primary.main" display="flex" alignItems="center" gap={1}>
+                  <FileText size={18} />
+                  School Work &amp; Parent Notes
+                </Typography>
+
+                {/* When auto-editing a single note, allow adding a second item or viewing all notes */}
+                {isFormOpen && editingNoteId && (
+                  <Stack direction="row" spacing={0.75} alignItems="center">
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      onClick={() => handleAddNewNoteForm('school_work')}
+                      startIcon={<Plus size={13} />}
+                      sx={{
+                        textTransform: 'none',
+                        fontWeight: 600,
+                        fontSize: '0.75rem',
+                        py: 0.25,
+                        px: 1,
+                        borderRadius: 1,
+                      }}
+                    >
+                      Add 2nd Note
+                    </Button>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      color="success"
+                      startIcon={<Sparkles size={13} />}
+                      onClick={() => {
+                        const targetNote = parentNotes.find((n) => n.id === editingNoteId);
+                        if (!targetNote) return;
+                        setUnifiedEditAssignment(null);
+                        setUnifiedPromotedNote({
+                          id: targetNote.id,
+                          title: stripParentNoteMarker(targetNote.title),
+                          description: stripParentNoteMarker(targetNote.description),
+                          subject_id: targetNote.subject_id,
+                          note_date: targetNote.note_date,
+                        });
+                        setOpenUnifiedModal(true);
+                      }}
+                      sx={{
+                        textTransform: 'none',
+                        fontWeight: 600,
+                        fontSize: '0.75rem',
+                        py: 0.25,
+                        px: 1,
+                        borderRadius: 1,
+                      }}
+                    >
+                      Promote to Graded
+                    </Button>
+                  </Stack>
+                )}
+              </Box>
 
               {/* IF FORM IS OPEN (creating new item or editing an existing item) */}
               {isFormOpen ? (
-                <Box p={2.5} sx={{ bgcolor: 'action.hover', borderRadius: 2, border: '1px solid', borderColor: 'divider' }}>
-                  <Typography variant="subtitle2" fontWeight={800} mb={1.5}>
+                <Box p={2.5} sx={{ bgcolor: 'action.hover', borderRadius: 1, border: '1px solid', borderColor: 'divider' }}>
+                  <Typography variant="subtitle2" fontWeight={700} mb={1.5}>
                     {editingNoteId
                       ? cellNoteCategory === 'parent_note'
                         ? 'Edit Parent Note'
@@ -3431,6 +4517,7 @@ function PlannerContent() {
                           sx={{
                             flex: 1,
                             fontWeight: 700,
+                            borderRadius: 1,
                             textTransform: 'none',
                             bgcolor: cellNoteCategory === 'school_work' ? branding.notes.color : 'transparent',
                             borderColor: branding.notes.color,
@@ -3457,6 +4544,7 @@ function PlannerContent() {
                           sx={{
                             flex: 1,
                             fontWeight: 700,
+                            borderRadius: 1,
                             textTransform: 'none',
                             bgcolor: cellNoteCategory === 'parent_note' ? branding.parentNotes.color : 'transparent',
                             borderColor: branding.parentNotes.color,
@@ -3500,7 +4588,7 @@ function PlannerContent() {
                         size="small"
                         variant="outlined"
                         onClick={() => handleInsertFormatting('bullet')}
-                        sx={{ fontWeight: 700, px: 1, py: 0.25, fontSize: '0.78rem' }}
+                        sx={{ fontWeight: 700, px: 1, py: 0.25, fontSize: '0.78rem', borderRadius: 1 }}
                       >
                         • Bullet List
                       </Button>
@@ -3510,7 +4598,7 @@ function PlannerContent() {
                         color="primary"
                         onClick={() => handleInsertFormatting('checkbox')}
                         startIcon={<CheckSquare size={14} />}
-                        sx={{ fontWeight: 700, px: 1, py: 0.25, fontSize: '0.78rem' }}
+                        sx={{ fontWeight: 700, px: 1, py: 0.25, fontSize: '0.78rem', borderRadius: 1 }}
                       >
                         + Checkbox Item
                       </Button>
@@ -3537,8 +4625,8 @@ function PlannerContent() {
 
                     {/* Live Student Planner Preview */}
                     {(cellNoteHeader.trim() || cellNoteDesc.trim()) && (
-                      <Box p={2} sx={{ bgcolor: 'background.paper', borderRadius: 2, border: '1px dashed', borderColor: 'divider' }}>
-                        <Typography variant="caption" fontWeight={800} color="text.secondary" display="block" mb={0.75}>
+                      <Box p={2} sx={{ bgcolor: 'background.paper', borderRadius: 1, border: '1px dashed', borderColor: 'divider' }}>
+                        <Typography variant="caption" fontWeight={700} color="text.secondary" display="block" mb={0.75}>
                           Student Planner Preview:
                         </Typography>
                         {(() => {
@@ -3563,39 +4651,80 @@ function PlannerContent() {
                     )}
 
                     {/* Action buttons inside form */}
-                    <Stack direction="row" spacing={1.5} justifyContent="flex-end" pt={1}>
-                      {parentNotes.some((n) => n.subject_id === selectedSubject?.id && n.note_date === selectedDate) && (
+                    <Stack direction="row" spacing={1} justifyContent="space-between" alignItems="center" pt={1} flexWrap="wrap" useFlexGap>
+                      <Box>
+                        {editingNoteId && (
+                          confirmDeleteNoteId === editingNoteId ? (
+                            <Stack direction="row" spacing={0.75} alignItems="center">
+                              <Button
+                                size="small"
+                                variant="contained"
+                                color="error"
+                                onClick={() => handleDeleteSingleParentNote(editingNoteId)}
+                                startIcon={<Trash2 size={14} />}
+                                sx={{ textTransform: 'none', fontWeight: 700, fontSize: '0.75rem', borderRadius: 1 }}
+                              >
+                                Confirm Delete
+                              </Button>
+                              <Button
+                                size="small"
+                                color="inherit"
+                                onClick={() => setConfirmDeleteNoteId(null)}
+                                sx={{ textTransform: 'none', fontSize: '0.75rem' }}
+                              >
+                                Keep
+                              </Button>
+                            </Stack>
+                          ) : (
+                            <Button
+                              size="small"
+                              color="error"
+                              onClick={() => setConfirmDeleteNoteId(editingNoteId)}
+                              startIcon={<Trash2 size={14} />}
+                              sx={{ textTransform: 'none', fontWeight: 600, fontSize: '0.75rem', borderRadius: 1 }}
+                            >
+                              Delete Note
+                            </Button>
+                          )
+                        )}
+                      </Box>
+
+                      <Stack direction="row" spacing={1.25} alignItems="center">
+                        {parentNotes.filter((n) => n.subject_id === selectedSubject?.id && n.note_date === selectedDate).length > 1 && (
+                          <Button
+                            size="small"
+                            color="inherit"
+                            onClick={() => {
+                              setEditingNoteId(null);
+                              setCellNoteHeader('');
+                              setCellNoteDesc('');
+                              setIsFormOpen(false);
+                              setConfirmDeleteNoteId(null);
+                            }}
+                            sx={{ textTransform: 'none' }}
+                          >
+                            All Notes ({parentNotes.filter((n) => n.subject_id === selectedSubject?.id && n.note_date === selectedDate).length})
+                          </Button>
+                        )}
                         <Button
-                          size="small"
-                          color="inherit"
-                          onClick={() => {
-                            setEditingNoteId(null);
-                            setCellNoteHeader('');
-                            setCellNoteDesc('');
-                            setIsFormOpen(false);
-                          }}
+                          variant="contained"
+                          color="primary"
+                          onClick={handleSaveCellNote}
+                          disabled={savingNote || (!cellNoteHeader.trim() && !cellNoteDesc.trim())}
+                          startIcon={<Save size={16} />}
+                          sx={{ fontWeight: 700, borderRadius: 1, textTransform: 'none' }}
                         >
-                          Cancel
+                          {savingNote
+                            ? 'Saving...'
+                            : editingNoteId
+                            ? cellNoteCategory === 'parent_note'
+                              ? 'Update Parent Note'
+                              : 'Update School Work'
+                            : cellNoteCategory === 'parent_note'
+                            ? 'Save Parent Note'
+                            : 'Save School Work'}
                         </Button>
-                      )}
-                      <Button
-                        variant="contained"
-                        color="primary"
-                        onClick={handleSaveCellNote}
-                        disabled={savingNote || (!cellNoteHeader.trim() && !cellNoteDesc.trim())}
-                        startIcon={<Save size={16} />}
-                        sx={{ fontWeight: 700 }}
-                      >
-                        {savingNote
-                          ? 'Saving...'
-                          : editingNoteId
-                          ? cellNoteCategory === 'parent_note'
-                            ? 'Update Parent Note'
-                            : 'Update School Work'
-                          : cellNoteCategory === 'parent_note'
-                          ? 'Save Parent Note'
-                          : 'Save School Work'}
-                      </Button>
+                      </Stack>
                     </Stack>
                   </Stack>
                 </Box>
@@ -3611,7 +4740,7 @@ function PlannerContent() {
                       const itemCat = getPlannerNoteCategory(n.title, n.description);
                       const isPNote = itemCat === 'parent_note';
                       return (
-                        <Card key={n.id} variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+                        <Card key={n.id} variant="outlined" sx={{ p: 2, borderRadius: 1 }}>
                           <Box display="flex" justifyContent="space-between" alignItems="flex-start" gap={1} mb={1}>
                             <Stack direction="row" spacing={0.75} alignItems="center">
                               <ItemIcon
@@ -3621,7 +4750,7 @@ function PlannerContent() {
                               />
                               <Typography
                                 variant="caption"
-                                fontWeight={800}
+                                fontWeight={700}
                                 sx={{ color: isPNote ? branding.parentNotes.color : branding.notes.color }}
                               >
                                 {isPNote ? 'Parent Note' : 'School Work'} #{idx + 1}
@@ -3644,16 +4773,38 @@ function PlannerContent() {
                                   });
                                   setOpenUnifiedModal(true);
                                 }}
-                                sx={{ fontWeight: 700, fontSize: 11, py: 0.25 }}
+                                sx={{ fontWeight: 700, fontSize: '0.75rem', py: 0.25, borderRadius: 1, textTransform: 'none' }}
                               >
                                 Promote to Graded
                               </Button>
-                              <IconButton size="small" color="primary" onClick={() => handleStartEditNote(n)}>
+                              <IconButton
+                                size="small"
+                                color="primary"
+                                aria-label="Edit note"
+                                onClick={() => handleStartEditNote(n)}
+                              >
                                 <Edit2 size={16} />
                               </IconButton>
-                              <IconButton size="small" color="error" onClick={() => handleDeleteSingleParentNote(n.id)}>
-                                <Trash2 size={16} />
-                              </IconButton>
+                              {confirmDeleteNoteId === n.id ? (
+                                <Button
+                                  size="small"
+                                  variant="contained"
+                                  color="error"
+                                  onClick={() => handleDeleteSingleParentNote(n.id)}
+                                  sx={{ fontWeight: 700, fontSize: '0.75rem', py: 0.25, borderRadius: 1, textTransform: 'none' }}
+                                >
+                                  Confirm
+                                </Button>
+                              ) : (
+                                <IconButton
+                                  size="small"
+                                  color="error"
+                                  aria-label="Delete note"
+                                  onClick={() => setConfirmDeleteNoteId(n.id)}
+                                >
+                                  <Trash2 size={16} />
+                                </IconButton>
+                              )}
                             </Stack>
                           </Box>
 
@@ -3679,6 +4830,7 @@ function PlannerContent() {
                       startIcon={<ItemIcon name={branding.notes.icon} size={15} color={branding.notes.color} />}
                       sx={{
                         fontWeight: 700,
+                        borderRadius: 1,
                         textTransform: 'none',
                         borderColor: branding.notes.color,
                         color: branding.notes.color,
@@ -3696,6 +4848,7 @@ function PlannerContent() {
                       startIcon={<ItemIcon name={branding.parentNotes.icon} size={15} color={branding.parentNotes.color} />}
                       sx={{
                         fontWeight: 700,
+                        borderRadius: 1,
                         textTransform: 'none',
                         borderColor: branding.parentNotes.color,
                         color: branding.parentNotes.color,
@@ -3720,16 +4873,16 @@ function PlannerContent() {
                 <FileText size={18} />
                 School Assignments &amp; Grades
               </Typography>
-              <Stack direction="row" spacing={1}>
+              <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
                 <Button
                   size="small"
                   variant="outlined"
                   color="inherit"
                   startIcon={<Sliders size={14} />}
                   onClick={() => setOpenTypesManagerModal(true)}
-                  sx={{ fontWeight: 700, fontSize: 11 }}
+                  sx={{ fontWeight: 700, fontSize: '0.75rem', borderRadius: 1, textTransform: 'none' }}
                 >
-                  Edit Assignment Types
+                  Assignment Types
                 </Button>
                 <Button
                   size="small"
@@ -3741,9 +4894,9 @@ function PlannerContent() {
                     setUnifiedPromotedNote(null);
                     setOpenUnifiedModal(true);
                   }}
-                  sx={{ fontWeight: 700, fontSize: 11 }}
+                  sx={{ fontWeight: 700, fontSize: '0.75rem', borderRadius: 1, textTransform: 'none' }}
                 >
-                  Full Graded / Recurring Modal
+                  New Graded / Recurring
                 </Button>
               </Stack>
             </Box>
@@ -3762,7 +4915,7 @@ function PlannerContent() {
                       variant="outlined"
                       sx={{
                         p: 1.25,
-                        borderRadius: 1.5,
+                        borderRadius: 1,
                         display: 'flex',
                         justifyContent: 'space-between',
                         alignItems: 'center',
@@ -3770,8 +4923,14 @@ function PlannerContent() {
                       }}
                     >
                       <Box>
-                        <Stack direction="row" spacing={0.75} alignItems="center">
-                          <Chip label={ca.category} size="small" color="primary" variant="outlined" sx={{ height: 20, fontSize: 10, fontWeight: 700 }} />
+                        <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap">
+                          <Chip
+                            label={ca.category}
+                            size="small"
+                            color="primary"
+                            variant="outlined"
+                            sx={{ height: 22, fontSize: '0.75rem', fontWeight: 700 }}
+                          />
                           <Typography variant="body2" fontWeight={700}>
                             {ca.title}
                           </Typography>
@@ -3780,7 +4939,7 @@ function PlannerContent() {
                               label={`${ca.percentage_score.toFixed(1)}%`}
                               size="small"
                               color="success"
-                              sx={{ height: 20, fontSize: 10, fontWeight: 800 }}
+                              sx={{ height: 22, fontSize: '0.75rem', fontWeight: 700 }}
                             />
                           )}
                         </Stack>
@@ -3790,7 +4949,7 @@ function PlannerContent() {
                         variant="outlined"
                         startIcon={<Edit2 size={13} />}
                         onClick={() => handleOpenAssignmentFromPlanner(ca)}
-                        sx={{ fontWeight: 700, fontSize: 11 }}
+                        sx={{ fontWeight: 700, fontSize: '0.75rem', borderRadius: 1, textTransform: 'none', flexShrink: 0 }}
                       >
                         Grade / Edit
                       </Button>
@@ -3800,80 +4959,96 @@ function PlannerContent() {
               );
             })()}
 
-            <Stack spacing={2} pt={0.5}>
-              <TextField
-                fullWidth
-                size="small"
-                label="Quick Add Assignment Title"
-                placeholder="e.g. Math Worksheet 4B, History Essay"
-                value={assignmentTitle}
-                onChange={(e) => setAssignmentTitle(e.target.value)}
-              />
-              <Stack direction="row" spacing={2}>
-                <TextField
-                  fullWidth
-                  select
-                  SelectProps={{ native: true }}
-                  size="small"
-                  label="Assignment Type"
-                  value={assignmentCategory}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    if (isAssignmentCategory(val)) setAssignmentCategory(val);
-                  }}
-                  sx={{ flex: 1 }}
-                >
-                  {assignmentTypes.length > 0 ? (
-                    assignmentTypes.map((t) => (
-                      <option key={t.slug} value={t.slug}>
-                        {t.name}
-                      </option>
-                    ))
-                  ) : (
-                    <>
-                      <option value="homework">Homework</option>
-                      <option value="project">Project</option>
-                      <option value="test">Test</option>
-                      <option value="quiz">Quiz</option>
-                      <option value="reading">Reading</option>
-                      <option value="paper">Paper</option>
-                    </>
-                  )}
-                </TextField>
-                <TextField
-                  fullWidth
-                  select
-                  SelectProps={{ native: true }}
-                  size="small"
-                  label="Priority"
-                  value={assignmentPriority}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    if (isAssignmentPriority(val)) setAssignmentPriority(val);
-                  }}
-                  sx={{ flex: 1 }}
-                >
-                  <option value="low">Low</option>
-                  <option value="medium">Medium</option>
-                  <option value="high">High</option>
-                </TextField>
-              </Stack>
+            {/* Progressive-Disclosure Quick Add Assignment Form */}
+            <Box>
               <Button
+                size="small"
                 variant="outlined"
                 color="success"
-                onClick={handleCreateCellAssignment}
-                disabled={savingAssignment || !assignmentTitle.trim()}
-                startIcon={<Plus size={16} />}
-                sx={{ fontWeight: 700, alignSelf: 'flex-start' }}
+                onClick={() => setShowQuickAddAssignment((prev) => !prev)}
+                startIcon={showQuickAddAssignment ? <ChevronUp size={15} /> : <Plus size={15} />}
+                sx={{ fontWeight: 700, fontSize: '0.75rem', borderRadius: 1, textTransform: 'none' }}
               >
-                {savingAssignment ? 'Adding...' : 'Quick Add Assignment'}
+                {showQuickAddAssignment ? 'Hide Quick Add Assignment' : 'Quick Add Assignment'}
               </Button>
-            </Stack>
+
+              {showQuickAddAssignment && (
+                <Stack spacing={2} pt={1.5}>
+                  <TextField
+                    fullWidth
+                    size="small"
+                    label="Quick Add Assignment Title"
+                    placeholder="e.g. Math Worksheet 4B, History Essay"
+                    value={assignmentTitle}
+                    onChange={(e) => setAssignmentTitle(e.target.value)}
+                  />
+                  <Stack direction="row" spacing={2}>
+                    <TextField
+                      fullWidth
+                      select
+                      SelectProps={{ native: true }}
+                      size="small"
+                      label="Assignment Type"
+                      value={assignmentCategory}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (isAssignmentCategory(val)) setAssignmentCategory(val);
+                      }}
+                      sx={{ flex: 1 }}
+                    >
+                      {assignmentTypes.length > 0 ? (
+                        assignmentTypes.map((t) => (
+                          <option key={t.slug} value={t.slug}>
+                            {t.name}
+                          </option>
+                        ))
+                      ) : (
+                        <>
+                          <option value="homework">Homework</option>
+                          <option value="project">Project</option>
+                          <option value="test">Test</option>
+                          <option value="quiz">Quiz</option>
+                          <option value="reading">Reading</option>
+                          <option value="paper">Paper</option>
+                        </>
+                      )}
+                    </TextField>
+                    <TextField
+                      fullWidth
+                      select
+                      SelectProps={{ native: true }}
+                      size="small"
+                      label="Priority"
+                      value={assignmentPriority}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (isAssignmentPriority(val)) setAssignmentPriority(val);
+                      }}
+                      sx={{ flex: 1 }}
+                    >
+                      <option value="low">Low</option>
+                      <option value="medium">Medium</option>
+                      <option value="high">High</option>
+                    </TextField>
+                  </Stack>
+                  <Button
+                    variant="contained"
+                    color="success"
+                    onClick={handleCreateCellAssignment}
+                    disabled={savingAssignment || !assignmentTitle.trim()}
+                    startIcon={<Plus size={16} />}
+                    sx={{ fontWeight: 700, alignSelf: 'flex-start', borderRadius: 1, textTransform: 'none' }}
+                  >
+                    {savingAssignment ? 'Adding...' : 'Add Assignment'}
+                  </Button>
+                </Stack>
+              )}
+            </Box>
           </Box>
 
           {/* Drawer Footer */}
           <Box px={3} py={2} sx={{ borderTop: 1, borderColor: 'divider', bgcolor: 'action.hover', display: 'flex', justifyContent: 'flex-end' }}>
-            <Button onClick={() => setOpenCellModal(false)} variant="outlined" color="inherit" sx={{ fontWeight: 700 }}>
+            <Button onClick={() => setOpenCellModal(false)} variant="outlined" color="inherit" sx={{ fontWeight: 700, borderRadius: 1, textTransform: 'none' }}>
               Close Panel
             </Button>
           </Box>
@@ -3903,7 +5078,7 @@ function PlannerContent() {
               width: '100%',
               maxWidth: 620,
               maxHeight: '90vh',
-              borderRadius: 3,
+              borderRadius: 1,
               display: 'flex',
               flexDirection: 'column',
               overflow: 'hidden',
@@ -3927,7 +5102,7 @@ function PlannerContent() {
                   <Copy size={20} color={theme.palette.primary.main} />
                 )}
                 <Box>
-                  <Typography variant="h6" fontWeight={800}>
+                  <Typography variant="h6" fontWeight={700}>
                     {populateModalMode === 'populate_and_pull'
                       ? populateOverwriteExisting
                         ? 'Sync / Overwrite Week Placeholders'
@@ -3939,7 +5114,11 @@ function PlannerContent() {
                   </Typography>
                 </Box>
               </Stack>
-              <IconButton size="small" onClick={() => setOpenPopulateModal(false)}>
+              <IconButton
+                size="small"
+                aria-label="Close populate modal"
+                onClick={() => setOpenPopulateModal(false)}
+              >
                 <X size={18} />
               </IconButton>
             </Box>
@@ -3951,7 +5130,7 @@ function PlannerContent() {
                   sx={{
                     p: 2,
                     mb: 2.5,
-                    borderRadius: 2,
+                    borderRadius: 1,
                     bgcolor: 'action.hover',
                   }}
                 >
@@ -3966,7 +5145,7 @@ function PlannerContent() {
                 </Paper>
               )}
 
-              <Typography variant="subtitle2" fontWeight={800} mb={0.5}>
+              <Typography variant="subtitle2" fontWeight={700} mb={0.5}>
                 Pull Forward Sidebar Sections from Previous Week ({prevWeekDateStr})
               </Typography>
               <Typography variant="caption" color="text.secondary" display="block" mb={2}>
@@ -3981,7 +5160,7 @@ function PlannerContent() {
                   </Typography>
                 </Box>
               ) : !prevWeekSettings ? (
-                <Paper variant="outlined" sx={{ p: 2, borderRadius: 2, textAlign: 'center' }}>
+                <Paper variant="outlined" sx={{ p: 2, borderRadius: 1, textAlign: 'center' }}>
                   <Typography variant="body2" color="text.secondary">
                     No saved sidebar items (To-Do, Top 3, For Next Month, or Notes) were found for the previous week ({prevWeekDateStr}).
                   </Typography>
@@ -3992,7 +5171,7 @@ function PlannerContent() {
                   {(() => {
                     const nonEmptyTodos = prevWeekSettings.todos.filter((t) => t.trim().length > 0);
                     return (
-                      <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2 }}>
+                      <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 1 }}>
                         <FormControlLabel
                           control={
                             <Checkbox
@@ -4033,7 +5212,7 @@ function PlannerContent() {
                       (p) => p.trim().length > 0
                     );
                     return (
-                      <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2 }}>
+                      <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 1 }}>
                         <FormControlLabel
                           control={
                             <Checkbox
@@ -4069,7 +5248,7 @@ function PlannerContent() {
                   })()}
 
                   {/* 3. For Next Month Preview */}
-                  <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2 }}>
+                  <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 1 }}>
                     <FormControlLabel
                       control={
                         <Checkbox
@@ -4103,7 +5282,7 @@ function PlannerContent() {
                   </Paper>
 
                   {/* 4. Notes Preview */}
-                  <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2 }}>
+                  <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 1 }}>
                     <FormControlLabel
                       control={
                         <Checkbox
@@ -4155,7 +5334,7 @@ function PlannerContent() {
               <Button
                 onClick={() => setOpenPopulateModal(false)}
                 color="inherit"
-                sx={{ textTransform: 'none', fontWeight: 600 }}
+                sx={{ textTransform: 'none', fontWeight: 600, borderRadius: 1 }}
               >
                 Cancel
               </Button>
@@ -4167,7 +5346,7 @@ function PlannerContent() {
                     color="primary"
                     disabled={populatingWeek}
                     onClick={() => handlePopulateWeek(populateOverwriteExisting, false)}
-                    sx={{ textTransform: 'none', fontWeight: 700 }}
+                    sx={{ textTransform: 'none', fontWeight: 700, borderRadius: 1 }}
                   >
                     Populate Placeholders Only
                   </Button>
@@ -4177,7 +5356,7 @@ function PlannerContent() {
                     disabled={populatingWeek}
                     startIcon={<Sparkles size={16} />}
                     onClick={() => handlePopulateWeek(populateOverwriteExisting, true)}
-                    sx={{ textTransform: 'none', fontWeight: 700 }}
+                    sx={{ textTransform: 'none', fontWeight: 700, borderRadius: 1 }}
                   >
                     {populatingWeek
                       ? 'Populating…'
@@ -4196,7 +5375,7 @@ function PlannerContent() {
                   }
                   startIcon={<Copy size={16} />}
                   onClick={handleConfirmPullForwardOnly}
-                  sx={{ textTransform: 'none', fontWeight: 700 }}
+                  sx={{ textTransform: 'none', fontWeight: 700, borderRadius: 1 }}
                 >
                   {populatingWeek ? 'Pulling Forward…' : 'Pull Selected Fields Forward'}
                 </Button>
@@ -4225,10 +5404,10 @@ function PlannerContent() {
           <Paper
             elevation={12}
             onClick={(e) => e.stopPropagation()}
-            sx={{ width: '100%', maxWidth: 440, borderRadius: 3, overflow: 'hidden' }}
+            sx={{ width: '100%', maxWidth: 440, borderRadius: 1, overflow: 'hidden' }}
           >
             <Box px={3} py={2} sx={{ borderBottom: 1, borderColor: 'divider' }}>
-              <Typography variant="h6" fontWeight={800}>
+              <Typography variant="h6" fontWeight={700}>
                 Reset Week ({weekStartDate})?
               </Typography>
             </Box>
@@ -4241,7 +5420,7 @@ function PlannerContent() {
               </Typography>
             </Box>
             <Box px={3} py={2} sx={{ borderTop: 1, borderColor: 'divider', display: 'flex', justifyContent: 'flex-end', gap: 1.5 }}>
-              <Button onClick={() => setConfirmResetOpen(false)} color="inherit">
+              <Button onClick={() => setConfirmResetOpen(false)} color="inherit" sx={{ textTransform: 'none', borderRadius: 1 }}>
                 Cancel
               </Button>
               <Button
@@ -4250,7 +5429,7 @@ function PlannerContent() {
                 onClick={handleResetWeek}
                 disabled={resettingWeek}
                 startIcon={<RotateCcw size={16} />}
-                sx={{ fontWeight: 700 }}
+                sx={{ fontWeight: 700, textTransform: 'none', borderRadius: 1 }}
               >
                 {resettingWeek ? 'Resetting...' : 'Reset Week'}
               </Button>
@@ -4349,10 +5528,36 @@ function PlannerContent() {
           color: #000000;
         }
 
+        @media screen {
+          .planner-print-root.screen-hidden-print-only {
+            display: none !important;
+          }
+
+          .assignment-cell.active-cell-screen {
+            outline: 2px solid #1b5698;
+            outline-offset: -2px;
+            background-color: #f0f6ff;
+          }
+
+          .assignment-cell:focus-visible {
+            outline: 2px solid #1b5698;
+            outline-offset: -2px;
+          }
+        }
+
+        @media screen and (min-width: 1200px) {
+          .planner-print-root.spread-mode {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+            gap: 20px;
+            align-items: start;
+          }
+        }
+
         .print-page {
           background-color: #ffffff;
           border: 1px solid #e0e0e0;
-          border-radius: 8px;
+          border-radius: 6px;
           padding: 24px;
           margin-bottom: 32px;
           box-shadow: 0 4px 12px rgba(0,0,0,0.05);
@@ -4380,6 +5585,7 @@ function PlannerContent() {
           font-size: 14px;
           font-weight: bold;
           color: #000000;
+          white-space: nowrap;
         }
 
         .planner-table {
@@ -4409,6 +5615,7 @@ function PlannerContent() {
           text-align: center;
           font-size: 12px;
           font-weight: bold;
+          white-space: nowrap;
         }
 
         .day-header-col {
@@ -4417,6 +5624,7 @@ function PlannerContent() {
           font-size: 12px;
           font-weight: bold;
           padding: 10px;
+          white-space: nowrap;
         }
 
         .friday-col {

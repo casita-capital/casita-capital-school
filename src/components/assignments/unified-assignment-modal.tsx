@@ -41,6 +41,7 @@ import {
 import toast from 'react-hot-toast';
 import { createClient } from 'src/services/supabase/client';
 import { Json } from 'src/services/supabase/types';
+import { getCachedActiveUserName } from 'src/utils/active-user';
 import {
   DAY_KEYS,
   DAY_LABELS,
@@ -259,6 +260,17 @@ export function ApiGradeOverrideWarningModal({
     setTeacherComments(assignment.teacher_comments || '');
   }, [open, assignment]);
 
+  useEffect(() => {
+    if (!open) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [open, onClose]);
+
   if (!open || !assignment) return null;
 
   const policy = subject
@@ -267,7 +279,7 @@ export function ApiGradeOverrideWarningModal({
         id: '',
         name: 'Course',
         sort_order: 0,
-        color: '#0C74E4',
+        color: '#1b5698',
       });
 
   const apiRaw =
@@ -385,6 +397,9 @@ export function ApiGradeOverrideWarningModal({
 
   return (
     <Box
+      role="dialog"
+      aria-modal="true"
+      aria-label="API Grade Override Warning"
       onClick={onClose}
       sx={{
         position: 'fixed',
@@ -404,7 +419,7 @@ export function ApiGradeOverrideWarningModal({
         sx={{
           width: '100%',
           maxWidth: 620,
-          borderRadius: 2.5,
+          borderRadius: 1,
           border: '3px solid',
           borderColor: 'error.main',
           boxShadow: '0 28px 60px -12px rgba(220, 38, 38, 0.35)',
@@ -907,6 +922,17 @@ export function QuickGradeAssignmentModal({
     setWorkflowStatus(assignment.workflow_status || 'not_started');
   }, [open, assignment, effectiveTypes]);
 
+  useEffect(() => {
+    if (!open) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [open, onClose]);
+
   if (!open || !assignment) return null;
 
   const activeSubjectPolicy = subject
@@ -915,7 +941,7 @@ export function QuickGradeAssignmentModal({
         id: '',
         name: 'Course',
         sort_order: 0,
-        color: '#0C74E4',
+        color: '#1b5698',
       });
 
   const parsedTotalProblems =
@@ -1010,6 +1036,9 @@ export function QuickGradeAssignmentModal({
 
   return (
     <Box
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Quick Grade: ${assignment.title}`}
       onClick={onClose}
       sx={{
         position: 'fixed',
@@ -1029,7 +1058,7 @@ export function QuickGradeAssignmentModal({
         sx={{
           width: '100%',
           maxWidth: 620,
-          borderRadius: 2.5,
+          borderRadius: 1,
           border: '1px solid',
           borderColor: 'divider',
           boxShadow: '0 24px 48px -12px rgba(15, 23, 42, 0.2)',
@@ -1071,7 +1100,7 @@ export function QuickGradeAssignmentModal({
                 {assignment.title}
               </Typography>
             </Stack>
-            <IconButton size="small" onClick={onClose}>
+            <IconButton size="small" aria-label="Close quick grade modal" onClick={onClose}>
               <X size={18} />
             </IconButton>
           </Box>
@@ -1082,7 +1111,7 @@ export function QuickGradeAssignmentModal({
               variant="outlined"
               sx={{
                 p: 2.25,
-                borderRadius: 1.5,
+                borderRadius: 1,
                 bgcolor: isGraded
                   ? alpha(theme.palette.success.main, 0.03)
                   : 'action.hover',
@@ -1204,7 +1233,7 @@ export function QuickGradeAssignmentModal({
                           sx={{
                             p: 1,
                             textAlign: 'center',
-                            borderRadius: 1.25,
+                            borderRadius: 1,
                             bgcolor: 'background.paper',
                           }}
                         >
@@ -1216,7 +1245,7 @@ export function QuickGradeAssignmentModal({
                               fontWeight: 700,
                               letterSpacing: '0.05em',
                               textTransform: 'uppercase',
-                              fontSize: '0.65rem',
+                              fontSize: '0.75rem',
                             }}
                           >
                             GRADE
@@ -1275,7 +1304,7 @@ export function QuickGradeAssignmentModal({
                           sx={{
                             p: 1,
                             textAlign: 'center',
-                            borderRadius: 1.25,
+                            borderRadius: 1,
                             bgcolor: 'background.paper',
                           }}
                         >
@@ -1287,7 +1316,7 @@ export function QuickGradeAssignmentModal({
                               fontWeight: 700,
                               letterSpacing: '0.05em',
                               textTransform: 'uppercase',
-                              fontSize: '0.65rem',
+                              fontSize: '0.75rem',
                             }}
                           >
                             GRADE
@@ -1337,7 +1366,7 @@ export function QuickGradeAssignmentModal({
                           sx={{
                             p: 1,
                             textAlign: 'center',
-                            borderRadius: 1.25,
+                            borderRadius: 1,
                             bgcolor: 'background.paper',
                           }}
                         >
@@ -1349,7 +1378,7 @@ export function QuickGradeAssignmentModal({
                               fontWeight: 700,
                               letterSpacing: '0.05em',
                               textTransform: 'uppercase',
-                              fontSize: '0.65rem',
+                              fontSize: '0.75rem',
                             }}
                           >
                             GRADE
@@ -1774,7 +1803,7 @@ export function UnifiedAssignmentModal({
             id: '',
             name: 'Course',
             sort_order: 0,
-            color: '#0C74E4',
+            color: '#1b5698',
           }),
     [activeSubject]
   );
@@ -1958,10 +1987,7 @@ export function UnifiedAssignmentModal({
     }
 
     setSaving(true);
-    const activeUserName =
-      typeof window !== 'undefined'
-        ? localStorage.getItem('school_active_user_name') || 'Blake Womble'
-        : 'Blake Womble';
+    const activeUserName = getCachedActiveUserName();
     const nowIso = new Date().toISOString();
 
     try {
@@ -2238,10 +2264,24 @@ export function UnifiedAssignmentModal({
     }
   };
 
+  useEffect(() => {
+    if (!open) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !saving) {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [open, saving, onClose]);
+
   if (!open) return null;
 
   return (
     <Box
+      role="dialog"
+      aria-modal="true"
+      aria-label="Assignment Editor"
       onClick={onClose}
       sx={{
         position: 'fixed',
@@ -2262,7 +2302,7 @@ export function UnifiedAssignmentModal({
           width: '100%',
           maxWidth: 660,
           maxHeight: '92vh',
-          borderRadius: 2,
+          borderRadius: 1,
           border: '1px solid',
           borderColor: 'divider',
           boxShadow: '0 24px 48px -12px rgba(15, 23, 42, 0.18)',
@@ -2298,7 +2338,7 @@ export function UnifiedAssignmentModal({
                 sx={{
                   width: 34,
                   height: 34,
-                  borderRadius: 1.5,
+                  borderRadius: 1,
                   bgcolor: alpha(
                     selectedTypeObj?.color || theme.palette.primary.main,
                     0.12
@@ -2359,7 +2399,7 @@ export function UnifiedAssignmentModal({
                   </ToggleButton>
                 </ToggleButtonGroup>
               )}
-              <IconButton size="small" onClick={onClose}>
+              <IconButton size="small" onClick={onClose} aria-label="Close assignment modal">
                 <X size={18} />
               </IconButton>
             </Stack>
@@ -2437,7 +2477,7 @@ export function UnifiedAssignmentModal({
                         variant="outlined"
                         sx={{
                           p: 1.5,
-                          borderRadius: 1.5,
+                          borderRadius: 1,
                           bgcolor: alpha(theme.palette.success.main, 0.05),
                           borderColor: alpha(theme.palette.success.main, 0.3),
                         }}
@@ -2514,7 +2554,7 @@ export function UnifiedAssignmentModal({
                                       label={sup}
                                       color="success"
                                       variant="outlined"
-                                      sx={{ height: 20, fontSize: '0.68rem', fontWeight: 600 }}
+                                      sx={{ height: 20, fontSize: '0.75rem', fontWeight: 600 }}
                                     />
                                   ))}
                                 </Stack>
@@ -2579,7 +2619,7 @@ export function UnifiedAssignmentModal({
                   variant="outlined"
                   sx={{
                     p: 2,
-                    borderRadius: 1.5,
+                    borderRadius: 1,
                     bgcolor: alpha(theme.palette.primary.main, 0.03),
                   }}
                 >
@@ -2725,7 +2765,7 @@ export function UnifiedAssignmentModal({
                     sx={{
                       mt: 1.5,
                       p: 1.25,
-                      borderRadius: 1.25,
+                      borderRadius: 1,
                       bgcolor: 'background.paper',
                     }}
                   >
@@ -2754,7 +2794,7 @@ export function UnifiedAssignmentModal({
                   variant="outlined"
                   sx={{
                     p: 2,
-                    borderRadius: 1.5,
+                    borderRadius: 1,
                     bgcolor: alpha(theme.palette.error.main, 0.06),
                     borderColor: 'error.main',
                     borderWidth: 2,
@@ -2792,7 +2832,7 @@ export function UnifiedAssignmentModal({
                   variant="outlined"
                   sx={{
                     p: 2,
-                    borderRadius: 1.5,
+                    borderRadius: 1,
                     bgcolor: isGraded
                       ? alpha(theme.palette.success.main, 0.025)
                       : 'action.hover',
@@ -2838,7 +2878,7 @@ export function UnifiedAssignmentModal({
                                 onClose();
                               }
                             }}
-                            sx={{ fontSize: '0.68rem', py: 0.2, textTransform: 'none', fontWeight: 700 }}
+                            sx={{ fontSize: '0.75rem', py: 0.2, textTransform: 'none', fontWeight: 700 }}
                           >
                             Revert to API Value
                           </Button>
@@ -2856,7 +2896,7 @@ export function UnifiedAssignmentModal({
                                 onClose();
                               }
                             }}
-                            sx={{ fontSize: '0.68rem', py: 0.2, textTransform: 'none', fontWeight: 700 }}
+                            sx={{ fontSize: '0.75rem', py: 0.2, textTransform: 'none', fontWeight: 700 }}
                           >
                             Revert to Blank
                           </Button>

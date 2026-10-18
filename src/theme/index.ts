@@ -2,8 +2,11 @@ import type { Direction, PaletteMode, Theme } from '@mui/material';
 import { createTheme as createMuiTheme, responsiveFontSizes } from '@mui/material/styles';
 import { Layout } from 'src/contexts/customization';
 import { createOptions as createBaseOptions } from './base/create-options';
+import type { HeadingFontPreset } from './base/create-typography';
 import { createOptions as createDarkOptions } from './dark/create-options';
 import { createOptions as createLightOptions } from './light/create-options';
+
+export type { HeadingFontPreset } from './base/create-typography';
 
 declare module '@mui/material/styles' {
   export interface NeutralColors {
@@ -52,12 +55,14 @@ interface ThemeConfig {
   direction?: Direction;
   paletteMode?: PaletteMode;
   layout: Layout;
+  headingFont?: HeadingFontPreset;
 }
 
 export const createTheme = (config: ThemeConfig): Theme => {
   let theme = createMuiTheme(
     createBaseOptions({
       direction: config.direction,
+      headingFont: config.headingFont,
     }),
     config.paletteMode === 'dark'
       ? createDarkOptions({

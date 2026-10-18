@@ -29,37 +29,38 @@ export type ThemeColors = {
 
 const common = {
   white: '#ffffff',
-  black: '#151821',
-  neutral: '#14191e',
+  black: '#171614',
+  neutral: '#171614',
 };
 
 const baseColors = [
-  { name: 'livingCoral', value: '#ea2012' },
-  { name: 'greenery', value: '#018a3c' },
-  { name: 'ultraViolet', value: '#894AE0' },
-  { name: 'roseQuartz', value: '#da3c42' },
-  { name: 'radiantOrchid', value: '#d427af' },
-  { name: 'tangerineTango', value: '#cf4c10' },
-  { name: 'emerald', value: '#02876f' },
+  { name: 'livingCoral', value: '#b8422e' },
+  { name: 'greenery', value: '#1e6b43' },
+  { name: 'ultraViolet', value: '#6c43b8' },
+  { name: 'roseQuartz', value: '#b83b48' },
+  { name: 'radiantOrchid', value: '#9c2d7c' },
+  { name: 'tangerineTango', value: '#c2511a' },
+  { name: 'emerald', value: '#0d735c' },
   { name: 'honeyGold', value: '#967210' },
-  { name: 'monacoBlue', value: '#0C74E4' },
-  { name: 'darkViolet', value: '#B741FB' },
-  { name: 'royalBlue', value: '#4656E8' },
-  { name: 'success', value: '#248a01' },
-  { name: 'info', value: '#037bcd' },
-  { name: 'warning', value: '#c05a01' },
-  { name: 'error', value: '#F1393B' },
+  { name: 'monacoBlue', value: '#1b5698' },
+  { name: 'darkViolet', value: '#7e38b7' },
+  { name: 'royalBlue', value: '#2e4a8f' },
+  { name: 'success', value: '#1e6f3d' },
+  { name: 'info', value: '#1d6896' },
+  { name: 'warning', value: '#b85d0c' },
+  { name: 'error', value: '#c43235' },
 ];
 
 export const adjustColorForLightTheme = (color: string) => color;
-export const adjustColorForDarkTheme = (color: string) => lighten(color, 0.26);
+export const adjustColorForDarkTheme = (color: string) => lighten(color, 0.34);
 
 export const generateColorScale = (mainColor: string, theme: 'light' | 'dark') => {
-  let adjustedMainColor =
+  const adjustedMainColor =
     theme === 'light' ? adjustColorForLightTheme(mainColor) : adjustColorForDarkTheme(mainColor);
 
-  const contrastRatioWithWhite = getContrastRatio(adjustedMainColor, common.white);
-  const contrastText = contrastRatioWithWhite >= 4.4 ? common.white : common.black;
+  const contrastWithWhite = getContrastRatio(adjustedMainColor, common.white);
+  const contrastWithBlack = getContrastRatio(adjustedMainColor, common.black);
+  const contrastText = contrastWithWhite >= contrastWithBlack ? common.white : common.black;
 
   return {
     light: lighten(adjustedMainColor, 0.3),
@@ -88,17 +89,17 @@ export const generateThemeColors = (): {
 };
 
 export const neutral: NeutralColors = {
-  25: lighten(common.neutral, 0.98),
-  50: lighten(common.neutral, 0.96),
-  100: lighten(common.neutral, 0.93),
-  200: lighten(common.neutral, 0.9),
-  300: lighten(common.neutral, 0.85),
-  400: lighten(common.neutral, 0.77),
-  500: lighten(common.neutral, 0.68),
-  600: lighten(common.neutral, 0.5),
-  700: lighten(common.neutral, 0.4),
-  800: lighten(common.neutral, 0.2),
-  900: common.neutral,
+  25: '#fcfbf8',
+  50: '#f7f4ee',
+  100: '#efeae0',
+  200: '#e2dcd0',
+  300: '#cdc5b6',
+  400: '#9e9688',
+  500: '#787063',
+  600: '#595348',
+  700: '#3f3a32',
+  800: '#26231e',
+  900: '#171614',
 };
 
 const { light: lightThemeColors, dark: darkThemeColors } = generateThemeColors();

@@ -1,5 +1,12 @@
 import type { Metadata } from 'next';
-import { Inter } from 'next/font/google';
+import {
+  DM_Sans,
+  Inter,
+  Newsreader,
+  Nunito,
+  Outfit,
+  Plus_Jakarta_Sans,
+} from 'next/font/google';
 import type { ReactNode } from 'react';
 import { AppUpdateBanner } from 'src/components/base/app-update-banner';
 import { RootThemeProvider } from 'src/components/base/root-theme-provider';
@@ -10,7 +17,33 @@ import { SidebarProvider } from 'src/contexts/sidebar-context';
 import { Layout } from 'src/layouts';
 import './globals.css';
 
-const inter = Inter({ subsets: ['latin'] });
+const inter = Inter({ subsets: ['latin'], variable: '--font-sans' });
+const plusJakarta = Plus_Jakarta_Sans({
+  subsets: ['latin'],
+  weight: ['600', '700', '800'],
+  variable: '--font-jakarta',
+});
+const outfit = Outfit({
+  subsets: ['latin'],
+  weight: ['600', '700'],
+  variable: '--font-outfit',
+});
+const dmSans = DM_Sans({
+  subsets: ['latin'],
+  weight: ['600', '700'],
+  variable: '--font-dmsans',
+});
+const nunito = Nunito({
+  subsets: ['latin'],
+  weight: ['700', '800'],
+  variable: '--font-nunito',
+});
+const newsreader = Newsreader({
+  subsets: ['latin'],
+  weight: ['500', '600', '700'],
+  style: ['normal', 'italic'],
+  variable: '--font-serif',
+});
 
 export const metadata: Metadata = {
   title: 'School App — Weekly Calendar & Tasks',
@@ -18,8 +51,18 @@ export const metadata: Metadata = {
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
+  const fontVars = [
+    inter.className,
+    inter.variable,
+    plusJakarta.variable,
+    outfit.variable,
+    dmSans.variable,
+    nunito.variable,
+    newsreader.variable,
+  ].join(' ');
+
   return (
-    <html lang="en" className={inter.className}>
+    <html lang="en" className={fontVars}>
       <body>
         <CustomizationProvider>
           <SchoolSettingsProvider>

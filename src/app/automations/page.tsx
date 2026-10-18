@@ -3,6 +3,7 @@
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
+  Alert,
   alpha,
   Box,
   Button,
@@ -19,6 +20,7 @@ import {
   MenuItem,
   Paper,
   Select,
+  Skeleton,
   Stack,
   Switch,
   Table,
@@ -120,6 +122,7 @@ function AutomationsContent() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [syllabusDays, setSyllabusDays] = useState<MathSyllabusDay[]>([]);
   const [activeTab, setActiveTab] = useState<'automations' | 'syllabus'>('automations');
@@ -146,7 +149,7 @@ function AutomationsContent() {
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
   const [selectedUploadSubjectId, setSelectedUploadSubjectId] = useState<string>('auto');
   const [newSubjectNameForUpload, setNewSubjectNameForUpload] = useState<string>('');
-  const [newSubjectColorForUpload, setNewSubjectColorForUpload] = useState<string>('#0C74E4');
+  const [newSubjectColorForUpload, setNewSubjectColorForUpload] = useState<string>('#1b5698');
   const [semesterOffsetMode, setSemesterOffsetMode] = useState<'auto' | 'fall_1_32' | 'spring_33_64'>('auto');
   const [uploadingFile, setUploadingFile] = useState<File | null>(null);
   const [analyzingWithGemini, setAnalyzingWithGemini] = useState(false);
@@ -176,6 +179,7 @@ function AutomationsContent() {
   const [scienceUnitFilter, setScienceUnitFilter] = useState<string>('all');
 
   async function loadData() {
+    setLoadError(null);
     try {
       const { data: subData } = await supabase
         .from('subjects')
@@ -225,6 +229,7 @@ function AutomationsContent() {
         }
       }
     } catch {
+      setLoadError('Could not load automations and syllabus data. Please try again.');
       toast.error('Failed to load automations and syllabus data');
     } finally {
       setLoading(false);
@@ -234,6 +239,40 @@ function AutomationsContent() {
   useEffect(() => {
     loadData();
   }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (editingApiWeek && !savingApiWeekText) {
+          setEditingApiWeek(null);
+        } else if (apiModalOpen && !discoveringCourses && !syncingPortal) {
+          setApiModalOpen(false);
+        } else if (uploadModalOpen && !analyzingWithGemini && !applyingAiAutomation) {
+          setUploadModalOpen(false);
+        } else if (editingSyllabusDay && !savingSyllabusDay) {
+          setEditingSyllabusDay(null);
+          setIsNewSyllabusDay(false);
+        } else if (recurringSubject && !savingRecurring) {
+          setRecurringSubject(null);
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [
+    editingApiWeek,
+    savingApiWeekText,
+    apiModalOpen,
+    discoveringCourses,
+    syncingPortal,
+    uploadModalOpen,
+    analyzingWithGemini,
+    applyingAiAutomation,
+    editingSyllabusDay,
+    savingSyllabusDay,
+    recurringSubject,
+    savingRecurring,
+  ]);
 
   // Support deep-linking from /subjects-habits or /calendar/planner via ?tab=... or ?subject=...
   useEffect(() => {
@@ -954,21 +993,44 @@ function AutomationsContent() {
 
   if (loading) {
     return (
-      <Box display="flex" justifyContent="center" alignItems="center" minHeight="50vh">
-        <CircularProgress />
-      </Box>
+      <Stack spacing={2.5}>
+        <Skeleton variant="rounded" height={88} sx={{ borderRadius: 1 }} />
+        <Skeleton variant="rounded" height={520} sx={{ borderRadius: 1 }} />
+      </Stack>
     );
   }
 
   return (
     <Box>
+      {loadError && (
+        <Alert
+          severity="error"
+          sx={{ mb: 2.5, borderRadius: 1 }}
+          action={
+            <Button
+              color="inherit"
+              size="small"
+              onClick={() => {
+                setLoading(true);
+                void loadData();
+              }}
+              sx={{ fontWeight: 700, textTransform: 'none' }}
+            >
+              Retry
+            </Button>
+          }
+        >
+          {loadError}
+        </Alert>
+      )}
+
       {/* Unified Page Header Bar */}
       <Card
         elevation={0}
         sx={{
           p: 2,
           mb: 3,
-          borderRadius: 2.5,
+          borderRadius: 1,
           border: '1px solid',
           borderColor: 'divider',
           bgcolor: 'background.paper',
@@ -1006,7 +1068,7 @@ function AutomationsContent() {
               sx={{
                 fontWeight: 700,
                 textTransform: 'none',
-                borderRadius: 2,
+                borderRadius: 1,
                 px: 1.75,
                 py: 0.75,
                 borderColor: 'divider',
@@ -1023,7 +1085,7 @@ function AutomationsContent() {
               sx={{
                 fontWeight: 700,
                 textTransform: 'none',
-                borderRadius: 2,
+                borderRadius: 1,
                 px: 1.75,
                 py: 0.75,
                 borderColor: 'divider',
@@ -1041,7 +1103,7 @@ function AutomationsContent() {
               sx={{
                 fontWeight: 700,
                 textTransform: 'none',
-                borderRadius: 2,
+                borderRadius: 1,
                 px: 1.75,
                 py: 0.75,
               }}
@@ -1057,7 +1119,7 @@ function AutomationsContent() {
               sx={{
                 fontWeight: 700,
                 textTransform: 'none',
-                borderRadius: 2,
+                borderRadius: 1,
                 px: 2,
                 py: 0.75,
                 boxShadow: 'none',
@@ -1072,7 +1134,7 @@ function AutomationsContent() {
       <Card
         elevation={0}
         sx={{
-          borderRadius: 2.5,
+          borderRadius: 1,
           border: '1px solid',
           borderColor: 'divider',
           mb: 4,
@@ -1167,8 +1229,7 @@ function AutomationsContent() {
                       sx={{
                         px: 2.25,
                         py: 1.5,
-                        borderRadius: 2,
-                        borderLeft: `4px solid ${sub.color || '#0C74E4'}`,
+                        borderRadius: 1,
                         transition: 'border-color 0.15s ease, background-color 0.15s ease',
                         '&:hover': {
                           borderColor: alpha(theme.palette.primary.main, 0.45),
@@ -1183,26 +1244,37 @@ function AutomationsContent() {
                         spacing={1.5}
                       >
                         <Stack direction="row" spacing={1.5} alignItems="center" flexWrap="wrap" flexGrow={1}>
-                          <Box sx={{ minWidth: 165 }}>
-                            <Typography variant="subtitle1" fontWeight={700} sx={{ lineHeight: 1.2 }}>
-                              {sub.name}
-                            </Typography>
-                            {officialCourseName && (
-                              <Typography
-                                variant="caption"
-                                sx={{
-                                  fontStyle: 'italic',
-                                  color: 'text.secondary',
-                                  fontWeight: 500,
-                                  display: 'block',
-                                  fontSize: '0.72rem',
-                                  mt: 0.15,
-                                }}
-                              >
-                                {officialCourseName}
+                          <Stack direction="row" spacing={1.25} alignItems="center" sx={{ minWidth: 175 }}>
+                            <Box
+                              sx={{
+                                width: 8,
+                                height: 8,
+                                borderRadius: '50%',
+                                bgcolor: sub.color || '#1b5698',
+                                flexShrink: 0,
+                              }}
+                            />
+                            <Box>
+                              <Typography variant="subtitle1" fontWeight={700} sx={{ lineHeight: 1.2 }}>
+                                {sub.name}
                               </Typography>
-                            )}
-                          </Box>
+                              {officialCourseName && (
+                                <Typography
+                                  variant="caption"
+                                  sx={{
+                                    fontStyle: 'italic',
+                                    color: 'text.secondary',
+                                    fontWeight: 500,
+                                    display: 'block',
+                                    fontSize: '0.75rem',
+                                    mt: 0.15,
+                                  }}
+                                >
+                                  {officialCourseName}
+                                </Typography>
+                              )}
+                            </Box>
+                          </Stack>
 
                           <Chip
                             icon={
@@ -1238,7 +1310,7 @@ function AutomationsContent() {
                                 handleOpenRecurringModal(sub);
                               }
                             }}
-                            sx={{ fontWeight: 600, fontSize: '0.7rem', height: 24, cursor: 'pointer' }}
+                            sx={{ fontWeight: 600, fontSize: '0.75rem', height: 24, cursor: 'pointer' }}
                           />
 
                           {/* Compact Active Weekday Pills */}
@@ -1253,8 +1325,8 @@ function AutomationsContent() {
                                   color={isActive && recConfig.enabled ? 'primary' : 'default'}
                                   variant={isActive && recConfig.enabled ? 'filled' : 'outlined'}
                                   sx={{
-                                    height: 21,
-                                    fontSize: '0.68rem',
+                                    height: 22,
+                                    fontSize: '0.75rem',
                                     fontWeight: isActive ? 700 : 500,
                                     opacity: isActive ? 1 : 0.4,
                                   }}
@@ -1294,7 +1366,7 @@ function AutomationsContent() {
                             sx={{
                               border: '1px solid',
                               borderColor: 'divider',
-                              borderRadius: 1.5,
+                              borderRadius: 1,
                               p: 0.65,
                             }}
                           >
@@ -1323,7 +1395,7 @@ function AutomationsContent() {
                     sx: {
                       mt: 0.5,
                       minWidth: 235,
-                      borderRadius: 2,
+                      borderRadius: 1,
                       border: '1px solid',
                       borderColor: 'divider',
                       p: 0.5,
@@ -1345,7 +1417,7 @@ function AutomationsContent() {
                     setMenuAutomationSubject(null);
                     if (target) handleOpenRecurringModal(target);
                   }}
-                  sx={{ borderRadius: 1.5, py: 1, gap: 1.25, fontSize: '0.84rem', fontWeight: 600 }}
+                  sx={{ borderRadius: 1, py: 1, gap: 1.25, fontSize: '0.875rem', fontWeight: 600 }}
                 >
                   <Edit3 size={15} color={theme.palette.primary.main} />
                   Configure Automation Rules…
@@ -1368,7 +1440,7 @@ function AutomationsContent() {
                           setActiveTab('syllabus');
                           setActiveSyllabusSubTab(targetId);
                         }}
-                        sx={{ borderRadius: 1.5, py: 1, gap: 1.25, fontSize: '0.84rem', fontWeight: 500 }}
+                        sx={{ borderRadius: 1, py: 1, gap: 1.25, fontSize: '0.875rem', fontWeight: 500 }}
                       >
                         <FileSpreadsheet size={15} />
                         View Course Syllabus
@@ -1385,7 +1457,7 @@ function AutomationsContent() {
                     }
                     setUploadModalOpen(true);
                   }}
-                  sx={{ borderRadius: 1.5, py: 1, gap: 1.25, fontSize: '0.84rem', fontWeight: 500 }}
+                  sx={{ borderRadius: 1, py: 1, gap: 1.25, fontSize: '0.875rem', fontWeight: 500 }}
                 >
                   <Wand2 size={15} />
                   Upload Syllabus with AI…
@@ -1404,7 +1476,7 @@ function AutomationsContent() {
                 sx={{
                   mb: 3,
                   p: 1.25,
-                  borderRadius: 2,
+                  borderRadius: 1,
                   bgcolor: alpha(theme.palette.primary.main, 0.03),
                   border: '1px solid',
                   borderColor: 'divider',
@@ -1425,7 +1497,7 @@ function AutomationsContent() {
                     sx={{
                       fontWeight: 700,
                       textTransform: 'none',
-                      borderRadius: 1.5,
+                      borderRadius: 1,
                       px: 1.5,
                       py: 0.65,
                       boxShadow: 'none',
@@ -1438,8 +1510,8 @@ function AutomationsContent() {
                         label="Manual Upload"
                         size="small"
                         sx={{
-                          height: 18,
-                          fontSize: '0.62rem',
+                          height: 20,
+                          fontSize: '0.75rem',
                           fontWeight: 800,
                           bgcolor:
                             activeSyllabusSubTab === 'math'
@@ -1477,10 +1549,10 @@ function AutomationsContent() {
                           startIcon={
                             <Box
                               sx={{
-                                width: 9,
-                                height: 9,
+                                width: 8,
+                                height: 8,
                                 borderRadius: '50%',
-                                bgcolor: isSubSelected ? '#FFFFFF' : sub.color || '#0C74E4',
+                                bgcolor: isSubSelected ? '#FFFFFF' : sub.color || '#1b5698',
                               }}
                             />
                           }
@@ -1488,7 +1560,7 @@ function AutomationsContent() {
                           sx={{
                             fontWeight: 700,
                             textTransform: 'none',
-                            borderRadius: 1.5,
+                            borderRadius: 1,
                             px: 1.5,
                             py: 0.65,
                             boxShadow: 'none',
@@ -1505,8 +1577,8 @@ function AutomationsContent() {
                               label={isApi ? "API Sync'd" : 'Manual Upload'}
                               size="small"
                               sx={{
-                                height: 18,
-                                fontSize: '0.62rem',
+                                height: 20,
+                                fontSize: '0.75rem',
                                 fontWeight: 800,
                                 bgcolor: isSubSelected
                                   ? 'rgba(255,255,255,0.22)'
@@ -1536,7 +1608,7 @@ function AutomationsContent() {
                     sx={{
                       fontWeight: 700,
                       textTransform: 'none',
-                      borderRadius: 1.5,
+                      borderRadius: 1,
                       bgcolor: 'background.paper',
                     }}
                   >
@@ -1551,7 +1623,7 @@ function AutomationsContent() {
                     sx={{
                       fontWeight: 700,
                       textTransform: 'none',
-                      borderRadius: 1.5,
+                      borderRadius: 1,
                       bgcolor: 'background.paper',
                     }}
                   >
@@ -1580,14 +1652,14 @@ function AutomationsContent() {
                           size="small"
                           color="warning"
                           variant="outlined"
-                          sx={{ fontWeight: 800, fontSize: '0.68rem', height: 22 }}
+                          sx={{ fontWeight: 800, fontSize: '0.75rem', height: 22 }}
                         />
                         <Chip
                           icon={<FileSpreadsheet size={12} />}
                           label="Source Doc: Dimensions Math 5A & 5B Syllabus (Amanda Holiday).pdf"
                           size="small"
                           variant="outlined"
-                          sx={{ fontWeight: 600, fontSize: '0.68rem', height: 22 }}
+                          sx={{ fontWeight: 600, fontSize: '0.75rem', height: 22 }}
                         />
                       </Stack>
                       <Typography variant="caption" color="text.secondary">
@@ -1632,7 +1704,7 @@ function AutomationsContent() {
                     </Stack>
                   </Stack>
 
-                  <TableContainer component={Paper} variant="outlined" sx={{ maxHeight: 640, borderRadius: 2 }}>
+                  <TableContainer component={Paper} variant="outlined" sx={{ maxHeight: 640, borderRadius: 1 }}>
                     <Table stickyHeader size="small">
                       <TableHead>
                         <TableRow>
@@ -1651,29 +1723,30 @@ function AutomationsContent() {
                       <TableBody>
                         {filteredSyllabusDays.map((day) => (
                           <TableRow key={day.id || day.day_number} hover>
-                            <TableCell sx={{ fontWeight: 700 }}>Day {day.day_number}</TableCell>
-                            <TableCell>
+                            <TableCell sx={{ fontWeight: 700, whiteSpace: 'nowrap' }}>Day {day.day_number}</TableCell>
+                            <TableCell sx={{ whiteSpace: 'nowrap' }}>
                               <Chip
                                 label={day.semester === 1 ? '5A (Fall)' : '5B (Spring)'}
                                 size="small"
                                 color={day.semester === 1 ? 'primary' : 'secondary'}
                                 variant="outlined"
-                                sx={{ fontWeight: 700, fontSize: '0.68rem' }}
+                                sx={{ fontWeight: 700, fontSize: '0.75rem' }}
                               />
                             </TableCell>
                             <TableCell sx={{ fontWeight: 700, color: 'primary.main' }}>
                               {day.workbook || '—'}
                             </TableCell>
-                            <TableCell sx={{ fontSize: '0.78rem' }}>{day.textbook || '—'}</TableCell>
-                            <TableCell sx={{ fontSize: '0.8rem', fontWeight: 600 }}>{day.topic}</TableCell>
-                            <TableCell sx={{ fontSize: '0.76rem', color: 'text.secondary' }}>
+                            <TableCell sx={{ fontSize: '0.75rem' }}>{day.textbook || '—'}</TableCell>
+                            <TableCell sx={{ fontSize: '0.875rem', fontWeight: 600 }}>{day.topic}</TableCell>
+                            <TableCell sx={{ fontSize: '0.75rem', color: 'text.secondary' }}>
                               {day.materials || '—'}
                             </TableCell>
-                            <TableCell sx={{ fontSize: '0.76rem' }}>{day.fast_facts || '—'}</TableCell>
+                            <TableCell sx={{ fontSize: '0.75rem' }}>{day.fast_facts || '—'}</TableCell>
                             <TableCell align="right">
                               <IconButton
                                 size="small"
                                 color="primary"
+                                aria-label={`Edit Day ${day.day_number}`}
                                 onClick={() => {
                                   setIsNewSyllabusDay(false);
                                   setEditingSyllabusDay({ ...day });
@@ -1727,10 +1800,10 @@ function AutomationsContent() {
                           <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" mb={0.5}>
                             <Box
                               sx={{
-                                width: 12,
-                                height: 12,
+                                width: 8,
+                                height: 8,
                                 borderRadius: '50%',
-                                bgcolor: selectedSub.color || '#0C74E4',
+                                bgcolor: selectedSub.color || '#1b5698',
                               }}
                             />
                             <Typography variant="h6" fontWeight={800}>
@@ -1744,14 +1817,14 @@ function AutomationsContent() {
                                   size="small"
                                   color="info"
                                   variant="outlined"
-                                  sx={{ fontWeight: 800, fontSize: '0.68rem', height: 22 }}
+                                  sx={{ fontWeight: 800, fontSize: '0.75rem', height: 22 }}
                                 />
                                 {courseSyl.moodle_course_shortname && (
                                   <Chip
                                     label={`Code: ${courseSyl.moodle_course_shortname}`}
                                     size="small"
                                     variant="outlined"
-                                    sx={{ fontWeight: 700, fontSize: '0.68rem', height: 22 }}
+                                    sx={{ fontWeight: 700, fontSize: '0.75rem', height: 22 }}
                                   />
                                 )}
                               </>
@@ -1763,14 +1836,14 @@ function AutomationsContent() {
                                   size="small"
                                   color="warning"
                                   variant="outlined"
-                                  sx={{ fontWeight: 800, fontSize: '0.68rem', height: 22 }}
+                                  sx={{ fontWeight: 800, fontSize: '0.75rem', height: 22 }}
                                 />
                                 <Chip
                                   icon={<FileSpreadsheet size={12} />}
                                   label={`Source Doc: ${courseSyl.uploaded_file_name || `${courseSyl.course_title}.pdf`}`}
                                   size="small"
                                   variant="outlined"
-                                  sx={{ fontWeight: 600, fontSize: '0.68rem', height: 22 }}
+                                  sx={{ fontWeight: 600, fontSize: '0.75rem', height: 22 }}
                                 />
                                 {subjectSyllabi.length > 1 && (
                                   <Chip
@@ -1778,7 +1851,7 @@ function AutomationsContent() {
                                     size="small"
                                     color="success"
                                     variant="outlined"
-                                    sx={{ fontWeight: 800, fontSize: '0.68rem', height: 22 }}
+                                    sx={{ fontWeight: 800, fontSize: '0.75rem', height: 22 }}
                                   />
                                 )}
                               </>
@@ -1853,7 +1926,7 @@ function AutomationsContent() {
                           sx={{
                             p: 1.75,
                             mb: 2.5,
-                            borderRadius: 2,
+                            borderRadius: 1,
                             bgcolor: 'background.default',
                           }}
                         >
@@ -1884,7 +1957,7 @@ function AutomationsContent() {
                                         sx={{
                                           fontWeight: 700,
                                           textTransform: 'none',
-                                          borderRadius: 1.5,
+                                          borderRadius: 1,
                                         }}
                                       >
                                         {sylItem.course_title} ({sylItem.days.length} classes)
@@ -1917,7 +1990,7 @@ function AutomationsContent() {
                             variant="outlined"
                             sx={{
                               p: 2.5,
-                              borderRadius: 2.5,
+                              borderRadius: 1,
                               borderColor: apiAutoPop.enabled
                                 ? alpha(theme.palette.primary.main, 0.45)
                                 : 'divider',
@@ -1943,7 +2016,7 @@ function AutomationsContent() {
                                     label={apiAutoPop.enabled ? 'AUTO-POPULATE ON' : 'PAUSED'}
                                     size="small"
                                     color={apiAutoPop.enabled ? 'success' : 'default'}
-                                    sx={{ fontWeight: 800, fontSize: '0.66rem', height: 20 }}
+                                    sx={{ fontWeight: 800, fontSize: '0.75rem', height: 20 }}
                                   />
                                 </Stack>
                                 <Typography variant="caption" color="text.secondary">
@@ -2016,7 +2089,7 @@ function AutomationsContent() {
                                       variant="outlined"
                                       sx={{
                                         p: 1.5,
-                                        borderRadius: 2,
+                                        borderRadius: 1,
                                         height: '100%',
                                         bgcolor: 'background.paper',
                                         borderColor:
@@ -2041,7 +2114,7 @@ function AutomationsContent() {
                                             label="Quiz Day"
                                             size="small"
                                             color="secondary"
-                                            sx={{ height: 18, fontSize: '0.6rem', fontWeight: 800 }}
+                                            sx={{ height: 20, fontSize: '0.75rem', fontWeight: 800 }}
                                           />
                                         )}
                                       </Stack>
@@ -2054,7 +2127,7 @@ function AutomationsContent() {
                                             fontWeight={700}
                                             display="block"
                                             mb={0.35}
-                                            sx={{ fontSize: '0.66rem' }}
+                                            sx={{ fontSize: '0.75rem' }}
                                           >
                                             API Schedule Portion
                                           </Typography>
@@ -2115,7 +2188,7 @@ function AutomationsContent() {
                                             />
                                           }
                                           label={
-                                            <Typography variant="caption" fontWeight={700} sx={{ fontSize: '0.7rem' }}>
+                                            <Typography variant="caption" fontWeight={700} sx={{ fontSize: '0.75rem' }}>
                                               Include &ldquo;Attend Class&rdquo; Header
                                             </Typography>
                                           }
@@ -2144,7 +2217,7 @@ function AutomationsContent() {
                                             />
                                           }
                                           label={
-                                            <Typography variant="caption" sx={{ fontSize: '0.7rem' }}>
+                                            <Typography variant="caption" sx={{ fontSize: '0.75rem' }}>
                                               Format API lines as checkboxes
                                             </Typography>
                                           }
@@ -2176,8 +2249,8 @@ function AutomationsContent() {
                                             };
                                             void handleUpdateSubjectApiAutoPopulate(selectedSub, nextAuto);
                                           }}
-                                          InputProps={{ sx: { fontSize: '0.72rem' } }}
-                                          InputLabelProps={{ sx: { fontSize: '0.72rem' } }}
+                                          InputProps={{ sx: { fontSize: '0.75rem' } }}
+                                          InputLabelProps={{ sx: { fontSize: '0.75rem' } }}
                                         />
                                       </Stack>
                                     </Paper>
@@ -2191,7 +2264,7 @@ function AutomationsContent() {
                               <Box
                                 sx={{
                                   p: 2,
-                                  borderRadius: 2,
+                                  borderRadius: 1,
                                   bgcolor: 'background.paper',
                                   border: '1px solid',
                                   borderColor: 'divider',
@@ -2236,7 +2309,7 @@ function AutomationsContent() {
                                           size="small"
                                           color={la.status_label === 'graded' ? 'success' : 'secondary'}
                                           variant="outlined"
-                                          sx={{ fontWeight: 700, fontSize: '0.68rem', height: 22 }}
+                                          sx={{ fontWeight: 700, fontSize: '0.75rem', height: 22 }}
                                         />
                                       ))}
                                     </Stack>
@@ -2266,7 +2339,7 @@ function AutomationsContent() {
                                         <Box
                                           sx={{
                                             p: 1.25,
-                                            borderRadius: 1.5,
+                                            borderRadius: 1,
                                             bgcolor: previewText || isTargetQuizDay
                                               ? alpha(theme.palette.primary.main, 0.035)
                                               : 'background.default',
@@ -2283,7 +2356,7 @@ function AutomationsContent() {
                                             color="text.secondary"
                                             display="block"
                                             mb={0.5}
-                                            sx={{ fontSize: '0.66rem', textTransform: 'uppercase' }}
+                                            sx={{ fontSize: '0.75rem', textTransform: 'uppercase' }}
                                           >
                                             {DAY_LABELS[dk]}
                                           </Typography>
@@ -2294,7 +2367,7 @@ function AutomationsContent() {
                                               sx={{
                                                 whiteSpace: 'pre-wrap',
                                                 fontFamily: 'inherit',
-                                                fontSize: '0.71rem',
+                                                fontSize: '0.75rem',
                                                 lineHeight: 1.4,
                                                 m: 0,
                                               }}
@@ -2317,7 +2390,7 @@ function AutomationsContent() {
                                                   sx={{
                                                     height: 'auto',
                                                     py: 0.25,
-                                                    fontSize: '0.65rem',
+                                                    fontSize: '0.75rem',
                                                     fontWeight: 700,
                                                     '& .MuiChip-label': { whiteSpace: 'normal' },
                                                   }}
@@ -2337,7 +2410,7 @@ function AutomationsContent() {
                           {/* =================================================== */}
                           {/* WEEKLY API SCHEDULE & LINKED ASSESSMENTS TABLE      */}
                           {/* =================================================== */}
-                          <TableContainer component={Paper} variant="outlined" sx={{ maxHeight: 640, borderRadius: 2 }}>
+                          <TableContainer component={Paper} variant="outlined" sx={{ maxHeight: 640, borderRadius: 1 }}>
                             <Table stickyHeader size="small">
                               <TableHead>
                                 <TableRow>
@@ -2362,7 +2435,7 @@ function AutomationsContent() {
                                       hover
                                       selected={wk.week_number === previewSyllabusWeekNum}
                                     >
-                                      <TableCell sx={{ fontWeight: 800, verticalAlign: 'top' }}>
+                                      <TableCell sx={{ fontWeight: 800, verticalAlign: 'top', whiteSpace: 'nowrap' }}>
                                         <Stack spacing={0.5} alignItems="flex-start">
                                           <span>Week {wk.week_number}</span>
                                           {wk.custom_override_text && (
@@ -2371,12 +2444,12 @@ function AutomationsContent() {
                                               size="small"
                                               color="warning"
                                               variant="outlined"
-                                              sx={{ height: 18, fontSize: '0.6rem', fontWeight: 700 }}
+                                              sx={{ height: 20, fontSize: '0.75rem', fontWeight: 700 }}
                                             />
                                           )}
                                         </Stack>
                                       </TableCell>
-                                      <TableCell sx={{ fontSize: '0.76rem', color: 'text.secondary', verticalAlign: 'top' }}>
+                                      <TableCell sx={{ fontSize: '0.75rem', color: 'text.secondary', verticalAlign: 'top' }}>
                                         {wk.section_title || '—'}
                                       </TableCell>
                                       <TableCell sx={{ verticalAlign: 'top' }}>
@@ -2386,7 +2459,7 @@ function AutomationsContent() {
                                           sx={{
                                             whiteSpace: 'pre-wrap',
                                             fontFamily: 'inherit',
-                                            fontSize: '0.78rem',
+                                            fontSize: '0.75rem',
                                             lineHeight: 1.45,
                                             m: 0,
                                           }}
@@ -2403,7 +2476,7 @@ function AutomationsContent() {
                                                 variant="outlined"
                                                 sx={{
                                                   p: 0.85,
-                                                  borderRadius: 1.5,
+                                                  borderRadius: 1,
                                                   bgcolor:
                                                     la.status_label === 'graded'
                                                       ? alpha(theme.palette.success.main, 0.05)
@@ -2424,14 +2497,14 @@ function AutomationsContent() {
                                                       label={la.percentage_formatted}
                                                       size="small"
                                                       color="success"
-                                                      sx={{ height: 20, fontSize: '0.68rem', fontWeight: 800 }}
+                                                      sx={{ height: 20, fontSize: '0.75rem', fontWeight: 800 }}
                                                     />
                                                   ) : (
                                                     <Chip
                                                       label="Upcoming"
                                                       size="small"
                                                       variant="outlined"
-                                                      sx={{ height: 19, fontSize: '0.64rem', fontWeight: 600 }}
+                                                      sx={{ height: 20, fontSize: '0.75rem', fontWeight: 600 }}
                                                     />
                                                   )}
                                                 </Stack>
@@ -2439,7 +2512,7 @@ function AutomationsContent() {
                                                   variant="caption"
                                                   color="text.secondary"
                                                   display="block"
-                                                  sx={{ fontSize: '0.66rem', mt: 0.25 }}
+                                                  sx={{ fontSize: '0.75rem', mt: 0.25 }}
                                                 >
                                                   {la.moodle_category}
                                                   {la.grade_raw !== null && la.grade_raw !== undefined
@@ -2456,19 +2529,20 @@ function AutomationsContent() {
                                           </Typography>
                                         )}
                                       </TableCell>
-                                      <TableCell align="right" sx={{ verticalAlign: 'top' }}>
+                                      <TableCell align="right" sx={{ verticalAlign: 'top', whiteSpace: 'nowrap' }}>
                                         <Stack direction="row" spacing={0.5} justifyContent="flex-end">
                                           <Button
                                             size="small"
                                             variant="text"
                                             onClick={() => setPreviewSyllabusWeekNum(wk.week_number)}
-                                            sx={{ minWidth: 0, px: 0.75, fontSize: '0.7rem', fontWeight: 700 }}
+                                            sx={{ minWidth: 0, px: 0.75, fontSize: '0.75rem', fontWeight: 700 }}
                                           >
                                             Preview
                                           </Button>
                                           <IconButton
                                             size="small"
                                             color="primary"
+                                            aria-label={`Edit Week ${wk.week_number}`}
                                             onClick={() => {
                                               setEditingApiWeek(wk);
                                               setEditingApiWeekText(
@@ -2518,7 +2592,7 @@ function AutomationsContent() {
                                       size="small"
                                       variant={scienceUnitFilter === 'all' ? 'contained' : 'outlined'}
                                       onClick={() => setScienceUnitFilter('all')}
-                                      sx={{ fontWeight: 700, textTransform: 'none', borderRadius: 1.5 }}
+                                      sx={{ fontWeight: 700, textTransform: 'none', borderRadius: 1 }}
                                     >
                                       All Units ({courseSyl.days.length} Classes)
                                     </Button>
@@ -2530,7 +2604,7 @@ function AutomationsContent() {
                                           size="small"
                                           variant={scienceUnitFilter === unitName ? 'contained' : 'outlined'}
                                           onClick={() => setScienceUnitFilter(unitName)}
-                                          sx={{ fontWeight: 700, textTransform: 'none', borderRadius: 1.5 }}
+                                          sx={{ fontWeight: 700, textTransform: 'none', borderRadius: 1 }}
                                         >
                                           {unitName} ({count})
                                         </Button>
@@ -2539,7 +2613,7 @@ function AutomationsContent() {
                                   </Stack>
                                 )}
 
-                                <TableContainer component={Paper} variant="outlined" sx={{ maxHeight: 680, borderRadius: 2 }}>
+                                <TableContainer component={Paper} variant="outlined" sx={{ maxHeight: 680, borderRadius: 1 }}>
                                   <Table stickyHeader size="small">
                                     <TableHead>
                                       <TableRow>
@@ -2560,10 +2634,10 @@ function AutomationsContent() {
                                         const daySupplies = resolveSyllabusDaySupplies(day);
                                         return (
                                           <TableRow key={day.day_number} hover>
-                                            <TableCell sx={{ fontWeight: 800 }}>
+                                            <TableCell sx={{ fontWeight: 800, whiteSpace: 'nowrap' }}>
                                               Week {wkNum}
                                             </TableCell>
-                                            <TableCell sx={{ fontWeight: 700, color: 'primary.main' }}>
+                                            <TableCell sx={{ fontWeight: 700, color: 'primary.main', whiteSpace: 'nowrap' }}>
                                               Class {day.day_number}{' '}
                                               <Typography
                                                 component="span"
@@ -2574,7 +2648,7 @@ function AutomationsContent() {
                                                 ({weekdayShort})
                                               </Typography>
                                             </TableCell>
-                                            <TableCell>
+                                            <TableCell sx={{ whiteSpace: 'nowrap' }}>
                                               {day.unit ? (
                                                 <Chip
                                                   label={day.unit}
@@ -2589,16 +2663,16 @@ function AutomationsContent() {
                                                       : 'default'
                                                   }
                                                   variant="outlined"
-                                                  sx={{ fontWeight: 700, fontSize: '0.68rem' }}
+                                                  sx={{ fontWeight: 700, fontSize: '0.75rem' }}
                                                 />
                                               ) : (
                                                 '—'
                                               )}
                                             </TableCell>
-                                            <TableCell sx={{ fontSize: '0.82rem', fontWeight: 600 }}>
+                                            <TableCell sx={{ fontSize: '0.875rem', fontWeight: 600 }}>
                                               {day.topic}
                                             </TableCell>
-                                            <TableCell sx={{ fontSize: '0.78rem' }}>
+                                            <TableCell sx={{ fontSize: '0.75rem' }}>
                                               {day.activity ? (
                                                 <Chip
                                                   label={`Activity (${weekdayShort}): ${day.activity}`}
@@ -2607,7 +2681,7 @@ function AutomationsContent() {
                                                   variant="outlined"
                                                   sx={{
                                                     fontWeight: 700,
-                                                    fontSize: '0.7rem',
+                                                    fontSize: '0.75rem',
                                                     height: 'auto',
                                                     py: 0.35,
                                                     '& .MuiChip-label': {
@@ -2621,7 +2695,7 @@ function AutomationsContent() {
                                                 </Typography>
                                               )}
                                             </TableCell>
-                                            <TableCell sx={{ fontSize: '0.74rem' }}>
+                                            <TableCell sx={{ fontSize: '0.75rem' }}>
                                               {daySupplies.length > 0 ? (
                                                 <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
                                                   {daySupplies.map((sup, sIdx) => (
@@ -2630,8 +2704,8 @@ function AutomationsContent() {
                                                       size="small"
                                                       label={sup}
                                                       sx={{
-                                                        height: 19,
-                                                        fontSize: '0.66rem',
+                                                        height: 20,
+                                                        fontSize: '0.75rem',
                                                         fontWeight: 600,
                                                         bgcolor: alpha(theme.palette.success.main, 0.1),
                                                       }}
@@ -2655,7 +2729,7 @@ function AutomationsContent() {
                           }
 
                           return (
-                            <TableContainer component={Paper} variant="outlined" sx={{ maxHeight: 640, borderRadius: 2 }}>
+                            <TableContainer component={Paper} variant="outlined" sx={{ maxHeight: 640, borderRadius: 1 }}>
                               <Table stickyHeader size="small">
                                 <TableHead>
                                   <TableRow>
@@ -2671,25 +2745,25 @@ function AutomationsContent() {
                                 <TableBody>
                                   {courseSyl.days.map((day) => (
                                     <TableRow key={day.day_number} hover>
-                                      <TableCell sx={{ fontWeight: 700 }}>#{day.day_number}</TableCell>
-                                      <TableCell>
+                                      <TableCell sx={{ fontWeight: 700, whiteSpace: 'nowrap' }}>#{day.day_number}</TableCell>
+                                      <TableCell sx={{ whiteSpace: 'nowrap' }}>
                                         <Chip
                                           label={day.semester === 1 ? 'Fall' : 'Spring'}
                                           size="small"
                                           color={day.semester === 1 ? 'primary' : 'secondary'}
                                           variant="outlined"
-                                          sx={{ fontWeight: 700, fontSize: '0.68rem' }}
+                                          sx={{ fontWeight: 700, fontSize: '0.75rem' }}
                                         />
                                       </TableCell>
                                       <TableCell sx={{ fontWeight: 700, color: 'primary.main' }}>
                                         {day.workbook || '—'}
                                       </TableCell>
-                                      <TableCell sx={{ fontSize: '0.78rem' }}>{day.textbook || '—'}</TableCell>
-                                      <TableCell sx={{ fontSize: '0.8rem', fontWeight: 600 }}>{day.topic}</TableCell>
-                                      <TableCell sx={{ fontSize: '0.76rem', color: 'text.secondary' }}>
+                                      <TableCell sx={{ fontSize: '0.75rem' }}>{day.textbook || '—'}</TableCell>
+                                      <TableCell sx={{ fontSize: '0.875rem', fontWeight: 600 }}>{day.topic}</TableCell>
+                                      <TableCell sx={{ fontSize: '0.75rem', color: 'text.secondary' }}>
                                         {day.materials || '—'}
                                       </TableCell>
-                                      <TableCell sx={{ fontSize: '0.76rem' }}>{day.notes || day.fast_facts || '—'}</TableCell>
+                                      <TableCell sx={{ fontSize: '0.75rem' }}>{day.notes || day.fast_facts || '—'}</TableCell>
                                     </TableRow>
                                   ))}
                                 </TableBody>
@@ -2698,7 +2772,7 @@ function AutomationsContent() {
                           );
                         })()
                       ) : (
-                        <Paper variant="outlined" sx={{ p: 3, borderRadius: 2, bgcolor: 'background.default' }}>
+                        <Paper variant="outlined" sx={{ p: 3, borderRadius: 1, bgcolor: 'background.default' }}>
                           <Typography variant="subtitle2" fontWeight={700} gutterBottom>
                             Recurring Schedule Extracted from Syllabus
                           </Typography>
@@ -2722,6 +2796,9 @@ function AutomationsContent() {
       {/* ===================================================================== */}
       {recurringSubject && recurringDraft && (
         <Box
+          role="dialog"
+          aria-modal="true"
+          aria-label={`Recurring Weekly Rules — ${recurringSubject.name}`}
           onClick={() => setRecurringSubject(null)}
           sx={{
             position: 'fixed',
@@ -2741,7 +2818,7 @@ function AutomationsContent() {
               width: '100%',
               maxWidth: 960,
               maxHeight: '90vh',
-              borderRadius: 3,
+              borderRadius: 1,
               display: 'flex',
               flexDirection: 'column',
               overflow: 'hidden',
@@ -2758,10 +2835,10 @@ function AutomationsContent() {
                 <Stack direction="row" spacing={1.5} alignItems="center">
                   <Box
                     sx={{
-                      width: 16,
-                      height: 16,
+                      width: 12,
+                      height: 12,
                       borderRadius: '50%',
-                      bgcolor: recurringSubject.color || '#0C74E4',
+                      bgcolor: recurringSubject.color || '#1b5698',
                     }}
                   />
                   <Typography variant="h6" fontWeight={800}>
@@ -2774,7 +2851,7 @@ function AutomationsContent() {
                     label={recurringDraft.enabled ? 'ENABLED' : 'DISABLED'}
                     size="small"
                     color={recurringDraft.enabled ? 'success' : 'default'}
-                    sx={{ fontWeight: 800, fontSize: '0.7rem' }}
+                    sx={{ fontWeight: 800, fontSize: '0.75rem' }}
                   />
                   <FormControlLabel
                     control={
@@ -2792,6 +2869,13 @@ function AutomationsContent() {
                       </Typography>
                     }
                   />
+                  <IconButton
+                    size="small"
+                    aria-label="Close modal"
+                    onClick={() => setRecurringSubject(null)}
+                  >
+                    <X size={18} />
+                  </IconButton>
                 </Stack>
               </Stack>
             </Box>
@@ -2804,7 +2888,7 @@ function AutomationsContent() {
                     Row 2: The 3 Reference / Counter Selection Boxes */}
                 <Paper
                   variant="outlined"
-                  sx={{ p: 2.5, borderRadius: 2, bgcolor: 'background.default' }}
+                  sx={{ p: 2.5, borderRadius: 1, bgcolor: 'background.default' }}
                 >
                   <Stack spacing={2.5}>
                     {/* ROW 1: Automation Mode (and Reference Week in Template Mode so Row 2 has 3 counter boxes) */}
@@ -2996,7 +3080,7 @@ function AutomationsContent() {
                       return (
                         <>
                           {/* Fast Facts Card */}
-                          <Paper variant="outlined" sx={{ p: 2.5, borderRadius: 2 }}>
+                          <Paper variant="outlined" sx={{ p: 2.5, borderRadius: 1 }}>
                             <Stack
                               direction={{ xs: 'column', sm: 'row' }}
                               justifyContent="space-between"
@@ -3017,7 +3101,7 @@ function AutomationsContent() {
                                   label={mc.fast_facts_enabled ? 'ON' : 'OFF'}
                                   size="small"
                                   color={mc.fast_facts_enabled ? 'primary' : 'default'}
-                                  sx={{ fontWeight: 800, height: 20, fontSize: '0.68rem' }}
+                                  sx={{ fontWeight: 800, height: 20, fontSize: '0.75rem' }}
                                 />
                                 <FormControlLabel
                                   control={
@@ -3088,7 +3172,7 @@ function AutomationsContent() {
                           </Paper>
 
                           {/* Attend Class Card */}
-                          <Paper variant="outlined" sx={{ p: 2.5, borderRadius: 2 }}>
+                          <Paper variant="outlined" sx={{ p: 2.5, borderRadius: 1 }}>
                             <Stack
                               direction={{ xs: 'column', sm: 'row' }}
                               justifyContent="space-between"
@@ -3109,7 +3193,7 @@ function AutomationsContent() {
                                   label={mc.attend_class_enabled ? 'ON' : 'OFF'}
                                   size="small"
                                   color={mc.attend_class_enabled ? 'primary' : 'default'}
-                                  sx={{ fontWeight: 800, height: 20, fontSize: '0.68rem' }}
+                                  sx={{ fontWeight: 800, height: 20, fontSize: '0.75rem' }}
                                 />
                                 <FormControlLabel
                                   control={
@@ -3225,7 +3309,7 @@ function AutomationsContent() {
                           </Paper>
 
                           {/* Workbook Homework Card */}
-                          <Paper variant="outlined" sx={{ p: 2.5, borderRadius: 2 }}>
+                          <Paper variant="outlined" sx={{ p: 2.5, borderRadius: 1 }}>
                             <Stack
                               direction={{ xs: 'column', sm: 'row' }}
                               justifyContent="space-between"
@@ -3246,7 +3330,7 @@ function AutomationsContent() {
                                   label={mc.homework_enabled ? 'ON' : 'OFF'}
                                   size="small"
                                   color={mc.homework_enabled ? 'primary' : 'default'}
-                                  sx={{ fontWeight: 800, height: 20, fontSize: '0.68rem' }}
+                                  sx={{ fontWeight: 800, height: 20, fontSize: '0.75rem' }}
                                 />
                                 <FormControlLabel
                                   control={
@@ -3371,7 +3455,7 @@ function AutomationsContent() {
                 )}
 
                 {/* 2B. DAY-BY-DAY TEMPLATE EDITOR */}
-                <Paper variant="outlined" sx={{ p: 2.5, borderRadius: 2 }}>
+                <Paper variant="outlined" sx={{ p: 2.5, borderRadius: 1 }}>
                   <Typography variant="subtitle1" fontWeight={800} mb={0.5}>
                     {recurringDraft.mode === 'math_syllabus'
                       ? '4. Optional Custom Day Notes (Mon–Fri)'
@@ -3413,7 +3497,7 @@ function AutomationsContent() {
                               label={dCfg.enabled ? 'ON' : 'OFF'}
                               size="small"
                               color={dCfg.enabled ? 'success' : 'default'}
-                              sx={{ height: 18, fontSize: '0.65rem', fontWeight: 800 }}
+                              sx={{ height: 20, fontSize: '0.75rem', fontWeight: 800 }}
                             />
                           </Stack>
                         </Button>
@@ -3445,7 +3529,7 @@ function AutomationsContent() {
                               label={dayCfg.enabled ? 'ON' : 'OFF'}
                               size="small"
                               color={dayCfg.enabled ? 'primary' : 'default'}
-                              sx={{ fontWeight: 800, height: 20, fontSize: '0.68rem' }}
+                              sx={{ fontWeight: 800, height: 20, fontSize: '0.75rem' }}
                             />
                             <FormControlLabel
                               control={
@@ -3534,7 +3618,7 @@ function AutomationsContent() {
                                   sx={{
                                     cursor: 'pointer',
                                     fontWeight: 700,
-                                    fontSize: '0.7rem',
+                                    fontSize: '0.75rem',
                                   }}
                                 />
                               ))}
@@ -3560,7 +3644,7 @@ function AutomationsContent() {
                 {livePreviewNotes && livePreviewCounters && (
                   <Paper
                     variant="outlined"
-                    sx={{ p: 2.5, borderRadius: 2, bgcolor: 'background.default' }}
+                    sx={{ p: 2.5, borderRadius: 1, bgcolor: 'background.default' }}
                   >
                     <Stack
                       direction={{ xs: 'column', sm: 'row' }}
@@ -3609,7 +3693,7 @@ function AutomationsContent() {
                                 p: 1.5,
                                 height: '100%',
                                 minHeight: 110,
-                                borderRadius: 1.5,
+                                borderRadius: 1,
                                 bgcolor: 'background.paper',
                               }}
                             >
@@ -3689,6 +3773,9 @@ function AutomationsContent() {
       {/* ===================================================================== */}
       {editingSyllabusDay && (
         <Box
+          role="dialog"
+          aria-modal="true"
+          aria-label="Edit Math Syllabus Day"
           onClick={() => {
             setEditingSyllabusDay(null);
             setIsNewSyllabusDay(false);
@@ -3711,18 +3798,38 @@ function AutomationsContent() {
               width: '100%',
               maxWidth: 600,
               maxHeight: '90vh',
-              borderRadius: 3,
+              borderRadius: 1,
               display: 'flex',
               flexDirection: 'column',
               overflow: 'hidden',
             }}
           >
-            <Box px={3} py={2} sx={{ borderBottom: 1, borderColor: 'divider' }}>
+            <Box
+              px={3}
+              py={2}
+              sx={{
+                borderBottom: 1,
+                borderColor: 'divider',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+              }}
+            >
               <Typography variant="h6" fontWeight={800}>
                 {isNewSyllabusDay
                   ? 'Add New Syllabus Day'
                   : `Edit Math Syllabus — Day ${editingSyllabusDay.day_number} (Semester ${editingSyllabusDay.semester === 1 ? '5A' : '5B'})`}
               </Typography>
+              <IconButton
+                size="small"
+                aria-label="Close modal"
+                onClick={() => {
+                  setEditingSyllabusDay(null);
+                  setIsNewSyllabusDay(false);
+                }}
+              >
+                <X size={18} />
+              </IconButton>
             </Box>
             <Box sx={{ p: 3, overflowY: 'auto', flex: 1 }}>
               <Stack spacing={2.5}>
@@ -3860,6 +3967,9 @@ function AutomationsContent() {
       {/* ===================================================================== */}
       {uploadModalOpen && (
         <Box
+          role="dialog"
+          aria-modal="true"
+          aria-label="Upload Syllabus & AI Automation Builder"
           onClick={() => !analyzingWithGemini && !applyingAiAutomation && setUploadModalOpen(false)}
           sx={{
             position: 'fixed',
@@ -3879,7 +3989,7 @@ function AutomationsContent() {
               width: '100%',
               maxWidth: 1080,
               maxHeight: '90vh',
-              borderRadius: 3,
+              borderRadius: 1,
               display: 'flex',
               flexDirection: 'column',
               overflow: 'hidden',
@@ -3925,7 +4035,7 @@ function AutomationsContent() {
             <Box sx={{ p: 3, overflowY: 'auto', flex: 1 }}>
               <Grid container spacing={3}>
                 <Grid item xs={12} lg={5}>
-                  <Paper variant="outlined" sx={{ p: 2.5, borderRadius: 2 }}>
+                  <Paper variant="outlined" sx={{ p: 2.5, borderRadius: 1 }}>
                     <Stack spacing={2.5}>
                       <Box>
                         <Stack direction="row" spacing={1} alignItems="center" mb={0.5}>
@@ -4042,7 +4152,7 @@ function AutomationsContent() {
                           p: 4,
                           border: '2px dashed',
                           borderColor: analyzingWithGemini ? 'primary.main' : 'divider',
-                          borderRadius: 2,
+                          borderRadius: 1,
                           textAlign: 'center',
                           cursor: analyzingWithGemini ? 'wait' : 'pointer',
                           bgcolor: 'background.default',
@@ -4081,7 +4191,7 @@ function AutomationsContent() {
 
                 <Grid item xs={12} lg={7}>
                   {aiReview ? (
-                    <Paper variant="outlined" sx={{ p: 2.5, borderRadius: 2 }}>
+                    <Paper variant="outlined" sx={{ p: 2.5, borderRadius: 1 }}>
                       <Stack spacing={2.5}>
                         <Stack
                           direction={{ xs: 'column', sm: 'row' }}
@@ -4099,7 +4209,7 @@ function AutomationsContent() {
                                 label={`Model: ${aiReview.model_used}`}
                                 size="small"
                                 color="primary"
-                                sx={{ fontWeight: 800, fontSize: '0.7rem' }}
+                                sx={{ fontWeight: 800, fontSize: '0.75rem' }}
                               />
                             </Stack>
                             <Typography variant="caption" color="text.secondary">
@@ -4122,7 +4232,7 @@ function AutomationsContent() {
 
                         <Paper
                           variant="outlined"
-                          sx={{ p: 2, borderRadius: 2, bgcolor: 'background.default' }}
+                          sx={{ p: 2, borderRadius: 1, bgcolor: 'background.default' }}
                         >
                           <Typography variant="body2" fontWeight={600} mb={1}>
                             {aiReview.summary}
@@ -4152,7 +4262,7 @@ function AutomationsContent() {
                                     variant="outlined"
                                     sx={{
                                       p: 1.25,
-                                      borderRadius: 1.5,
+                                      borderRadius: 1,
                                       height: '100%',
                                       bgcolor: dCfg.enabled ? 'background.paper' : 'action.hover',
                                       opacity: dCfg.enabled ? 1 : 0.65,
@@ -4171,7 +4281,7 @@ function AutomationsContent() {
                                         label={dCfg.enabled ? 'ON' : 'OFF'}
                                         size="small"
                                         color={dCfg.enabled ? 'success' : 'default'}
-                                        sx={{ height: 16, fontSize: '0.6rem', fontWeight: 800 }}
+                                        sx={{ height: 18, fontSize: '0.75rem', fontWeight: 800 }}
                                       />
                                     </Stack>
                                     {dCfg.attend_class && (
@@ -4182,7 +4292,7 @@ function AutomationsContent() {
                                     <Typography
                                       variant="caption"
                                       color="text.secondary"
-                                      sx={{ whiteSpace: 'pre-line', fontSize: '0.68rem' }}
+                                      sx={{ whiteSpace: 'pre-line', fontSize: '0.75rem' }}
                                     >
                                       {dCfg.template || (dCfg.attend_class ? '' : '—')}
                                     </Typography>
@@ -4224,7 +4334,7 @@ function AutomationsContent() {
                             <TableContainer
                               component={Paper}
                               variant="outlined"
-                              sx={{ maxHeight: 220, borderRadius: 1.5 }}
+                              sx={{ maxHeight: 220, borderRadius: 1 }}
                             >
                               <Table stickyHeader size="small">
                                 <TableHead>
@@ -4239,8 +4349,8 @@ function AutomationsContent() {
                                 <TableBody>
                                   {aiReview.syllabus_days.map((sd) => (
                                     <TableRow key={`${sd.semester}-${sd.day_number}`} hover>
-                                      <TableCell sx={{ fontWeight: 700 }}>Day {sd.day_number}</TableCell>
-                                      <TableCell>Sem {sd.semester}</TableCell>
+                                      <TableCell sx={{ fontWeight: 700, whiteSpace: 'nowrap' }}>Day {sd.day_number}</TableCell>
+                                      <TableCell sx={{ whiteSpace: 'nowrap' }}>Sem {sd.semester}</TableCell>
                                       <TableCell sx={{ fontWeight: 700, color: 'primary.main' }}>
                                         {sd.workbook || '—'}
                                       </TableCell>
@@ -4260,7 +4370,7 @@ function AutomationsContent() {
                       variant="outlined"
                       sx={{
                         p: 4,
-                        borderRadius: 2,
+                        borderRadius: 1,
                         height: '100%',
                         display: 'flex',
                         flexDirection: 'column',
@@ -4339,6 +4449,9 @@ function AutomationsContent() {
       {/* ===================================================================== */}
       {apiModalOpen && (
         <Box
+          role="dialog"
+          aria-modal="true"
+          aria-label="Online Portal API Integration — Memoria Academy"
           onClick={() => {
             if (!discoveringCourses && !syncingPortal) setApiModalOpen(false);
           }}
@@ -4360,7 +4473,7 @@ function AutomationsContent() {
               width: '100%',
               maxWidth: 940,
               maxHeight: '90vh',
-              borderRadius: 3,
+              borderRadius: 1,
               display: 'flex',
               flexDirection: 'column',
               overflow: 'hidden',
@@ -4391,6 +4504,7 @@ function AutomationsContent() {
               </Stack>
               <IconButton
                 size="small"
+                aria-label="Close modal"
                 disabled={discoveringCourses || syncingPortal}
                 onClick={() => setApiModalOpen(false)}
               >
@@ -4402,7 +4516,7 @@ function AutomationsContent() {
             <Box sx={{ p: 3, overflowY: 'auto', flexGrow: 1 }}>
               <Stack spacing={3}>
                 {/* 1. Credentials Card */}
-                <Paper variant="outlined" sx={{ p: 2.5, borderRadius: 2 }}>
+                <Paper variant="outlined" sx={{ p: 2.5, borderRadius: 1 }}>
                   <Stack
                     direction={{ xs: 'column', sm: 'row' }}
                     justifyContent="space-between"
@@ -4424,7 +4538,7 @@ function AutomationsContent() {
                         size="small"
                         color="success"
                         variant="outlined"
-                        sx={{ fontWeight: 700, fontSize: '0.7rem' }}
+                        sx={{ fontWeight: 700, fontSize: '0.75rem' }}
                       />
                     )}
                   </Stack>
@@ -4470,7 +4584,7 @@ function AutomationsContent() {
                             <Button
                               size="small"
                               onClick={() => setShowApiPassword((prev) => !prev)}
-                              sx={{ minWidth: 0, px: 1, fontSize: '0.7rem', fontWeight: 700 }}
+                              sx={{ minWidth: 0, px: 1, fontSize: '0.75rem', fontWeight: 700 }}
                             >
                               {showApiPassword ? 'Hide' : 'Show'}
                             </Button>
@@ -4497,7 +4611,7 @@ function AutomationsContent() {
                 </Paper>
 
                 {/* 2. Course Matcher Table */}
-                <Paper variant="outlined" sx={{ p: 2.5, borderRadius: 2 }}>
+                <Paper variant="outlined" sx={{ p: 2.5, borderRadius: 1 }}>
                   <Stack
                     direction={{ xs: 'column', sm: 'row' }}
                     justifyContent="space-between"
@@ -4524,7 +4638,7 @@ function AutomationsContent() {
                     )}
                   </Stack>
 
-                  <TableContainer component={Paper} variant="outlined" sx={{ borderRadius: 2 }}>
+                  <TableContainer component={Paper} variant="outlined" sx={{ borderRadius: 1 }}>
                     <Table size="small">
                       <TableHead>
                         <TableRow>
@@ -4553,12 +4667,12 @@ function AutomationsContent() {
                                   Moodle ID #{mapping.moodle_course_id}
                                 </Typography>
                               </TableCell>
-                              <TableCell>
+                              <TableCell sx={{ whiteSpace: 'nowrap' }}>
                                 <Chip
                                   label={mapping.course_shortname}
                                   size="small"
                                   variant="outlined"
-                                  sx={{ fontWeight: 700, fontSize: '0.7rem' }}
+                                  sx={{ fontWeight: 700, fontSize: '0.75rem' }}
                                 />
                               </TableCell>
                               <TableCell>
@@ -4593,13 +4707,13 @@ function AutomationsContent() {
                                   ))}
                                 </TextField>
                               </TableCell>
-                              <TableCell align="center">
+                              <TableCell align="center" sx={{ whiteSpace: 'nowrap' }}>
                                 {isIgnored ? (
                                   <Chip
                                     label="Ignored"
                                     size="small"
                                     variant="outlined"
-                                    sx={{ fontWeight: 700, fontSize: '0.68rem', opacity: 0.7 }}
+                                    sx={{ fontWeight: 700, fontSize: '0.75rem', opacity: 0.7 }}
                                   />
                                 ) : (
                                   <Chip
@@ -4607,7 +4721,7 @@ function AutomationsContent() {
                                     label="Active Sync"
                                     size="small"
                                     color="success"
-                                    sx={{ fontWeight: 800, fontSize: '0.68rem' }}
+                                    sx={{ fontWeight: 800, fontSize: '0.75rem' }}
                                   />
                                 )}
                               </TableCell>
@@ -4669,6 +4783,9 @@ function AutomationsContent() {
       {/* ===================================================================== */}
       {editingApiWeek && (
         <Box
+          role="dialog"
+          aria-modal="true"
+          aria-label={`Customize ${editingApiWeek.section_title} Schedule Text`}
           onClick={() => {
             if (!savingApiWeekText) setEditingApiWeek(null);
           }}
@@ -4689,7 +4806,7 @@ function AutomationsContent() {
             sx={{
               width: '100%',
               maxWidth: 640,
-              borderRadius: 3,
+              borderRadius: 1,
               overflow: 'hidden',
             }}
           >
@@ -4712,7 +4829,7 @@ function AutomationsContent() {
                   Edits are preserved across future API syncs.
                 </Typography>
               </Box>
-              <IconButton size="small" onClick={() => setEditingApiWeek(null)}>
+              <IconButton size="small" aria-label="Close modal" onClick={() => setEditingApiWeek(null)}>
                 <X size={18} />
               </IconButton>
             </Box>
@@ -4783,9 +4900,10 @@ export default function AutomationsPage() {
   return (
     <Suspense
       fallback={
-        <Box display="flex" justifyContent="center" alignItems="center" minHeight="50vh">
-          <CircularProgress />
-        </Box>
+        <Stack spacing={2.5}>
+          <Skeleton variant="rounded" height={88} sx={{ borderRadius: 1 }} />
+          <Skeleton variant="rounded" height={520} sx={{ borderRadius: 1 }} />
+        </Stack>
       }
     >
       <AutomationsContent />

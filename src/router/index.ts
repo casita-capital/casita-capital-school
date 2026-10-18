@@ -1,5 +1,5 @@
 import type { MenuItem } from './menuItem';
-import { LayoutDashboard, Calendar, CheckSquare, Settings, Printer, Sparkles, BookOpen, FileText, Clock, Repeat, GraduationCap } from 'lucide-react';
+import { LayoutDashboard, Calendar, CheckSquare, Settings, Printer, Sparkles, BookOpen, FileText, Clock, Repeat, GraduationCap, History } from 'lucide-react';
 import { createElement } from 'react';
 
 export const getSchoolMenuItems = (): MenuItem[] => [
@@ -46,6 +46,13 @@ export const getSchoolMenuItems = (): MenuItem[] => [
     icon: createElement(Calendar, { size: 18 }),
   },
   {
+    id: 'today',
+    name: 'Daily Timeline',
+    link: '/today',
+    section: 'daily',
+    icon: createElement(Clock, { size: 18 }),
+  },
+  {
     id: 'subjects-habits',
     name: 'Subjects & Habits',
     link: '/subjects-habits',
@@ -72,6 +79,13 @@ export const getSchoolMenuItems = (): MenuItem[] => [
     link: '/holidays',
     section: 'setup',
     icon: createElement(Sparkles, { size: 18 }),
+  },
+  {
+    id: 'audit-log',
+    name: 'Audit Log & History',
+    link: '/audit-log',
+    section: 'setup',
+    icon: createElement(History, { size: 18 }),
   },
   {
     id: 'settings',

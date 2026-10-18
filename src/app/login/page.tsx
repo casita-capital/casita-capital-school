@@ -20,6 +20,7 @@ import { Lock, Mail, Eye, EyeOff } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { Logo } from 'src/components/base/logo';
 import { createClient } from 'src/services/supabase/client';
+import { resolveAndSyncActiveUser, setCachedActiveUser } from 'src/utils/active-user';
 
 function LoginContent() {
   const router = useRouter();
@@ -91,12 +92,11 @@ function LoginContent() {
         password,
       });
 
-      if (typeof window !== 'undefined') {
-        localStorage.setItem('school_active_user_email', email.trim());
-      }
+      setCachedActiveUser({ email: email.trim() });
 
       if (error) {
         if (error.message.includes('schema') || error.message.includes('Database error')) {
+          await resolveAndSyncActiveUser(supabase);
           toast.success('Signed in successfully!');
           router.push('/');
           router.refresh();
@@ -105,6 +105,7 @@ function LoginContent() {
         setErrorMessage(error.message);
         toast.error(`Login failed: ${error.message}`);
       } else if (data.session) {
+        await resolveAndSyncActiveUser(supabase);
         toast.success('Successfully logged in!');
         router.push('/');
         router.refresh();

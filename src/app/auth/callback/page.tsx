@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { Box, Button, Card, CardContent, CircularProgress, Typography, Alert } from '@mui/material';
 import { createClient } from 'src/services/supabase/client';
 import { Logo } from 'src/components/base/logo';
+import { resolveAndSyncActiveUser, setCachedActiveUser } from 'src/utils/active-user';
 
 function AuthCallbackContent() {
   const router = useRouter();
@@ -40,7 +41,14 @@ function AuthCallbackContent() {
       // 3. Check for active Supabase session (handles Implicit flow #access_token and PKCE session)
       const { data: { session } } = await supabase.auth.getSession();
       if (session?.user?.email) {
-        localStorage.setItem('school_active_user_email', session.user.email);
+        setCachedActiveUser({
+          email: session.user.email,
+          fullName:
+            typeof session.user.user_metadata?.full_name === 'string'
+              ? session.user.user_metadata.full_name
+              : undefined,
+        });
+        await resolveAndSyncActiveUser(supabase);
         if (session.provider_token) {
           localStorage.setItem('google_provider_token', session.provider_token);
         }
@@ -55,7 +63,14 @@ function AuthCallbackContent() {
         try {
           const { data, error } = await supabase.auth.exchangeCodeForSession(code);
           if (!error && data.session?.user?.email) {
-            localStorage.setItem('school_active_user_email', data.session.user.email);
+            setCachedActiveUser({
+              email: data.session.user.email,
+              fullName:
+                typeof data.session.user.user_metadata?.full_name === 'string'
+                  ? data.session.user.user_metadata.full_name
+                  : undefined,
+            });
+            await resolveAndSyncActiveUser(supabase);
             if (data.session.provider_token) {
               localStorage.setItem('google_provider_token', data.session.provider_token);
             }
@@ -70,7 +85,14 @@ function AuthCallbackContent() {
         // Retry session check
         const { data: retryData } = await supabase.auth.getSession();
         if (retryData.session?.user?.email) {
-          localStorage.setItem('school_active_user_email', retryData.session.user.email);
+          setCachedActiveUser({
+            email: retryData.session.user.email,
+            fullName:
+              typeof retryData.session.user.user_metadata?.full_name === 'string'
+                ? retryData.session.user.user_metadata.full_name
+                : undefined,
+          });
+          await resolveAndSyncActiveUser(supabase);
           if (retryData.session.provider_token) {
             localStorage.setItem('google_provider_token', retryData.session.provider_token);
           }

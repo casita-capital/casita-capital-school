@@ -52,8 +52,8 @@ export const createPalette = (config: PaletteConfig): PaletteOptions => {
     },
     text: {
       primary: neutral[50],
-      secondary: neutral[500],
-      disabled: alpha(neutral[500], 0.7),
+      secondary: neutral[300],
+      disabled: alpha(neutral[400], 0.65),
     },
   };
 };

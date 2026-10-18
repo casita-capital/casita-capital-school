@@ -34,6 +34,7 @@ import toast from 'react-hot-toast';
 import { PageHeading } from 'src/components/base/page-heading';
 import { createClient } from 'src/services/supabase/client';
 import { ItemIcon } from 'src/components/base/item-icon';
+import { resolveAndSyncActiveUser, setCachedActiveUser } from 'src/utils/active-user';
 
 const AVATAR_ICON_OPTIONS = [
   { id: 'User', label: 'User Silhouette' },
@@ -89,53 +90,15 @@ export default function UserProfilePage() {
 
   async function loadProfile() {
     try {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-
-      const activeEmail =
-        user?.email ||
-        (typeof window !== 'undefined' ? localStorage.getItem('school_active_user_email') : null) ||
-        'blake.womble@gmail.com';
-
-      let targetRecord = null;
-
-      if (user?.id) {
-        const { data: byAuthId } = await supabase
-          .from('users')
-          .select('*')
-          .eq('auth_id', user.id)
-          .maybeSingle();
-
-        targetRecord = byAuthId;
-      }
-
-      if (!targetRecord && activeEmail) {
-        const { data: byEmail } = await supabase
-          .from('users')
-          .select('*')
-          .eq('email', activeEmail)
-          .maybeSingle();
-
-        targetRecord = byEmail;
-      }
-
-      if (!targetRecord) {
-        const { data: fallbackUser } = await supabase
-          .from('users')
-          .select('*')
-          .eq('email', 'blake.womble@gmail.com')
-          .maybeSingle();
-
-        targetRecord = fallbackUser;
-      }
-
-      if (targetRecord) {
-        setUserId(targetRecord.id);
-        setFullName(targetRecord.full_name || '');
-        setEmail(targetRecord.email || '');
-        setRole(targetRecord.role || 'parent');
-        if (targetRecord.avatar_url) setAvatarIcon(targetRecord.avatar_url);
+      const resolved = await resolveAndSyncActiveUser(supabase);
+      if (resolved) {
+        setUserId(resolved.id);
+        setFullName(resolved.fullName);
+        setEmail(resolved.email);
+        setRole(resolved.role || 'parent');
+        if (resolved.avatarUrl) {
+          setAvatarIcon(resolved.avatarUrl);
+        }
       }
     } catch {
       toast.error('Failed to load user profile');
@@ -169,6 +132,7 @@ export default function UserProfilePage() {
         if (error) {
           toast.error(`Failed to update profile: ${error.message}`);
         } else {
+          setCachedActiveUser({ fullName: fullName.trim(), email: email.trim() });
           toast.success('User profile updated in database!');
           window.dispatchEvent(new Event('school_user_profile_updated'));
         }
@@ -189,6 +153,7 @@ export default function UserProfilePage() {
           toast.error(`Error saving profile: ${error.message}`);
         } else if (data) {
           setUserId(data.id);
+          setCachedActiveUser({ fullName: fullName.trim(), email: email.trim() });
           toast.success('User profile created and saved!');
           window.dispatchEvent(new Event('school_user_profile_updated'));
         }

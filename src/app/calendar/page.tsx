@@ -37,6 +37,7 @@ import toast from 'react-hot-toast';
 import { PageHeading } from 'src/components/base/page-heading';
 import { createClient } from 'src/services/supabase/client';
 import { useSchoolSettings } from 'src/contexts/school-settings';
+import { expandTasksForDateRange } from 'src/utils/task-recurrence';
 import { ItemIcon } from 'src/components/base/item-icon';
 import {
   FormattedParentNote,
@@ -182,13 +183,27 @@ export default function MasterCalendarPage() {
         setSchoolAssignments(assignData as SchoolAssignment[]);
       }
 
-      // 4. Fetch Tasks with due dates
+      // 4. Fetch Tasks with due dates & recurring schedules
       const { data: taskData } = await supabase
         .from('tasks')
         .select('*');
 
       if (taskData) {
-        setTasksList(taskData as TaskItem[]);
+        const nowY = new Date().getFullYear();
+        const expanded = expandTasksForDateRange(
+          taskData,
+          `${nowY - 1}-01-01`,
+          `${nowY + 1}-12-31`
+        );
+        setTasksList(
+          expanded.map((occ) => ({
+            id: occ.occurrenceId,
+            title: occ.title,
+            due_date: occ.occurrenceDate,
+            status: occ.isCompleted ? 'completed' : 'pending',
+            priority: occ.priority,
+          }))
+        );
       }
 
       // 5. Fetch Enabled Google Calendar Connections & Events

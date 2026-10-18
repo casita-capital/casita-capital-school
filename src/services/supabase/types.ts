@@ -53,6 +53,8 @@ export interface Database {
           status: 'pending' | 'in_progress' | 'completed';
           priority: 'low' | 'medium' | 'high';
           assigned_to: string | null;
+          is_recurring: boolean;
+          recurrence_config: Json | null;
           created_by: string | null;
           updated_by: string | null;
           created_at: string;
@@ -66,6 +68,8 @@ export interface Database {
           status?: 'pending' | 'in_progress' | 'completed';
           priority?: 'low' | 'medium' | 'high';
           assigned_to?: string | null;
+          is_recurring?: boolean;
+          recurrence_config?: Json | null;
           created_by?: string | null;
           updated_by?: string | null;
           created_at?: string;
@@ -79,6 +83,8 @@ export interface Database {
           status?: 'pending' | 'in_progress' | 'completed';
           priority?: 'low' | 'medium' | 'high';
           assigned_to?: string | null;
+          is_recurring?: boolean;
+          recurrence_config?: Json | null;
           created_by?: string | null;
           updated_by?: string | null;
           created_at?: string;
@@ -940,6 +946,56 @@ export interface Database {
           historical_courses?: Json;
           grading_scale?: Json;
           updated_at?: string;
+        };
+      };
+      audit_logs: {
+        Row: {
+          id: string;
+          table_name: string;
+          record_id: string;
+          action: 'INSERT' | 'UPDATE' | 'DELETE';
+          actor_id: string | null;
+          actor_name: string;
+          actor_email: string | null;
+          summary: string;
+          changed_fields: string[];
+          old_data: Json | null;
+          new_data: Json | null;
+          reverted_at: string | null;
+          reverted_by: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          table_name: string;
+          record_id: string;
+          action: 'INSERT' | 'UPDATE' | 'DELETE';
+          actor_id?: string | null;
+          actor_name: string;
+          actor_email?: string | null;
+          summary: string;
+          changed_fields?: string[];
+          old_data?: Json | null;
+          new_data?: Json | null;
+          reverted_at?: string | null;
+          reverted_by?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          table_name?: string;
+          record_id?: string;
+          action?: 'INSERT' | 'UPDATE' | 'DELETE';
+          actor_id?: string | null;
+          actor_name?: string;
+          actor_email?: string | null;
+          summary?: string;
+          changed_fields?: string[];
+          old_data?: Json | null;
+          new_data?: Json | null;
+          reverted_at?: string | null;
+          reverted_by?: string | null;
+          created_at?: string;
         };
       };
     };

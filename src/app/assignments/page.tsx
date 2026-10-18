@@ -14,6 +14,7 @@ import {
   IconButton,
   InputAdornment,
   Paper,
+  Skeleton,
   Stack,
   Table,
   TableBody,
@@ -50,7 +51,7 @@ import {
   BookOpen,
   ShieldAlert,
   Sparkles,
-  CloudDownload,
+  CheckCircle2,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { PageHeading } from 'src/components/base/page-heading';
@@ -119,6 +120,17 @@ function getCurrentWeekMonday(): string {
   return `${yyyy}-${mm}-${dd}`;
 }
 
+function formatCompactDate(dateStr: string | null | undefined): string {
+  if (!dateStr) return '—';
+  const parsed = new Date(`${dateStr}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) return dateStr;
+  return parsed.toLocaleDateString('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+  });
+}
+
 function parseDaysArray(raw: Json | undefined): DayKey[] {
   if (!Array.isArray(raw)) return ['friday'];
   const valid = raw.filter(
@@ -169,8 +181,18 @@ function AssignmentsPageContent() {
       }
     >
   >({});
+  const [editingInlineScoreIds, setEditingInlineScoreIds] = useState<
+    Record<string, boolean>
+  >({});
   const [savingInlineId, setSavingInlineId] = useState<string | null>(null);
   const [revertingOverrideId, setRevertingOverrideId] = useState<string | null>(null);
+  const [confirmDeleteAssignmentId, setConfirmDeleteAssignmentId] = useState<
+    string | null
+  >(null);
+  const [confirmDeleteTemplateId, setConfirmDeleteTemplateId] = useState<
+    string | null
+  >(null);
+  const [approvingAllStaged, setApprovingAllStaged] = useState<boolean>(false);
 
   // Recurring & Syllabus Importer State
   const [syllabusStageSubjectId, setSyllabusStageSubjectId] = useState<string>('');
@@ -194,6 +216,18 @@ function AssignmentsPageContent() {
   >(undefined);
   const [openTypesModal, setOpenTypesModal] = useState(false);
   const [openPolicyModal, setOpenPolicyModal] = useState(false);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setToolsMenuOpen(false);
+        setConfirmDeleteAssignmentId(null);
+        setConfirmDeleteTemplateId(null);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   async function loadData() {
     try {
@@ -335,7 +369,7 @@ function AssignmentsPageContent() {
         id: '',
         name: '',
         sort_order: 0,
-        color: '#0C74E4',
+        color: '#1b5698',
       }),
     []
   );
@@ -544,17 +578,116 @@ function AssignmentsPageContent() {
     }
   };
 
-  const handleDeleteAssignment = async (id: string) => {
+  const handleDeleteAssignment = async (target: GradebookAssignment) => {
     try {
-      const { error } = await supabase.from('assignments').delete().eq('id', id);
+      const { error } = await supabase
+        .from('assignments')
+        .delete()
+        .eq('id', target.id);
       if (error) {
         toast.error(`Failed to delete assignment: ${error.message}`);
       } else {
-        setAssignments((prev) => prev.filter((a) => a.id !== id));
-        toast.success('Assignment deleted');
+        setConfirmDeleteAssignmentId(null);
+        setAssignments((prev) => prev.filter((a) => a.id !== target.id));
+        toast(
+          (t) => (
+            <Stack direction="row" spacing={1.5} alignItems="center">
+              <Typography variant="body2" fontWeight={600}>
+                Deleted &ldquo;{target.title}&rdquo;
+              </Typography>
+              <Button
+                size="small"
+                variant="outlined"
+                color="primary"
+                onClick={async () => {
+                  toast.dismiss(t.id);
+                  const { data: restored, error: restoreErr } = await supabase
+                    .from('assignments')
+                    .insert(target as unknown as Record<string, unknown>)
+                    .select('*')
+                    .single();
+                  if (!restoreErr && restored) {
+                    const restoredObj = restored as unknown as GradebookAssignment;
+                    setAssignments((prev) => [restoredObj, ...prev]);
+                    toast.success('Assignment restored');
+                  } else {
+                    toast.error('Could not restore assignment');
+                  }
+                }}
+                sx={{ fontWeight: 700, textTransform: 'none', py: 0.25 }}
+              >
+                Undo
+              </Button>
+            </Stack>
+          ),
+          { duration: 5000 }
+        );
       }
     } catch {
       toast.error('Error deleting assignment');
+    }
+  };
+
+  const handleDeleteRecurringTemplate = async (
+    tpl: RecurringAssignmentTemplate
+  ) => {
+    try {
+      const { error } = await supabase
+        .from('recurring_assignment_templates')
+        .delete()
+        .eq('id', tpl.id);
+      if (error) {
+        toast.error(`Failed to remove rule: ${error.message}`);
+        return;
+      }
+      setConfirmDeleteTemplateId(null);
+      setRecurringTemplates((prev) => prev.filter((item) => item.id !== tpl.id));
+      toast(
+        (t) => (
+          <Stack direction="row" spacing={1.5} alignItems="center">
+            <Typography variant="body2" fontWeight={600}>
+              Removed recurring rule &ldquo;{tpl.title_template}&rdquo;
+            </Typography>
+            <Button
+              size="small"
+              variant="outlined"
+              color="primary"
+              onClick={async () => {
+                toast.dismiss(t.id);
+                const { data: restored, error: restoreErr } = await supabase
+                  .from('recurring_assignment_templates')
+                  .insert({
+                    id: tpl.id,
+                    subject_id: tpl.subject_id,
+                    title_template: tpl.title_template,
+                    instructions_template: tpl.instructions_template,
+                    assignment_type_slug: tpl.assignment_type_slug,
+                    grading_mode: tpl.grading_mode,
+                    points_possible: tpl.points_possible,
+                    total_problems_default: tpl.total_problems_default,
+                    days_of_week: tpl.days_of_week as unknown as Json,
+                    linked_weekly_source: tpl.linked_weekly_source,
+                    auto_behavior: tpl.auto_behavior,
+                    estimated_minutes: tpl.estimated_minutes,
+                    is_active: tpl.is_active,
+                  })
+                  .select('*')
+                  .single();
+                if (!restoreErr && restored) {
+                  setRecurringTemplates((prev) => [...prev, tpl]);
+                  toast.success('Recurring rule restored');
+                }
+              }}
+              sx={{ fontWeight: 700, textTransform: 'none', py: 0.25 }}
+            >
+              Undo
+            </Button>
+          </Stack>
+        ),
+        { duration: 5000 }
+      );
+    } catch {
+      toast.error('Error removing recurring rule');
     }
   };
 
@@ -572,7 +705,7 @@ function AssignmentsPageContent() {
           id: '',
           name: '',
           sort_order: 0,
-          color: '#0C74E4',
+          color: '#1b5698',
         });
 
     const typeInfo = typeMap.get(assignment.category);
@@ -642,6 +775,10 @@ function AssignmentsPageContent() {
         setAssignments((prev) =>
           prev.map((item) => (item.id === updated.id ? updated : item))
         );
+        setEditingInlineScoreIds((prev) => ({
+          ...prev,
+          [updated.id]: false,
+        }));
         toast.success(
           `Saved "${updated.title}": ${formatClassGradeDisplay(
             updated.percentage_score ?? null,
@@ -671,6 +808,34 @@ function AssignmentsPageContent() {
       }
     } finally {
       setRevertingOverrideId(null);
+    }
+  };
+
+  const handleBatchApproveAllStaged = async () => {
+    if (stagedAssignments.length === 0) return;
+    setApprovingAllStaged(true);
+    try {
+      const ids = stagedAssignments.map((a) => a.id);
+      const { error } = await supabase
+        .from('assignments')
+        .update({ workflow_status: 'not_started', is_graded: true })
+        .in('id', ids);
+      if (error) {
+        toast.error(`Failed to approve staged assignments: ${error.message}`);
+        return;
+      }
+      setAssignments((prev) =>
+        prev.map((a) =>
+          ids.includes(a.id)
+            ? { ...a, workflow_status: 'not_started', is_graded: true }
+            : a
+        )
+      );
+      toast.success(`Approved ${ids.length} pending assignment(s) as graded!`);
+    } catch {
+      toast.error('Error approving all pending assignments');
+    } finally {
+      setApprovingAllStaged(false);
     }
   };
 
@@ -869,10 +1034,11 @@ function AssignmentsPageContent() {
     }
   };
 
-  // Helper to render an inline score editor for an assignment row (SCORE INPUT column)
-  const renderInlineScoreControls = (
+  // Unified single-row Grade & Score Column renderer (combines Grade display + inline score inputs on ungraded/editing rows)
+  const renderUnifiedGradeAndScoreCell = (
     a: GradebookAssignment,
-    sub?: SubjectWithGrading
+    sub: SubjectWithGrading | undefined,
+    policy: SubjectGradingPolicy
   ) => {
     const typeInfo = typeMap.get(a.category);
     const mode: ScoringMode =
@@ -881,19 +1047,61 @@ function AssignmentsPageContent() {
     const moodleMeta = meta?.moodleMeta ?? null;
     const isApiSynced = meta ? meta.isApiSynced : isAssignmentApiSynced(a, sub);
     const isOverridden = Boolean(meta?.isOverridden);
+    const isScored = typeof a.percentage_score === 'number';
+    const isEditingInline = Boolean(editingInlineScoreIds[a.id]);
 
     if (a.is_graded === false) {
       return (
         <Chip
           size="small"
-          label="Ungraded / Review Only"
+          label="Ungraded / Review"
           variant="outlined"
-          sx={{ fontSize: '0.7rem', fontWeight: 500 }}
+          sx={{ fontSize: '0.75rem', fontWeight: 500, whiteSpace: 'nowrap' }}
         />
       );
     }
 
     if (isApiSynced) {
+      const gradeBadge = isScored ? (
+        <Typography
+          variant="subtitle2"
+          fontWeight={800}
+          onClick={() => handleOpenQuickGradeModal(a)}
+          sx={{
+            color: isOverridden
+              ? 'error.main'
+              : (a.percentage_score ?? 0) >= 90
+              ? 'success.dark'
+              : (a.percentage_score ?? 0) >= 80
+              ? 'primary.main'
+              : 'warning.dark',
+            fontVariantNumeric: 'tabular-nums',
+            whiteSpace: 'nowrap',
+            cursor: 'pointer',
+            '&:hover': { textDecoration: 'underline' },
+          }}
+        >
+          {formatClassGradeDisplay(
+            a.percentage_score ?? null,
+            a.letter_grade || '',
+            policy
+          )}
+        </Typography>
+      ) : (
+        <Chip
+          size="small"
+          color="info"
+          variant="outlined"
+          label="Pending API"
+          sx={{
+            fontWeight: 600,
+            fontSize: '0.75rem',
+            height: 22,
+            whiteSpace: 'nowrap',
+          }}
+        />
+      );
+
       if (isOverridden) {
         return (
           <Stack
@@ -901,37 +1109,21 @@ function AssignmentsPageContent() {
             spacing={0.75}
             alignItems="center"
             justifyContent="flex-end"
-            flexWrap="wrap"
-            useFlexGap
+            sx={{ whiteSpace: 'nowrap' }}
           >
+            {gradeBadge}
             <Chip
               size="small"
               icon={<ShieldAlert size={12} />}
-              label="MANUAL OVERRIDE"
+              label="OVERRIDE"
               color="error"
               sx={{
                 height: 22,
-                fontSize: '0.66rem',
+                fontSize: '0.75rem',
                 fontWeight: 800,
-                letterSpacing: '0.03em',
               }}
             />
-            <Button
-              size="small"
-              variant="outlined"
-              color="warning"
-              onClick={() => setApiWarningAssignment(a)}
-              sx={{
-                fontWeight: 700,
-                textTransform: 'none',
-                fontSize: '0.72rem',
-                py: 0.25,
-                px: 1,
-              }}
-            >
-              Edit Override
-            </Button>
-            <Tooltip title="Remove manual override and restore Original API Value">
+            <Tooltip title="Restore Original API Value">
               <Button
                 size="small"
                 variant="outlined"
@@ -942,31 +1134,13 @@ function AssignmentsPageContent() {
                 sx={{
                   fontWeight: 600,
                   textTransform: 'none',
-                  fontSize: '0.7rem',
+                  fontSize: '0.75rem',
                   py: 0.25,
-                  px: 1,
+                  px: 0.85,
+                  whiteSpace: 'nowrap',
                 }}
               >
-                Revert to API
-              </Button>
-            </Tooltip>
-            <Tooltip title="Remove manual override and clear grade to Blank (Ungraded)">
-              <Button
-                size="small"
-                variant="text"
-                color="inherit"
-                disabled={revertingOverrideId === a.id}
-                onClick={() => handleQuickRevertApiOverride(a, 'blank')}
-                sx={{
-                  fontWeight: 600,
-                  textTransform: 'none',
-                  fontSize: '0.7rem',
-                  py: 0.25,
-                  px: 0.75,
-                  color: 'text.secondary',
-                }}
-              >
-                Clear
+                Revert
               </Button>
             </Tooltip>
           </Stack>
@@ -979,14 +1153,16 @@ function AssignmentsPageContent() {
           spacing={1}
           alignItems="center"
           justifyContent="flex-end"
+          sx={{ whiteSpace: 'nowrap' }}
         >
+          {gradeBadge}
           <Chip
             size="small"
             icon={<Lock size={11} />}
             label="API Synced"
             color="info"
             variant="outlined"
-            sx={{ height: 22, fontSize: '0.68rem', fontWeight: 700 }}
+            sx={{ height: 22, fontSize: '0.75rem', fontWeight: 700 }}
           />
           <Button
             size="small"
@@ -996,18 +1172,94 @@ function AssignmentsPageContent() {
             sx={{
               fontWeight: 600,
               textTransform: 'none',
-              fontSize: '0.72rem',
+              fontSize: '0.75rem',
               borderColor: 'divider',
               py: 0.25,
-              px: 1.1,
+              px: 1,
+              whiteSpace: 'nowrap',
             }}
           >
-            Override Grade
+            Override
           </Button>
         </Stack>
       );
     }
 
+    // Manual assignment that is ALREADY scored and NOT in inline-edit mode: show crisp single-row grade + click-to-edit
+    if (isScored && !isEditingInline) {
+      const detailLabel =
+        mode === 'problems_calculator' &&
+        typeof a.total_problems === 'number' &&
+        typeof a.missed_problems === 'number'
+          ? `${Math.max(0, a.total_problems - a.missed_problems)}/${a.total_problems}`
+          : typeof a.points_earned === 'number'
+          ? `${Number(a.points_earned.toFixed(1))}/${a.points_possible ?? 100}`
+          : moodleMeta?.range_formatted || '';
+
+      return (
+        <Stack
+          direction="row"
+          spacing={1}
+          alignItems="center"
+          justifyContent="flex-end"
+          sx={{ whiteSpace: 'nowrap' }}
+        >
+          <Typography
+            variant="subtitle2"
+            fontWeight={800}
+            onClick={() => handleOpenQuickGradeModal(a)}
+            sx={{
+              color:
+                (a.percentage_score ?? 0) >= 90
+                  ? 'success.dark'
+                  : (a.percentage_score ?? 0) >= 80
+                  ? 'primary.main'
+                  : 'warning.dark',
+              fontVariantNumeric: 'tabular-nums',
+              cursor: 'pointer',
+              '&:hover': { textDecoration: 'underline' },
+            }}
+          >
+            {formatClassGradeDisplay(
+              a.percentage_score ?? null,
+              a.letter_grade || '',
+              policy
+            )}
+          </Typography>
+          {detailLabel && (
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              sx={{ fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}
+            >
+              ({detailLabel})
+            </Typography>
+          )}
+          <Button
+            size="small"
+            variant="outlined"
+            color="inherit"
+            onClick={() =>
+              setEditingInlineScoreIds((prev) => ({ ...prev, [a.id]: true }))
+            }
+            sx={{
+              fontWeight: 600,
+              textTransform: 'none',
+              fontSize: '0.75rem',
+              borderColor: 'divider',
+              py: 0.2,
+              px: 1,
+              minWidth: 0,
+              whiteSpace: 'nowrap',
+            }}
+          >
+            Edit Score
+          </Button>
+        </Stack>
+      );
+    }
+
+    // Ungraded manual assignment OR actively editing inline score
     const draft = inlineDrafts[a.id] || {
       total_problems:
         typeof a.total_problems === 'number' ? String(a.total_problems) : '',
@@ -1019,15 +1271,15 @@ function AssignmentsPageContent() {
     };
 
     const compactInputSx = {
-      width: 68,
+      width: 64,
       height: 30,
-      px: 1,
+      px: 0.85,
       borderRadius: 1,
       border: '1px solid',
       borderColor: 'divider',
       bgcolor: 'background.paper',
       color: 'text.primary',
-      fontSize: '0.78rem',
+      fontSize: '0.75rem',
       fontWeight: 600,
       fontFamily: 'inherit',
       fontVariantNumeric: 'tabular-nums',
@@ -1041,15 +1293,16 @@ function AssignmentsPageContent() {
       return (
         <Stack
           direction="row"
-          spacing={0.75}
+          spacing={0.65}
           alignItems="center"
           justifyContent="flex-end"
+          sx={{ whiteSpace: 'nowrap' }}
         >
           <Box
             component="input"
             type="number"
-            aria-label="Total Problems"
-            title="Total Problems"
+            aria-label={`Total problems for ${a.title}`}
+            title="Total Problems (Press Enter to save)"
             placeholder="Total"
             value={draft.total_problems}
             onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
@@ -1058,13 +1311,19 @@ function AssignmentsPageContent() {
                 [a.id]: { ...draft, total_problems: e.target.value },
               }))
             }
+            onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                void handleSaveInlineScore(a);
+              }
+            }}
             sx={compactInputSx}
           />
           <Box
             component="input"
             type="number"
-            aria-label="Missed Problems"
-            title="Missed Problems"
+            aria-label={`Missed problems for ${a.title}`}
+            title="Missed Problems (Press Enter to save)"
             placeholder="Missed"
             value={draft.missed_problems}
             onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
@@ -1073,18 +1332,49 @@ function AssignmentsPageContent() {
                 [a.id]: { ...draft, missed_problems: e.target.value },
               }))
             }
+            onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                void handleSaveInlineScore(a);
+              }
+            }}
             sx={compactInputSx}
           />
           <Button
             size="small"
-            variant="outlined"
+            variant="contained"
             color="primary"
             disabled={savingInlineId === a.id}
             onClick={() => handleSaveInlineScore(a)}
-            sx={{ fontWeight: 600, textTransform: 'none', minWidth: 58, height: 30 }}
+            sx={{
+              fontWeight: 600,
+              textTransform: 'none',
+              fontSize: '0.75rem',
+              minWidth: 52,
+              height: 30,
+              px: 1,
+            }}
           >
             {savingInlineId === a.id ? '...' : 'Save'}
           </Button>
+          {isEditingInline && (
+            <Button
+              size="small"
+              variant="text"
+              color="inherit"
+              onClick={() =>
+                setEditingInlineScoreIds((prev) => ({ ...prev, [a.id]: false }))
+              }
+              sx={{
+                fontSize: '0.75rem',
+                textTransform: 'none',
+                minWidth: 0,
+                px: 0.75,
+              }}
+            >
+              Cancel
+            </Button>
+          )}
         </Stack>
       );
     }
@@ -1092,15 +1382,16 @@ function AssignmentsPageContent() {
     return (
       <Stack
         direction="row"
-        spacing={0.75}
+        spacing={0.65}
         alignItems="center"
         justifyContent="flex-end"
+        sx={{ whiteSpace: 'nowrap' }}
       >
         <Box
           component="input"
           type="number"
-          aria-label="Points Earned"
-          title="Points Earned"
+          aria-label={`Points earned for ${a.title}`}
+          title="Points Earned (Press Enter to save)"
           placeholder="Earned"
           value={draft.points_earned}
           onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
@@ -1109,6 +1400,12 @@ function AssignmentsPageContent() {
               [a.id]: { ...draft, points_earned: e.target.value },
             }))
           }
+          onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              void handleSaveInlineScore(a);
+            }
+          }}
           sx={compactInputSx}
         />
         <Typography variant="caption" color="text.secondary" fontWeight={700}>
@@ -1117,8 +1414,8 @@ function AssignmentsPageContent() {
         <Box
           component="input"
           type="number"
-          aria-label="Points Possible"
-          title="Points Possible"
+          aria-label={`Points possible for ${a.title}`}
+          title="Points Possible (Press Enter to save)"
           placeholder="Max"
           value={draft.points_possible}
           onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
@@ -1127,18 +1424,49 @@ function AssignmentsPageContent() {
               [a.id]: { ...draft, points_possible: e.target.value },
             }))
           }
+          onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              void handleSaveInlineScore(a);
+            }
+          }}
           sx={compactInputSx}
         />
         <Button
           size="small"
-          variant="outlined"
+          variant="contained"
           color="primary"
           disabled={savingInlineId === a.id}
           onClick={() => handleSaveInlineScore(a)}
-          sx={{ fontWeight: 600, textTransform: 'none', minWidth: 58, height: 30 }}
+          sx={{
+            fontWeight: 600,
+            textTransform: 'none',
+            fontSize: '0.75rem',
+            minWidth: 52,
+            height: 30,
+            px: 1,
+          }}
         >
           {savingInlineId === a.id ? '...' : 'Save'}
         </Button>
+        {isEditingInline && (
+          <Button
+            size="small"
+            variant="text"
+            color="inherit"
+            onClick={() =>
+              setEditingInlineScoreIds((prev) => ({ ...prev, [a.id]: false }))
+            }
+            sx={{
+              fontSize: '0.75rem',
+              textTransform: 'none',
+              minWidth: 0,
+              px: 0.75,
+            }}
+          >
+            Cancel
+          </Button>
+        )}
       </Stack>
     );
   };
@@ -1304,7 +1632,7 @@ function AssignmentsPageContent() {
     if (items.length === 0 && showTableHeadIfFlat) {
       return (
         <TableRow>
-          <TableCell colSpan={7} align="center" sx={{ py: 6 }}>
+          <TableCell colSpan={6} align="center" sx={{ py: 6 }}>
             <Box textAlign="center">
               <Box
                 sx={{
@@ -1364,11 +1692,11 @@ function AssignmentsPageContent() {
       const typeInfo = typeMap.get(a.category);
       const meta = assignmentMetaMap.get(a.id);
       const moodleMeta = meta?.moodleMeta ?? null;
-      const isApiSyncedItem = meta ? meta.isApiSynced : isAssignmentApiSynced(a, sub);
       const isOverridden = Boolean(meta?.isOverridden);
       const policy =
         (a.subject_id ? subjectPolicyMap.get(a.subject_id) : undefined) ||
         defaultGradingPolicy;
+      const isConfirmingDelete = confirmDeleteAssignmentId === a.id;
 
       return (
         <TableRow
@@ -1384,16 +1712,21 @@ function AssignmentsPageContent() {
           }}
         >
           {/* 1. DONE CHECKBOX */}
-          <TableCell align="center" sx={{ width: 56 }}>
+          <TableCell align="center" sx={{ width: 56, whiteSpace: 'nowrap' }}>
             <Checkbox
               checked={isCompleted}
               onChange={() => handleToggleStatus(a)}
               color="success"
+              inputProps={{
+                'aria-label': `Mark ${a.title} as ${
+                  isCompleted ? 'pending' : 'completed'
+                }`,
+              }}
             />
           </TableCell>
 
           {/* 2. ASSIGNMENT TITLE & METADATA */}
-          <TableCell>
+          <TableCell sx={{ minWidth: 220 }}>
             <Stack direction="row" alignItems="center" spacing={1.5}>
               <Box>
                 <Stack
@@ -1417,7 +1750,7 @@ function AssignmentsPageContent() {
                       size="small"
                       color="primary"
                       variant="outlined"
-                      sx={{ height: 18, fontSize: '0.62rem', fontWeight: 700 }}
+                      sx={{ height: 20, fontSize: '0.75rem', fontWeight: 700 }}
                     />
                   )}
                   {moodleMeta?.week_number && (
@@ -1426,7 +1759,7 @@ function AssignmentsPageContent() {
                       size="small"
                       color="primary"
                       variant="outlined"
-                      sx={{ height: 18, fontSize: '0.62rem', fontWeight: 700 }}
+                      sx={{ height: 20, fontSize: '0.75rem', fontWeight: 700 }}
                     />
                   )}
                   {isOverridden && (
@@ -1434,12 +1767,13 @@ function AssignmentsPageContent() {
                       label="MANUAL OVERRIDE"
                       size="small"
                       sx={{
-                        height: 18,
-                        fontSize: '0.6rem',
+                        height: 20,
+                        fontSize: '0.75rem',
                         fontWeight: 800,
-                        bgcolor: '#FEF3C7',
-                        color: '#92400E',
-                        border: '1px solid #F59E0B',
+                        bgcolor: alpha(theme.palette.warning.main, 0.14),
+                        color: 'warning.dark',
+                        border: '1px solid',
+                        borderColor: 'warning.main',
                       }}
                     />
                   )}
@@ -1451,7 +1785,7 @@ function AssignmentsPageContent() {
                       size="small"
                       color="warning"
                       variant="outlined"
-                      sx={{ height: 18, fontSize: '0.62rem', fontWeight: 700 }}
+                      sx={{ height: 20, fontSize: '0.75rem', fontWeight: 700 }}
                     />
                   )}
                 </Stack>
@@ -1460,20 +1794,22 @@ function AssignmentsPageContent() {
                     {a.description}
                   </Typography>
                 )}
-                {moodleMeta && (
-                  <Typography
-                    variant="caption"
-                    color="text.secondary"
-                    sx={{ display: 'block', fontSize: '0.68rem' }}
-                  >
-                    {moodleMeta.weight_formatted
-                      ? `Wt: ${moodleMeta.weight_formatted}`
-                      : ''}
-                    {moodleMeta.contribution_formatted
-                      ? ` • Contrib: ${moodleMeta.contribution_formatted}`
-                      : ''}
-                  </Typography>
-                )}
+                {moodleMeta &&
+                  (moodleMeta.weight_formatted ||
+                    moodleMeta.contribution_formatted) && (
+                    <Typography
+                      variant="caption"
+                      color="text.secondary"
+                      sx={{ display: 'block', fontSize: '0.75rem' }}
+                    >
+                      {moodleMeta.weight_formatted
+                        ? `Wt: ${moodleMeta.weight_formatted}`
+                        : ''}
+                      {moodleMeta.contribution_formatted
+                        ? ` • Contrib: ${moodleMeta.contribution_formatted}`
+                        : ''}
+                    </Typography>
+                  )}
                 {a.teacher_comments && (
                   <Typography
                     variant="caption"
@@ -1492,7 +1828,7 @@ function AssignmentsPageContent() {
           </TableCell>
 
           {/* 3. UNIFIED CLASS & TYPE COLUMN */}
-          <TableCell sx={{ width: 175 }}>
+          <TableCell sx={{ width: 175, whiteSpace: 'nowrap' }}>
             <Stack spacing={0.5} alignItems="flex-start">
               {sub ? (
                 <Stack direction="row" spacing={0.75} alignItems="center">
@@ -1505,7 +1841,11 @@ function AssignmentsPageContent() {
                       flexShrink: 0,
                     }}
                   />
-                  <Typography variant="caption" fontWeight={600}>
+                  <Typography
+                    variant="caption"
+                    fontWeight={600}
+                    sx={{ whiteSpace: 'nowrap' }}
+                  >
                     {sub.name}
                   </Typography>
                 </Stack>
@@ -1520,7 +1860,7 @@ function AssignmentsPageContent() {
                 variant="outlined"
                 sx={{
                   height: 20,
-                  fontSize: '0.68rem',
+                  fontSize: '0.75rem',
                   fontWeight: 600,
                   borderColor: typeInfo?.color || 'divider',
                   color: typeInfo?.color || 'text.secondary',
@@ -1529,138 +1869,116 @@ function AssignmentsPageContent() {
             </Stack>
           </TableCell>
 
-          {/* 4. OPEN / DUE DATES */}
-          <TableCell sx={{ width: 155 }}>
+          {/* 4. OPEN / DUE DATES (Single-Row Human-Readable) */}
+          <TableCell sx={{ width: 165, whiteSpace: 'nowrap' }}>
             <Stack spacing={0.35} alignItems="flex-start">
               {a.assigned_date && a.assigned_date !== a.due_date && (
                 <Typography
                   variant="caption"
                   color="text.secondary"
-                  sx={{ fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}
+                  sx={{
+                    fontWeight: 600,
+                    fontVariantNumeric: 'tabular-nums',
+                    whiteSpace: 'nowrap',
+                  }}
                 >
-                  Opens: {a.assigned_date}
+                  Opens {formatCompactDate(a.assigned_date)}
                 </Typography>
               )}
               <Chip
                 icon={<CalendarIcon size={12} />}
                 label={
                   a.assigned_date && a.assigned_date !== a.due_date
-                    ? `Closes: ${a.due_date}`
-                    : a.due_date
+                    ? `Due ${formatCompactDate(a.due_date)}`
+                    : formatCompactDate(a.due_date)
                 }
                 size="small"
                 variant="outlined"
-                sx={{ fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}
+                sx={{
+                  fontWeight: 600,
+                  fontVariantNumeric: 'tabular-nums',
+                  whiteSpace: 'nowrap',
+                }}
               />
             </Stack>
           </TableCell>
 
-          {/* 5. GRADE DISPLAY OR COMPACT "ENTER GRADE" BUTTON */}
-          <TableCell sx={{ width: 145 }}>
-            {a.is_graded === false ? (
-              <Chip size="small" label="Ungraded / Review" variant="outlined" />
-            ) : typeof a.percentage_score === 'number' ? (
-              <Stack spacing={0.25} alignItems="flex-start">
-                <Typography
-                  variant="subtitle2"
-                  fontWeight={800}
-                  onClick={() => handleOpenQuickGradeModal(a)}
+          {/* 5. UNIFIED GRADE & SCORE COLUMN */}
+          <TableCell
+            align="right"
+            sx={{ minWidth: 260, whiteSpace: 'nowrap' }}
+          >
+            {renderUnifiedGradeAndScoreCell(a, sub, policy)}
+          </TableCell>
+
+          {/* 6. ACTIONS (WITH 2-STEP DELETE CONFIRM) */}
+          <TableCell
+            align="right"
+            sx={{ width: 110, whiteSpace: 'nowrap' }}
+          >
+            {isConfirmingDelete ? (
+              <Stack
+                direction="row"
+                spacing={0.5}
+                justifyContent="flex-end"
+                alignItems="center"
+              >
+                <Button
+                  size="small"
+                  variant="contained"
+                  color="error"
+                  onClick={() => handleDeleteAssignment(a)}
                   sx={{
-                    color: isOverridden
-                      ? 'error.main'
-                      : a.percentage_score >= 90
-                      ? 'success.dark'
-                      : a.percentage_score >= 80
-                      ? 'primary.main'
-                      : 'warning.dark',
-                    fontVariantNumeric: 'tabular-nums',
-                    cursor: 'pointer',
-                    '&:hover': { textDecoration: 'underline' },
+                    fontSize: '0.75rem',
+                    fontWeight: 700,
+                    textTransform: 'none',
+                    py: 0.2,
+                    px: 0.85,
+                    minWidth: 0,
                   }}
                 >
-                  {formatClassGradeDisplay(
-                    a.percentage_score,
-                    a.letter_grade || '',
-                    policy
-                  )}
-                </Typography>
-                {a.grading_mode === 'problems_calculator' &&
-                  typeof a.total_problems === 'number' &&
-                  typeof a.missed_problems === 'number' && (
-                    <Typography variant="caption" color="text.secondary">
-                      {Math.max(0, a.total_problems - a.missed_problems)}/
-                      {a.total_problems} correct
-                    </Typography>
-                  )}
-                {isOverridden && (
-                  <Typography
-                    variant="caption"
-                    color="text.secondary"
-                    sx={{ fontSize: '0.64rem' }}
-                  >
-                    API:{' '}
-                    {moodleMeta?.api_grade_raw !== null &&
-                    moodleMeta?.api_grade_raw !== undefined
-                      ? `${moodleMeta.api_grade_raw.toFixed(1)}/${
-                          moodleMeta.api_grade_max ?? 100
-                        }`
-                      : 'Pending'}
-                  </Typography>
-                )}
+                  Confirm
+                </Button>
+                <Button
+                  size="small"
+                  variant="text"
+                  color="inherit"
+                  onClick={() => setConfirmDeleteAssignmentId(null)}
+                  sx={{
+                    fontSize: '0.75rem',
+                    textTransform: 'none',
+                    py: 0.2,
+                    px: 0.6,
+                    minWidth: 0,
+                  }}
+                >
+                  Cancel
+                </Button>
               </Stack>
-            ) : isApiSyncedItem ? (
-              <Chip
-                size="small"
-                color="info"
-                variant="outlined"
-                label="Pending API Grade"
-                sx={{ fontWeight: 600, fontSize: '0.68rem', height: 22 }}
-              />
             ) : (
-              <Button
-                size="small"
-                variant="outlined"
-                color="warning"
-                onClick={() => handleOpenQuickGradeModal(a)}
-                sx={{
-                  fontWeight: 700,
-                  textTransform: 'none',
-                  fontSize: '0.72rem',
-                  py: 0.25,
-                }}
-              >
-                Enter Grade
-              </Button>
+              <Stack direction="row" spacing={0.5} justifyContent="flex-end">
+                <Tooltip title="Edit Assignment Details">
+                  <IconButton
+                    size="small"
+                    color="primary"
+                    aria-label={`Edit ${a.title}`}
+                    onClick={() => handleOpenEditModal(a)}
+                  >
+                    <Edit2 size={16} />
+                  </IconButton>
+                </Tooltip>
+                <Tooltip title="Delete Assignment">
+                  <IconButton
+                    size="small"
+                    color="error"
+                    aria-label={`Delete ${a.title}`}
+                    onClick={() => setConfirmDeleteAssignmentId(a.id)}
+                  >
+                    <Trash2 size={16} />
+                  </IconButton>
+                </Tooltip>
+              </Stack>
             )}
-          </TableCell>
-
-          {/* 6. SCORE INPUT (PROBLEMS OR POINTS) */}
-          <TableCell align="right" sx={{ minWidth: 250 }}>
-            {renderInlineScoreControls(a, sub)}
-          </TableCell>
-
-          {/* 7. ACTIONS */}
-          <TableCell align="right" sx={{ width: 90 }}>
-            <Stack direction="row" spacing={0.5} justifyContent="flex-end">
-              <Tooltip title="Edit Assignment Details">
-                <IconButton
-                  size="small"
-                  color="primary"
-                  onClick={() => handleOpenEditModal(a)}
-                >
-                  <Edit2 size={16} />
-                </IconButton>
-              </Tooltip>
-              <Tooltip title="Delete Assignment">
-                <IconButton
-                  size="small"
-                  color="error"
-                  onClick={() => handleDeleteAssignment(a.id)}
-                >
-                  <Trash2 size={16} />
-                </IconButton>
-              </Tooltip>
-            </Stack>
           </TableCell>
         </TableRow>
       );
@@ -1676,14 +1994,11 @@ function AssignmentsPageContent() {
 
   if (loading) {
     return (
-      <Box
-        display="flex"
-        justifyContent="center"
-        alignItems="center"
-        minHeight="50vh"
-      >
-        <CircularProgress />
-      </Box>
+      <Stack spacing={2.5} sx={{ py: 2 }}>
+        <Skeleton variant="rounded" height={68} sx={{ borderRadius: 1 }} />
+        <Skeleton variant="rounded" height={48} sx={{ borderRadius: 1 }} />
+        <Skeleton variant="rounded" height={420} sx={{ borderRadius: 1 }} />
+      </Stack>
     );
   }
 
@@ -1731,7 +2046,7 @@ function AssignmentsPageContent() {
                     minWidth: 325,
                     width: 'max-content',
                     p: 0.75,
-                    borderRadius: 2,
+                    borderRadius: 1,
                     border: '1px solid',
                     borderColor: 'divider',
                     boxShadow: '0 12px 32px -8px rgba(15, 23, 42, 0.16)',
@@ -1864,7 +2179,7 @@ function AssignmentsPageContent() {
         elevation={0}
         sx={{
           mb: 3,
-          borderRadius: 2,
+          borderRadius: 1,
           border: '1px solid',
           borderColor: 'divider',
           bgcolor: 'background.paper',
@@ -1927,7 +2242,7 @@ function AssignmentsPageContent() {
         <Card
           elevation={0}
           sx={{
-            borderRadius: 2,
+            borderRadius: 1,
             border: '1px solid',
             borderColor: 'divider',
             mb: 4,
@@ -1954,7 +2269,7 @@ function AssignmentsPageContent() {
                 flexWrap: 'wrap',
                 gap: 0.5,
                 p: 0.5,
-                borderRadius: 2,
+                borderRadius: 1,
                 bgcolor: alpha(theme.palette.primary.main, 0.06),
                 border: '1px solid',
                 borderColor: alpha(theme.palette.primary.main, 0.14),
@@ -2008,10 +2323,11 @@ function AssignmentsPageContent() {
                     sx={{
                       textTransform: 'none',
                       fontWeight: active ? 800 : 600,
-                      fontSize: '0.8rem',
+                      fontSize: '0.75rem',
+                      whiteSpace: 'nowrap',
                       px: 1.5,
                       py: 0.65,
-                      borderRadius: 1.5,
+                      borderRadius: 1,
                       color: active ? 'primary.main' : 'text.secondary',
                       bgcolor: active ? 'background.paper' : 'transparent',
                       boxShadow: active
@@ -2031,11 +2347,13 @@ function AssignmentsPageContent() {
                         sx={{
                           px: 0.8,
                           py: 0.1,
-                          borderRadius: '999px',
-                          fontSize: '0.7rem',
+                          borderRadius: 1,
+                          fontSize: '0.75rem',
                           fontWeight: 800,
                           fontVariantNumeric: 'tabular-nums',
-                          bgcolor: active ? tab.badgeBg : alpha(theme.palette.text.primary, 0.08),
+                          bgcolor: active
+                            ? tab.badgeBg
+                            : alpha(theme.palette.text.primary, 0.08),
                           color: active ? tab.badgeColor : 'text.secondary',
                         }}
                       >
@@ -2135,7 +2453,7 @@ function AssignmentsPageContent() {
                   fontWeight: 800,
                   letterSpacing: '0.06em',
                   textTransform: 'uppercase',
-                  fontSize: '0.66rem',
+                  fontSize: '0.75rem',
                 }}
               >
                 Type Filter
@@ -2150,8 +2468,8 @@ function AssignmentsPageContent() {
                 onClick={() => setCategoryFilter('all')}
                 sx={{
                   height: 25,
-                  borderRadius: '999px',
-                  fontSize: '0.72rem',
+                  borderRadius: 1,
+                  fontSize: '0.75rem',
                   fontWeight: categoryFilter === 'all' ? 800 : 600,
                   bgcolor:
                     categoryFilter === 'all'
@@ -2201,8 +2519,8 @@ function AssignmentsPageContent() {
                     label={t.name}
                     sx={{
                       height: 25,
-                      borderRadius: '999px',
-                      fontSize: '0.72rem',
+                      borderRadius: 1,
+                      fontSize: '0.75rem',
                       fontWeight: isSelected ? 800 : 600,
                       bgcolor: isSelected ? dotColor : 'background.paper',
                       color: isSelected ? '#ffffff' : 'text.primary',
@@ -2254,29 +2572,45 @@ function AssignmentsPageContent() {
                 }
               >
                 {statusTab === 'needs_grading'
-                  ? `Showing manual-entry assignments (Math, Spelling, Biblioplan, Science, etc.) whose open/assigned or due date has arrived (on or before ${todayStr}) and need parent grading. Future assignments appear under Upcoming.`
+                  ? `Showing manual-entry assignments (Math, Spelling, Biblioplan, Science, etc.) whose open/assigned or due date has arrived (on or before ${formatCompactDate(
+                      todayStr
+                    )}) and need parent grading. Future assignments appear under Upcoming.`
                   : statusTab === 'pending_grades'
-                  ? `Showing API-synced assignments (Classical Studies, Composition & Grammar, Latin) whose open/assigned or due date has arrived (on or before ${todayStr}) and are awaiting portal grade sync.`
-                  : `Showing future assignments whose open/assigned date and due date are both after ${todayStr}. Past or currently open assignments never appear here.`}
+                  ? `Showing API-synced assignments (Classical Studies, Composition & Grammar, Latin) whose open/assigned or due date has arrived (on or before ${formatCompactDate(
+                      todayStr
+                    )}) and are awaiting portal grade sync.`
+                  : `Showing future assignments whose open/assigned date and due date are both after ${formatCompactDate(
+                      todayStr
+                    )}. Past or currently open assignments never appear here.`}
               </Typography>
             </Box>
           )}
 
-          {/* STREAMLINED ASSIGNMENTS TABLE (Unified Class & Type + Inline Score Input, No Priority) */}
+          {/* STREAMLINED 6-COLUMN ASSIGNMENTS TABLE */}
           <TableContainer component={Box}>
             <Table sx={{ minWidth: 680 }}>
               <TableHead sx={{ bgcolor: 'action.hover' }}>
                 <TableRow>
-                  <TableCell sx={{ width: 56, textAlign: 'center', fontWeight: 700 }}>
+                  <TableCell
+                    sx={{
+                      width: 56,
+                      textAlign: 'center',
+                      fontWeight: 700,
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
                     DONE
                   </TableCell>
-                  <TableCell sx={{ fontWeight: 700 }}>ASSIGNMENT</TableCell>
+                  <TableCell sx={{ fontWeight: 700, whiteSpace: 'nowrap' }}>
+                    ASSIGNMENT
+                  </TableCell>
 
                   <TableCell
                     onClick={() => handleToggleSort('subject')}
                     sx={{
                       fontWeight: 700,
                       width: 175,
+                      whiteSpace: 'nowrap',
                       cursor: 'pointer',
                       userSelect: 'none',
                       '&:hover': { color: 'primary.main' },
@@ -2292,7 +2626,8 @@ function AssignmentsPageContent() {
                     onClick={() => handleToggleSort('due_date')}
                     sx={{
                       fontWeight: 700,
-                      width: 155,
+                      width: 165,
+                      whiteSpace: 'nowrap',
                       cursor: 'pointer',
                       userSelect: 'none',
                       '&:hover': { color: 'primary.main' },
@@ -2304,19 +2639,24 @@ function AssignmentsPageContent() {
                     </Stack>
                   </TableCell>
 
-                  <TableCell sx={{ fontWeight: 700, width: 145 }}>
-                    GRADE
-                  </TableCell>
-
                   <TableCell
                     align="right"
-                    sx={{ fontWeight: 700, minWidth: 250 }}
+                    sx={{
+                      fontWeight: 700,
+                      minWidth: 260,
+                      whiteSpace: 'nowrap',
+                    }}
                   >
-                    SCORE INPUT (PROBLEMS OR POINTS)
+                    GRADE &amp; SCORE
                   </TableCell>
 
                   <TableCell
-                    sx={{ fontWeight: 700, width: 90, textAlign: 'right' }}
+                    sx={{
+                      fontWeight: 700,
+                      width: 110,
+                      textAlign: 'right',
+                      whiteSpace: 'nowrap',
+                    }}
                   >
                     ACTIONS
                   </TableCell>
@@ -2383,7 +2723,7 @@ function AssignmentsPageContent() {
         <Card
           elevation={0}
           sx={{
-            borderRadius: 2,
+            borderRadius: 1,
             border: '1px solid',
             borderColor: 'divider',
             mb: 4,
@@ -2471,8 +2811,9 @@ function AssignmentsPageContent() {
                   <TableCell
                     sx={{
                       fontWeight: 600,
-                      fontSize: '0.72rem',
+                      fontSize: '0.75rem',
                       color: 'text.secondary',
+                      whiteSpace: 'nowrap',
                     }}
                   >
                     CLASS
@@ -2480,8 +2821,9 @@ function AssignmentsPageContent() {
                   <TableCell
                     sx={{
                       fontWeight: 600,
-                      fontSize: '0.72rem',
+                      fontSize: '0.75rem',
                       color: 'text.secondary',
+                      whiteSpace: 'nowrap',
                     }}
                   >
                     RECURRING RULE
@@ -2489,8 +2831,9 @@ function AssignmentsPageContent() {
                   <TableCell
                     sx={{
                       fontWeight: 600,
-                      fontSize: '0.72rem',
+                      fontSize: '0.75rem',
                       color: 'text.secondary',
+                      whiteSpace: 'nowrap',
                     }}
                   >
                     TYPE &amp; SCORING
@@ -2498,8 +2841,9 @@ function AssignmentsPageContent() {
                   <TableCell
                     sx={{
                       fontWeight: 600,
-                      fontSize: '0.72rem',
+                      fontSize: '0.75rem',
                       color: 'text.secondary',
+                      whiteSpace: 'nowrap',
                     }}
                   >
                     SCHEDULED DAYS
@@ -2507,8 +2851,9 @@ function AssignmentsPageContent() {
                   <TableCell
                     sx={{
                       fontWeight: 600,
-                      fontSize: '0.72rem',
+                      fontSize: '0.75rem',
                       color: 'text.secondary',
+                      whiteSpace: 'nowrap',
                     }}
                   >
                     AUTO-BEHAVIOR
@@ -2517,8 +2862,9 @@ function AssignmentsPageContent() {
                     align="right"
                     sx={{
                       fontWeight: 600,
-                      fontSize: '0.72rem',
+                      fontSize: '0.75rem',
                       color: 'text.secondary',
+                      whiteSpace: 'nowrap',
                     }}
                   >
                     ACTIONS
@@ -2538,9 +2884,11 @@ function AssignmentsPageContent() {
                   recurringTemplates.map((tpl) => {
                     const sub = subjectMap.get(tpl.subject_id);
                     const typeInfo = typeMap.get(tpl.assignment_type_slug);
+                    const isConfirmingTplDelete =
+                      confirmDeleteTemplateId === tpl.id;
                     return (
                       <TableRow key={tpl.id} hover>
-                        <TableCell>
+                        <TableCell sx={{ whiteSpace: 'nowrap' }}>
                           <Stack
                             direction="row"
                             spacing={1}
@@ -2551,7 +2899,7 @@ function AssignmentsPageContent() {
                                 width: 8,
                                 height: 8,
                                 borderRadius: '50%',
-                                bgcolor: sub?.color || '#0C74E4',
+                                bgcolor: sub?.color || '#1b5698',
                               }}
                             />
                             <Typography variant="body2" fontWeight={600}>
@@ -2572,7 +2920,7 @@ function AssignmentsPageContent() {
                             </Typography>
                           )}
                         </TableCell>
-                        <TableCell>
+                        <TableCell sx={{ whiteSpace: 'nowrap' }}>
                           <Stack
                             direction="row"
                             spacing={0.75}
@@ -2584,7 +2932,7 @@ function AssignmentsPageContent() {
                               label={typeInfo?.name || tpl.assignment_type_slug}
                               sx={{
                                 height: 20,
-                                fontSize: '0.68rem',
+                                fontSize: '0.75rem',
                                 fontWeight: 600,
                               }}
                             />
@@ -2598,23 +2946,23 @@ function AssignmentsPageContent() {
                             </Typography>
                           </Stack>
                         </TableCell>
-                        <TableCell>
-                          <Stack direction="row" spacing={0.5} flexWrap="wrap">
+                        <TableCell sx={{ whiteSpace: 'nowrap' }}>
+                          <Stack direction="row" spacing={0.5} flexWrap="nowrap">
                             {tpl.days_of_week.map((d) => (
                               <Chip
                                 key={d}
                                 size="small"
                                 label={d.slice(0, 3).toUpperCase()}
                                 sx={{
-                                  height: 19,
-                                  fontSize: '0.64rem',
+                                  height: 20,
+                                  fontSize: '0.75rem',
                                   fontWeight: 600,
                                 }}
                               />
                             ))}
                           </Stack>
                         </TableCell>
-                        <TableCell>
+                        <TableCell sx={{ whiteSpace: 'nowrap' }}>
                           <ToggleButtonGroup
                             size="small"
                             exclusive
@@ -2633,7 +2981,7 @@ function AssignmentsPageContent() {
                               sx={{
                                 textTransform: 'none',
                                 fontWeight: 600,
-                                fontSize: '0.7rem',
+                                fontSize: '0.75rem',
                                 py: 0.25,
                               }}
                             >
@@ -2644,7 +2992,7 @@ function AssignmentsPageContent() {
                               sx={{
                                 textTransform: 'none',
                                 fontWeight: 600,
-                                fontSize: '0.7rem',
+                                fontSize: '0.75rem',
                                 py: 0.25,
                               }}
                             >
@@ -2655,7 +3003,7 @@ function AssignmentsPageContent() {
                               sx={{
                                 textTransform: 'none',
                                 fontWeight: 600,
-                                fontSize: '0.7rem',
+                                fontSize: '0.75rem',
                                 py: 0.25,
                               }}
                             >
@@ -2663,40 +3011,73 @@ function AssignmentsPageContent() {
                             </ToggleButton>
                           </ToggleButtonGroup>
                         </TableCell>
-                        <TableCell align="right">
-                          <Stack
-                            direction="row"
-                            spacing={0.5}
-                            justifyContent="flex-end"
-                          >
-                            <IconButton
-                              size="small"
-                              onClick={() => {
-                                setEditingAssignment(null);
-                                setEditingTemplate(tpl);
-                                setModalInitialValues(undefined);
-                                setOpenModal(true);
-                              }}
+                        <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>
+                          {isConfirmingTplDelete ? (
+                            <Stack
+                              direction="row"
+                              spacing={0.5}
+                              justifyContent="flex-end"
                             >
-                              <Edit2 size={14} />
-                            </IconButton>
-                            <IconButton
-                              size="small"
-                              color="error"
-                              onClick={async () => {
-                                await supabase
-                                  .from('recurring_assignment_templates')
-                                  .delete()
-                                  .eq('id', tpl.id);
-                                setRecurringTemplates((prev) =>
-                                  prev.filter((item) => item.id !== tpl.id)
-                                );
-                                toast.success('Recurring rule removed');
-                              }}
+                              <Button
+                                size="small"
+                                variant="contained"
+                                color="error"
+                                onClick={() => handleDeleteRecurringTemplate(tpl)}
+                                sx={{
+                                  fontSize: '0.75rem',
+                                  fontWeight: 700,
+                                  textTransform: 'none',
+                                  py: 0.2,
+                                  px: 0.85,
+                                  minWidth: 0,
+                                }}
+                              >
+                                Confirm
+                              </Button>
+                              <Button
+                                size="small"
+                                variant="text"
+                                color="inherit"
+                                onClick={() => setConfirmDeleteTemplateId(null)}
+                                sx={{
+                                  fontSize: '0.75rem',
+                                  textTransform: 'none',
+                                  py: 0.2,
+                                  px: 0.6,
+                                  minWidth: 0,
+                                }}
+                              >
+                                Cancel
+                              </Button>
+                            </Stack>
+                          ) : (
+                            <Stack
+                              direction="row"
+                              spacing={0.5}
+                              justifyContent="flex-end"
                             >
-                              <Trash2 size={14} />
-                            </IconButton>
-                          </Stack>
+                              <IconButton
+                                size="small"
+                                aria-label={`Edit rule ${tpl.title_template}`}
+                                onClick={() => {
+                                  setEditingAssignment(null);
+                                  setEditingTemplate(tpl);
+                                  setModalInitialValues(undefined);
+                                  setOpenModal(true);
+                                }}
+                              >
+                                <Edit2 size={14} />
+                              </IconButton>
+                              <IconButton
+                                size="small"
+                                color="error"
+                                aria-label={`Delete rule ${tpl.title_template}`}
+                                onClick={() => setConfirmDeleteTemplateId(tpl.id)}
+                              >
+                                <Trash2 size={14} />
+                              </IconButton>
+                            </Stack>
+                          )}
                         </TableCell>
                       </TableRow>
                     );
@@ -2709,7 +3090,7 @@ function AssignmentsPageContent() {
       )}
 
       {/* =====================================================================
-          PRIMARY TAB 3: IMPORTED PENDING ASSIGNMENTS (Renamed from Staging)
+          PRIMARY TAB 3: IMPORTED PENDING ASSIGNMENTS
           ===================================================================== */}
       {activePrimaryTab === 'imported_pending' && (
         <Stack spacing={3} sx={{ mb: 4 }}>
@@ -2717,7 +3098,7 @@ function AssignmentsPageContent() {
           <Card
             elevation={0}
             sx={{
-              borderRadius: 2,
+              borderRadius: 1,
               border: '1px solid',
               borderColor: 'divider',
             }}
@@ -2730,6 +3111,8 @@ function AssignmentsPageContent() {
                 display: 'flex',
                 justifyContent: 'space-between',
                 alignItems: 'center',
+                flexWrap: 'wrap',
+                gap: 1.5,
               }}
             >
               <Box>
@@ -2740,6 +3123,25 @@ function AssignmentsPageContent() {
                   Review assignments imported from syllabi or weekly rules before they count toward class grades.
                 </Typography>
               </Box>
+              {stagedAssignments.length > 0 && (
+                <Button
+                  size="small"
+                  variant="contained"
+                  color="success"
+                  disabled={approvingAllStaged}
+                  startIcon={
+                    approvingAllStaged ? (
+                      <CircularProgress size={14} color="inherit" />
+                    ) : (
+                      <CheckCircle2 size={15} />
+                    )
+                  }
+                  onClick={handleBatchApproveAllStaged}
+                  sx={{ fontWeight: 700, textTransform: 'none' }}
+                >
+                  Approve All as Graded ({stagedAssignments.length})
+                </Button>
+              )}
             </Box>
 
             <TableContainer>
@@ -2751,8 +3153,9 @@ function AssignmentsPageContent() {
                     <TableCell
                       sx={{
                         fontWeight: 600,
-                        fontSize: '0.72rem',
+                        fontSize: '0.75rem',
                         color: 'text.secondary',
+                        whiteSpace: 'nowrap',
                       }}
                     >
                       PENDING ASSIGNMENT
@@ -2760,8 +3163,9 @@ function AssignmentsPageContent() {
                     <TableCell
                       sx={{
                         fontWeight: 600,
-                        fontSize: '0.72rem',
+                        fontSize: '0.75rem',
                         color: 'text.secondary',
+                        whiteSpace: 'nowrap',
                       }}
                     >
                       CLASS &amp; TYPE
@@ -2769,8 +3173,9 @@ function AssignmentsPageContent() {
                     <TableCell
                       sx={{
                         fontWeight: 600,
-                        fontSize: '0.72rem',
+                        fontSize: '0.75rem',
                         color: 'text.secondary',
+                        whiteSpace: 'nowrap',
                       }}
                     >
                       DUE DATE
@@ -2779,8 +3184,9 @@ function AssignmentsPageContent() {
                       align="right"
                       sx={{
                         fontWeight: 600,
-                        fontSize: '0.72rem',
+                        fontSize: '0.75rem',
                         color: 'text.secondary',
+                        whiteSpace: 'nowrap',
                       }}
                     >
                       DECISION
@@ -2817,7 +3223,7 @@ function AssignmentsPageContent() {
                               </Typography>
                             )}
                           </TableCell>
-                          <TableCell>
+                          <TableCell sx={{ whiteSpace: 'nowrap' }}>
                             <Stack
                               direction="row"
                               spacing={1}
@@ -2851,19 +3257,23 @@ function AssignmentsPageContent() {
                                 label={
                                   typeInfo?.name || st.category.toUpperCase()
                                 }
-                                sx={{ height: 20, fontSize: '0.68rem' }}
+                                sx={{ height: 20, fontSize: '0.75rem' }}
                               />
                             </Stack>
                           </TableCell>
-                          <TableCell>
+                          <TableCell sx={{ whiteSpace: 'nowrap' }}>
                             <Typography
                               variant="caption"
-                              sx={{ fontVariantNumeric: 'tabular-nums' }}
+                              sx={{
+                                fontVariantNumeric: 'tabular-nums',
+                                fontWeight: 600,
+                                whiteSpace: 'nowrap',
+                              }}
                             >
-                              {st.due_date}
+                              {formatCompactDate(st.due_date)}
                             </Typography>
                           </TableCell>
-                          <TableCell align="right">
+                          <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>
                             <Stack
                               direction="row"
                               spacing={1}
@@ -2911,6 +3321,7 @@ function AssignmentsPageContent() {
                               <IconButton
                                 size="small"
                                 color="error"
+                                aria-label={`Remove pending assignment ${st.title}`}
                                 onClick={() =>
                                   handleUpdateStagedDecision(st, 'delete')
                                 }
@@ -2932,7 +3343,7 @@ function AssignmentsPageContent() {
           <Card
             elevation={0}
             sx={{
-              borderRadius: 2,
+              borderRadius: 1,
               border: '1px solid',
               borderColor: 'divider',
             }}
@@ -2993,8 +3404,9 @@ function AssignmentsPageContent() {
                       sx={{
                         fontWeight: 600,
                         width: 90,
-                        fontSize: '0.72rem',
+                        fontSize: '0.75rem',
                         color: 'text.secondary',
+                        whiteSpace: 'nowrap',
                       }}
                     >
                       DAY
@@ -3002,8 +3414,9 @@ function AssignmentsPageContent() {
                     <TableCell
                       sx={{
                         fontWeight: 600,
-                        fontSize: '0.72rem',
+                        fontSize: '0.75rem',
                         color: 'text.secondary',
+                        whiteSpace: 'nowrap',
                       }}
                     >
                       TOPIC
@@ -3011,8 +3424,9 @@ function AssignmentsPageContent() {
                     <TableCell
                       sx={{
                         fontWeight: 600,
-                        fontSize: '0.72rem',
+                        fontSize: '0.75rem',
                         color: 'text.secondary',
+                        whiteSpace: 'nowrap',
                       }}
                     >
                       WORKBOOK / HOMEWORK
@@ -3020,8 +3434,9 @@ function AssignmentsPageContent() {
                     <TableCell
                       sx={{
                         fontWeight: 600,
-                        fontSize: '0.72rem',
+                        fontSize: '0.75rem',
                         color: 'text.secondary',
+                        whiteSpace: 'nowrap',
                       }}
                     >
                       NOTES
@@ -3030,8 +3445,9 @@ function AssignmentsPageContent() {
                       align="right"
                       sx={{
                         fontWeight: 600,
-                        fontSize: '0.72rem',
+                        fontSize: '0.75rem',
                         color: 'text.secondary',
+                        whiteSpace: 'nowrap',
                       }}
                     >
                       ACTION
@@ -3059,7 +3475,7 @@ function AssignmentsPageContent() {
                       );
                       return (
                         <TableRow key={row.day_number} hover>
-                          <TableCell>
+                          <TableCell sx={{ whiteSpace: 'nowrap' }}>
                             <Typography
                               variant="caption"
                               fontWeight={600}
@@ -3086,7 +3502,7 @@ function AssignmentsPageContent() {
                               {row.notes || '—'}
                             </Typography>
                           </TableCell>
-                          <TableCell align="right">
+                          <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>
                             {existingLinked ? (
                               <Chip
                                 size="small"

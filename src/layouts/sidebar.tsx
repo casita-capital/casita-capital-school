@@ -1,7 +1,8 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
+  alpha,
   Box,
   Divider,
   Drawer,
@@ -27,6 +28,8 @@ interface SidebarProps {
   onCloseMobile: () => void;
 }
 
+const SETUP_EXPANDED_STORAGE_KEY = 'school_sidebar_setup_expanded';
+
 export function Sidebar({ openMobile, onCloseMobile }: SidebarProps) {
   const pathname = usePathname();
   const theme = useTheme();
@@ -36,7 +39,32 @@ export function Sidebar({ openMobile, onCloseMobile }: SidebarProps) {
   const dailyItems = menuItems.filter((item) => item.section !== 'setup');
   const setupItems = menuItems.filter((item) => item.section === 'setup');
   const isSetupRouteActive = setupItems.some((item) => item.link === pathname);
-  const [setupExpanded, setSetupExpanded] = useState<boolean>(true);
+  const [setupExpanded, setSetupExpanded] = useState<boolean>(false);
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(SETUP_EXPANDED_STORAGE_KEY);
+      if (saved !== null) {
+        setSetupExpanded(saved === 'true');
+      } else {
+        setSetupExpanded(isSetupRouteActive);
+      }
+    } catch {
+      setSetupExpanded(isSetupRouteActive);
+    }
+  }, [isSetupRouteActive]);
+
+  const handleToggleSetup = () => {
+    setSetupExpanded((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(SETUP_EXPANDED_STORAGE_KEY, String(next));
+      } catch {
+        // Ignore storage error
+      }
+      return next;
+    });
+  };
 
   const renderNavItem = (item: MenuItem) => {
     const active = pathname === item.link;
@@ -47,19 +75,19 @@ export function Sidebar({ openMobile, onCloseMobile }: SidebarProps) {
         href={item.link || '#'}
         selected={active}
         sx={{
-          borderRadius: '6px',
-          mb: 0.4,
-          py: 0.9,
-          px: 1.75,
+          borderRadius: 1,
+          mb: 0.5,
+          py: 1,
+          px: 1.5,
           color: active ? 'primary.main' : 'text.secondary',
           fontWeight: active ? 600 : 500,
           '&.Mui-selected': {
             bgcolor: (t) =>
-              t.palette.mode === 'dark' ? 'rgba(12, 116, 228, 0.14)' : 'rgba(12, 116, 228, 0.08)',
+              alpha(t.palette.primary.main, t.palette.mode === 'dark' ? 0.16 : 0.1),
             color: 'primary.main',
             '&:hover': {
               bgcolor: (t) =>
-                t.palette.mode === 'dark' ? 'rgba(12, 116, 228, 0.2)' : 'rgba(12, 116, 228, 0.12)',
+                alpha(t.palette.primary.main, t.palette.mode === 'dark' ? 0.24 : 0.14),
             },
           },
         }}
@@ -77,7 +105,7 @@ export function Sidebar({ openMobile, onCloseMobile }: SidebarProps) {
         <ListItemText
           primary={item.name}
           primaryTypographyProps={{
-            fontSize: '0.86rem',
+            fontSize: '0.875rem',
             fontWeight: 'inherit',
           }}
         />
@@ -101,31 +129,32 @@ export function Sidebar({ openMobile, onCloseMobile }: SidebarProps) {
       </Box>
       <Scrollbar sx={{ flexGrow: 1, py: 2, px: 2 }}>
         <Typography
-          variant="caption"
+          variant="overline"
           sx={{
             px: 1.5,
-            pb: 0.75,
+            pb: 1,
             display: 'block',
             fontWeight: 700,
-            fontSize: '0.68rem',
-            letterSpacing: '0.08em',
-            textTransform: 'uppercase',
-            color: 'text.disabled',
+            fontSize: '0.75rem',
+            letterSpacing: '0.06em',
+            lineHeight: 1.4,
+            color: 'text.secondary',
           }}
         >
           Daily Planning
         </Typography>
-        <List component="nav" disablePadding>
+        <List component="nav" aria-label="Daily Planning" disablePadding>
           {dailyItems.map(renderNavItem)}
         </List>
 
-        <Divider sx={{ my: 1.75 }} />
+        <Divider sx={{ my: 2 }} />
 
         <ListItemButton
-          onClick={() => setSetupExpanded((prev) => !prev)}
+          onClick={handleToggleSetup}
+          aria-expanded={setupExpanded || isSetupRouteActive}
           sx={{
-            borderRadius: '6px',
-            py: 0.6,
+            borderRadius: 1,
+            py: 0.75,
             px: 1.5,
             mb: 0.5,
             display: 'flex',
@@ -134,24 +163,24 @@ export function Sidebar({ openMobile, onCloseMobile }: SidebarProps) {
           }}
         >
           <Typography
-            variant="caption"
+            variant="overline"
             sx={{
               fontWeight: 700,
-              fontSize: '0.68rem',
-              letterSpacing: '0.08em',
-              textTransform: 'uppercase',
-              color: isSetupRouteActive ? 'primary.main' : 'text.disabled',
+              fontSize: '0.75rem',
+              letterSpacing: '0.06em',
+              lineHeight: 1.4,
+              color: isSetupRouteActive ? 'primary.main' : 'text.secondary',
             }}
           >
             Curriculum &amp; Setup
           </Typography>
-          <Box sx={{ color: 'text.disabled', display: 'flex', alignItems: 'center' }}>
-            {setupExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          <Box sx={{ color: 'text.secondary', display: 'flex', alignItems: 'center' }}>
+            {setupExpanded || isSetupRouteActive ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
           </Box>
         </ListItemButton>
 
         {(setupExpanded || isSetupRouteActive) && (
-          <List component="nav" disablePadding>
+          <List component="nav" aria-label="Curriculum and Setup" disablePadding>
             {setupItems.map(renderNavItem)}
           </List>
         )}

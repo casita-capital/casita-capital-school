@@ -24,7 +24,7 @@ export const createPalette = (config: PaletteConfig): PaletteOptions => {
     },
     background: {
       default: neutral[50],
-      paper: common.white,
+      paper: neutral[25],
     },
     divider: neutral[200],
     info,

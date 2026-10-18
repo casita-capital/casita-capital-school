@@ -12,10 +12,9 @@ import {
   Divider,
   Grid,
   IconButton,
-  InputAdornment,
   LinearProgress,
-  MenuItem,
   Paper,
+  Skeleton,
   Stack,
   Table,
   TableBody,
@@ -35,8 +34,6 @@ import {
   ArrowUp,
   Award,
   BookOpen,
-  Calculator,
-  CheckCircle2,
   CheckSquare,
   ChevronDown,
   ChevronRight,
@@ -55,11 +52,9 @@ import {
   Repeat,
   RotateCcw,
   Save,
-  Search,
   Settings,
   ShieldAlert,
   Sliders,
-  Sparkles,
   Trash2,
   X,
 } from 'lucide-react';
@@ -70,22 +65,16 @@ import {
   DAY_KEYS,
   DayKey,
   getOfficialCourseSubtitle,
-  MathSyllabusDay,
   parseRecurringConfig,
-  resolveSubjectCountersForWeek,
 } from 'src/utils/recurring-planner';
 import {
   AssignmentTypeConfig,
-  AutoBehaviorMode,
   calculateSubjectGradeSummary,
   computeAssignmentMetrics,
   DEFAULT_ASSIGNMENT_TYPES,
   formatClassGradeDisplay,
-  generateWeekAssignmentsFromTemplatesAndPolicy,
   GradebookAssignment,
   isAssignmentApiSynced,
-  isAssignmentAwaitingManualGrade,
-  isAssignmentPendingApiGrade,
   parseAssignmentMoodleMeta,
   parseSubjectGradingPolicy,
   RecurringAssignmentTemplate,
@@ -182,6 +171,18 @@ function getCurrentWeekMonday(): string {
   return `${yyyy}-${mm}-${dd}`;
 }
 
+function formatCompactDate(isoDate?: string | null): string {
+  if (!isoDate) return '—';
+  const clean = isoDate.trim().split('T')[0];
+  const parsed = new Date(`${clean}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) return isoDate;
+  return parsed.toLocaleDateString('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+  });
+}
+
 function parseDaysArray(raw: Json | undefined): DayKey[] {
   if (!Array.isArray(raw)) return ['friday'];
   const valid = raw.filter(
@@ -205,10 +206,7 @@ function GradebookHubContent() {
   const [assignmentTypes, setAssignmentTypes] =
     useState<AssignmentTypeConfig[]>(DEFAULT_ASSIGNMENT_TYPES);
   const [assignments, setAssignments] = useState<GradebookAssignment[]>([]);
-  const [recurringTemplates, setRecurringTemplates] = useState<
-    RecurringAssignmentTemplate[]
-  >([]);
-  const [syllabusDays, setSyllabusDays] = useState<MathSyllabusDay[]>([]);
+  const [, setRecurringTemplates] = useState<RecurringAssignmentTemplate[]>([]);
   const [termOverrides, setTermOverrides] = useState<SubjectTermOverride[]>([]);
   const [attendanceLogs, setAttendanceLogs] = useState<AttendanceLogRow[]>([]);
   const [instructionalHours, setInstructionalHours] = useState<InstructionalHourRow[]>([]);
@@ -218,12 +216,7 @@ function GradebookHubContent() {
   const [openMenuSubjectId, setOpenMenuSubjectId] = useState<string | null>(null);
   const [globalSetupMenuOpen, setGlobalSetupMenuOpen] = useState<boolean>(false);
 
-  // Gradebook Filter & Quick Grade State
-  const [selectedSubjectFilter, setSelectedSubjectFilter] = useState<string>('all');
-  const [statusFilter, setStatusFilter] = useState<
-    'all' | 'needs_grading' | 'pending_grades' | 'completed' | 'upcoming'
-  >('all');
-  const [searchQuery, setSearchQuery] = useState<string>('');
+  // Academic Term State
   const [selectedTerm, setSelectedTerm] = useState<string>('Semester 1 (Fall)');
   const [selectedAcademicYear] = useState<string>('2026-2027');
 
@@ -240,6 +233,12 @@ function GradebookHubContent() {
     >
   >({});
   const [savingInlineId, setSavingInlineId] = useState<string | null>(null);
+  const [editingInlineScoreIds, setEditingInlineScoreIds] = useState<
+    Record<string, boolean>
+  >({});
+  const [confirmDeleteAssignmentId, setConfirmDeleteAssignmentId] = useState<
+    string | null
+  >(null);
 
   // Unified Assignment Modal State
   const [unifiedModalOpen, setUnifiedModalOpen] = useState<boolean>(false);
@@ -273,12 +272,6 @@ function GradebookHubContent() {
   const [overridePortfolioInput, setOverridePortfolioInput] = useState<string>('');
   const [savingOverride, setSavingOverride] = useState<boolean>(false);
 
-  // Syllabus Staging Importer State
-  const [syllabusStageSubjectId, setSyllabusStageSubjectId] = useState<string>('');
-  const [stagingWeekMonday, setStagingWeekMonday] = useState<string>(
-    getCurrentWeekMonday()
-  );
-  const [syncingRecurringWeek, setSyncingRecurringWeek] = useState<boolean>(false);
   const [syncingPortalGrades, setSyncingPortalGrades] = useState<boolean>(false);
 
   // Attendance & Instructional Hours Form State
@@ -288,10 +281,10 @@ function GradebookHubContent() {
   const [newAttendanceStatus, setNewAttendanceStatus] = useState<
     'present' | 'absent' | 'field_trip' | 'sick' | 'holiday'
   >('present');
-  const [newAttendanceHours, setNewAttendanceHours] = useState<string>('6');
+  const [newAttendanceHours] = useState<string>('6');
   const [newAttendanceNotes, setNewAttendanceNotes] = useState<string>('');
   const [hourSubjectId, setHourSubjectId] = useState<string>('');
-  const [hourDate, setHourDate] = useState<string>(
+  const [hourDate] = useState<string>(
     new Date().toISOString().split('T')[0]
   );
   const [hourMinutes, setHourMinutes] = useState<string>('60');
@@ -354,6 +347,26 @@ function GradebookHubContent() {
       }));
     }
   }, [schoolName]);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (globalSetupMenuOpen) setGlobalSetupMenuOpen(false);
+        if (openMenuSubjectId) setOpenMenuSubjectId(null);
+        if (overrideModalSubject && !savingOverride) setOverrideModalSubject(null);
+        if (confirmDeleteAssignmentId) setConfirmDeleteAssignmentId(null);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [
+    globalSetupMenuOpen,
+    openMenuSubjectId,
+    overrideModalSubject,
+    savingOverride,
+    confirmDeleteAssignmentId,
+  ]);
+
   const [newTestName, setNewTestName] = useState<string>('');
   const [newTestDate] = useState<string>('');
   const [newTestScore, setNewTestScore] = useState<string>('');
@@ -368,7 +381,6 @@ function GradebookHubContent() {
         typeRes,
         assignRes,
         tplRes,
-        sylRes,
         ovRes,
         attRes,
         hrRes,
@@ -384,10 +396,6 @@ function GradebookHubContent() {
           .from('recurring_assignment_templates')
           .select('*')
           .order('created_at', { ascending: true }),
-        supabase
-          .from('math_syllabus')
-          .select('*')
-          .order('day_number', { ascending: true }),
         supabase.from('subject_term_overrides').select('*'),
         supabase
           .from('attendance_logs')
@@ -404,7 +412,6 @@ function GradebookHubContent() {
         const subs = subRes.data as unknown as SubjectWithGrading[];
         setSubjects(subs);
         if (subs.length > 0) {
-          setSyllabusStageSubjectId((prev) => prev || subs[0].id);
           setHourSubjectId((prev) => prev || subs[0].id);
         }
       }
@@ -456,10 +463,6 @@ function GradebookHubContent() {
           is_active: row.is_active,
         }));
         setRecurringTemplates(mappedTemplates);
-      }
-
-      if (sylRes.data) {
-        setSyllabusDays(sylRes.data as MathSyllabusDay[]);
       }
 
       if (ovRes.data) {
@@ -544,88 +547,6 @@ function GradebookHubContent() {
     return map;
   }, [assignmentTypes]);
 
-  const syllabusMap = useMemo(() => {
-    const map = new Map<number, MathSyllabusDay>();
-    for (const d of syllabusDays) map.set(d.day_number, d);
-    return map;
-  }, [syllabusDays]);
-
-  const syllabusWeekOptions = useMemo(() => {
-    const currentMonStr = getCurrentWeekMonday();
-    let baseWeekDate = '2026-10-12';
-    let baseWeekNum = 6;
-    let maxWeeks = 34;
-
-    for (const s of subjects) {
-      const cfg = parseRecurringConfig(s.recurring_config, s.name);
-      if (cfg.course_syllabus?.weeks && cfg.course_syllabus.weeks.length > 0) {
-        baseWeekDate = cfg.base_week_date || '2026-10-12';
-        baseWeekNum = cfg.base_week_num || 6;
-        const maxSylWeek = Math.max(
-          ...cfg.course_syllabus.weeks.map((w) => w.week_number),
-          34
-        );
-        maxWeeks = Math.max(maxWeeks, maxSylWeek);
-        break;
-      }
-    }
-
-    const formatWeekRange = (mon: Date, fri: Date): string => {
-      const monMonth = mon.toLocaleDateString('en-US', { month: 'short' });
-      const friMonth = fri.toLocaleDateString('en-US', { month: 'short' });
-      return mon.getMonth() === fri.getMonth()
-        ? `${monMonth} ${mon.getDate()}–${fri.getDate()}, ${fri.getFullYear()}`
-        : `${monMonth} ${mon.getDate()} – ${friMonth} ${fri.getDate()}, ${fri.getFullYear()}`;
-    };
-
-    const baseMon = new Date(baseWeekDate + 'T00:00:00');
-    const options: Array<{
-      weekNum: number;
-      mondayDate: string;
-      label: string;
-      isCurrentWeek: boolean;
-    }> = [];
-
-    for (let w = 1; w <= maxWeeks; w++) {
-      const diffWeeks = w - baseWeekNum;
-      const mon = new Date(baseMon);
-      mon.setDate(baseMon.getDate() + diffWeeks * 7);
-      const fri = new Date(mon);
-      fri.setDate(mon.getDate() + 4);
-
-      const yyyy = mon.getFullYear();
-      const mm = String(mon.getMonth() + 1).padStart(2, '0');
-      const dd = String(mon.getDate()).padStart(2, '0');
-      const mondayStr = `${yyyy}-${mm}-${dd}`;
-
-      const isCurrent = mondayStr === currentMonStr;
-      options.push({
-        weekNum: w,
-        mondayDate: mondayStr,
-        label: `Week ${w}: ${formatWeekRange(mon, fri)}`,
-        isCurrentWeek: isCurrent,
-      });
-    }
-
-    if (!options.some((o) => o.mondayDate === currentMonStr)) {
-      const curMon = new Date(currentMonStr + 'T00:00:00');
-      const diffMs = curMon.getTime() - baseMon.getTime();
-      const diffW = Math.round(diffMs / (7 * 24 * 60 * 60 * 1000));
-      const estWeek = baseWeekNum + diffW;
-      const curFri = new Date(curMon);
-      curFri.setDate(curMon.getDate() + 4);
-      options.push({
-        weekNum: estWeek,
-        mondayDate: currentMonStr,
-        label: `${estWeek >= 1 ? `Week ${estWeek}: ` : ''}${formatWeekRange(curMon, curFri)}`,
-        isCurrentWeek: true,
-      });
-      options.sort((a, b) => a.mondayDate.localeCompare(b.mondayDate));
-    }
-
-    return options;
-  }, [subjects]);
-
   // Calculate Subject Grade Summaries
   const subjectSummaries = useMemo(() => {
     const list: SubjectGradeSummary[] = [];
@@ -658,6 +579,76 @@ function GradebookHubContent() {
     instructionalHours,
     selectedTerm,
     selectedAcademicYear,
+  ]);
+
+  // Filtered assignments and subject summaries for Report Card period filter
+  const reportFilteredAssignments = useMemo(() => {
+    if (reportDateFilterMode === 'all_term') {
+      return assignments;
+    }
+    const now = new Date();
+    let startStr = reportStartDate;
+    let endStr = reportEndDate;
+
+    if (reportDateFilterMode === 'this_week') {
+      startStr = getCurrentWeekMonday();
+      const mon = new Date(`${startStr}T00:00:00`);
+      const sun = new Date(mon);
+      sun.setDate(mon.getDate() + 6);
+      const yyyy = sun.getFullYear();
+      const mm = String(sun.getMonth() + 1).padStart(2, '0');
+      const dd = String(sun.getDate()).padStart(2, '0');
+      endStr = `${yyyy}-${mm}-${dd}`;
+    } else if (reportDateFilterMode === 'this_month') {
+      const yyyy = now.getFullYear();
+      const mm = String(now.getMonth() + 1).padStart(2, '0');
+      const lastDay = new Date(yyyy, now.getMonth() + 1, 0).getDate();
+      startStr = `${yyyy}-${mm}-01`;
+      endStr = `${yyyy}-${mm}-${String(lastDay).padStart(2, '0')}`;
+    }
+
+    return assignments.filter((a) => {
+      const d = (a.due_date || '').split('T')[0];
+      if (!d) return false;
+      if (startStr && d < startStr) return false;
+      if (endStr && d > endStr) return false;
+      return true;
+    });
+  }, [assignments, reportDateFilterMode, reportStartDate, reportEndDate]);
+
+  const reportSubjectSummaries = useMemo(() => {
+    if (reportDateFilterMode === 'all_term') {
+      return subjectSummaries;
+    }
+    return subjects.map((sub) => {
+      const override = termOverrides.find(
+        (ov) =>
+          ov.subject_id === sub.id &&
+          ov.term_name === selectedTerm &&
+          ov.academic_year === selectedAcademicYear
+      );
+      const subLoggedMinutes = instructionalHours
+        .filter((h) => h.subject_id === sub.id)
+        .reduce((acc, h) => acc + h.minutes, 0);
+
+      return calculateSubjectGradeSummary({
+        subject: sub,
+        assignments: reportFilteredAssignments,
+        assignmentTypes,
+        override,
+        loggedMinutes: subLoggedMinutes,
+      });
+    });
+  }, [
+    reportDateFilterMode,
+    subjectSummaries,
+    subjects,
+    termOverrides,
+    selectedTerm,
+    selectedAcademicYear,
+    instructionalHours,
+    reportFilteredAssignments,
+    assignmentTypes,
   ]);
 
   // Overall GPA & Credits Rollup
@@ -772,7 +763,7 @@ function GradebookHubContent() {
     const sub = assignment.subject_id ? subjectMap.get(assignment.subject_id) : undefined;
     const policy = sub
       ? parseSubjectGradingPolicy(sub)
-      : parseSubjectGradingPolicy({ id: '', name: '', sort_order: 0, color: '#0C74E4' });
+      : parseSubjectGradingPolicy({ id: '', name: '', sort_order: 0, color: '#1b5698' });
 
     const mode: ScoringMode = assignment.grading_mode || 'points';
     const parsedTotal =
@@ -839,6 +830,10 @@ function GradebookHubContent() {
         setAssignments((prev) =>
           prev.map((item) => (item.id === updated.id ? updated : item))
         );
+        setEditingInlineScoreIds((prev) => ({
+          ...prev,
+          [assignment.id]: false,
+        }));
         toast.success(
           `Saved "${updated.title}": ${formatClassGradeDisplay(
             updated.percentage_score ?? null,
@@ -854,188 +849,52 @@ function GradebookHubContent() {
     }
   };
 
-  // Staging Approval & Dismissal Handlers
-  const handleUpdateStagedDecision = async (
-    assignment: GradebookAssignment,
-    decision: 'approve_graded' | 'weekly_only' | 'delete'
-  ) => {
-    try {
-      if (decision === 'delete') {
-        await supabase.from('assignments').delete().eq('id', assignment.id);
-        setAssignments((prev) => prev.filter((a) => a.id !== assignment.id));
-        toast.success('Removed from staging queue');
-        return;
-      }
+  const handleDeleteAssignmentWithUndo = async (assignment: GradebookAssignment) => {
+    setConfirmDeleteAssignmentId(null);
+    const snapshot = { ...assignment };
+    setAssignments((prev) => prev.filter((item) => item.id !== assignment.id));
 
-      const payload =
-        decision === 'approve_graded'
-          ? { workflow_status: 'not_started' as const, is_graded: true }
-          : { workflow_status: 'ignored' as const, is_graded: false };
+    const { error } = await supabase
+      .from('assignments')
+      .delete()
+      .eq('id', assignment.id);
 
-      const { data, error } = await supabase
-        .from('assignments')
-        .update(payload)
-        .eq('id', assignment.id)
-        .select('*')
-        .single();
-
-      if (error) {
-        toast.error(`Failed to update staged item: ${error.message}`);
-        return;
-      }
-
-      if (data) {
-        const updated = data as unknown as GradebookAssignment;
-        setAssignments((prev) =>
-          prev.map((a) => (a.id === updated.id ? updated : a))
-        );
-        toast.success(
-          decision === 'approve_graded'
-            ? 'Approved as Graded Assignment'
-            : 'Marked as Weekly Planner Only (Ungraded)'
-        );
-      }
-    } catch {
-      toast.error('Error updating staging item');
+    if (error) {
+      setAssignments((prev) => [snapshot, ...prev]);
+      toast.error(`Failed to delete assignment: ${error.message}`);
+      return;
     }
-  };
 
-  // Update 3-State Auto-Behavior on a Recurring Assignment Template
-  const handleChangeTemplateAutoBehavior = async (
-    tpl: RecurringAssignmentTemplate,
-    nextBehavior: AutoBehaviorMode
-  ) => {
-    try {
-      const { error } = await supabase
-        .from('recurring_assignment_templates')
-        .update({
-          auto_behavior: nextBehavior,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', tpl.id);
-
-      if (error) {
-        toast.error(`Failed to update auto behavior: ${error.message}`);
-        return;
-      }
-
-      setRecurringTemplates((prev) =>
-        prev.map((item) =>
-          item.id === tpl.id ? { ...item, auto_behavior: nextBehavior } : item
-        )
-      );
-      toast.success(`Updated rule to "${nextBehavior.replace(/_/g, ' ')}"`);
-    } catch {
-      toast.error('Error updating recurring template');
-    }
-  };
-
-  // Populate / Sync Recurring Assignments & Participation for Target Week
-  const handleSyncRecurringAssignmentsForWeek = async () => {
-    setSyncingRecurringWeek(true);
-    try {
-      const monday = new Date(stagingWeekMonday + 'T00:00:00');
-      const dayNames = ['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY'];
-      const weekDates: Array<{ dateStr: string; dayKey: DayKey; dayName: string }> = [];
-
-      for (let i = 0; i < 5; i++) {
-        const d = new Date(monday);
-        d.setDate(monday.getDate() + i);
-        const yyyy = d.getFullYear();
-        const mm = String(d.getMonth() + 1).padStart(2, '0');
-        const dd = String(d.getDate()).padStart(2, '0');
-        weekDates.push({
-          dateStr: `${yyyy}-${mm}-${dd}`,
-          dayKey: DAY_KEYS[i],
-          dayName: dayNames[i],
-        });
-      }
-
-      let createdCount = 0;
-      let stagedCount = 0;
-
-      for (const sub of subjects) {
-        const recCfg = parseRecurringConfig(sub.recurring_config, sub.name);
-        const counters = resolveSubjectCountersForWeek(recCfg, stagingWeekMonday, undefined);
-        const candidates = generateWeekAssignmentsFromTemplatesAndPolicy({
-          subject: sub,
-          recurringConfig: recCfg,
-          counters,
-          weekDates,
-          syllabusMap,
-          templates: recurringTemplates,
-        });
-
-        for (const cand of candidates) {
-          const alreadyExists = assignments.some(
-            (existing) =>
-              existing.subject_id === cand.subject_id &&
-              existing.due_date === cand.due_date &&
-              existing.title.toLowerCase() === cand.title.toLowerCase()
-          );
-          if (alreadyExists) continue;
-
-          const { data } = await supabase
-            .from('assignments')
-            .insert({
-              subject_id: cand.subject_id,
-              title: cand.title,
-              description: cand.description,
-              instructions: cand.instructions,
-              due_date: cand.due_date,
-              assigned_date: cand.assigned_date,
-              category: cand.category,
-              grading_mode: cand.grading_mode,
-              points_possible: cand.points_possible,
-              total_problems: cand.total_problems,
-              estimated_minutes: cand.estimated_minutes,
-              workflow_status: cand.workflow_status,
-              status: cand.status,
-              is_graded: true,
-              source_type: cand.source_type,
-              recurring_template_id: cand.recurring_template_id,
-              syllabus_day_number: cand.syllabus_day_number,
-              term_name: selectedTerm,
-              academic_year: selectedAcademicYear,
-            })
-            .select('*')
-            .single();
-
-          if (data) {
-            const added = data as unknown as GradebookAssignment;
-            setAssignments((prev) => [added, ...prev]);
-            setInlineDrafts((prev) => ({
-              ...prev,
-              [added.id]: {
-                total_problems:
-                  typeof added.total_problems === 'number'
-                    ? String(added.total_problems)
-                    : '',
-                missed_problems: '',
-                points_earned: '',
-                points_possible: String(added.points_possible ?? 100),
-              },
-            }));
-            if (cand.workflow_status === 'staged') stagedCount++;
-            else createdCount++;
-          }
-        }
-      }
-
-      if (createdCount === 0 && stagedCount === 0) {
-        toast('All active recurring assignments for that week are already generated.', {
-          icon: 'ℹ️',
-        });
-      } else {
-        toast.success(
-          `Generated ${createdCount} assignment(s) and queued ${stagedCount} item(s) for approval`
-        );
-      }
-    } catch {
-      toast.error('Failed to sync recurring assignments for week');
-    } finally {
-      setSyncingRecurringWeek(false);
-    }
+    toast(
+      (t) => (
+        <Stack direction="row" spacing={1.5} alignItems="center">
+          <Typography variant="body2" sx={{ fontWeight: 500 }}>
+            Deleted &ldquo;{snapshot.title}&rdquo;
+          </Typography>
+          <Button
+            size="small"
+            variant="outlined"
+            onClick={async () => {
+              toast.dismiss(t.id);
+              const { data } = await supabase
+                .from('assignments')
+                .insert(snapshot)
+                .select('*')
+                .single();
+              if (data) {
+                const restored = data as unknown as GradebookAssignment;
+                setAssignments((prev) => [restored, ...prev]);
+                toast.success(`Restored "${restored.title}"`);
+              }
+            }}
+            sx={{ textTransform: 'none', fontWeight: 700, minWidth: 64 }}
+          >
+            Undo
+          </Button>
+        </Stack>
+      ),
+      { duration: 5000 }
+    );
   };
 
   // Save Term Final Grade Override & Teacher Observations
@@ -1298,67 +1157,6 @@ function GradebookHubContent() {
     toast.success('Exported complete student academic records to CSV');
   };
 
-  // Filtered active assignments for All Assignments tab
-  const filteredGradebookAssignments = useMemo(() => {
-    const filtered = assignments.filter((a) => {
-      if (a.workflow_status === 'staged' || a.workflow_status === 'ignored') return false;
-      if (selectedSubjectFilter !== 'all' && a.subject_id !== selectedSubjectFilter) {
-        return false;
-      }
-
-      const sub = a.subject_id ? subjectMap.get(a.subject_id) : undefined;
-
-      if (statusFilter === 'needs_grading') {
-        if (!isAssignmentAwaitingManualGrade(a, sub)) return false;
-      } else if (statusFilter === 'pending_grades') {
-        if (!isAssignmentPendingApiGrade(a, sub)) return false;
-      } else if (statusFilter === 'completed') {
-        if (a.status !== 'completed' && a.workflow_status !== 'completed') return false;
-      } else if (statusFilter === 'upcoming') {
-        if (a.status === 'completed' || a.workflow_status === 'completed') return false;
-      }
-
-      if (searchQuery.trim()) {
-        const q = searchQuery.toLowerCase();
-        const subName = sub?.name || '';
-        if (
-          !a.title.toLowerCase().includes(q) &&
-          !(a.description || '').toLowerCase().includes(q) &&
-          !subName.toLowerCase().includes(q)
-        ) {
-          return false;
-        }
-      }
-
-      return true;
-    });
-
-    if (
-      statusFilter === 'needs_grading' ||
-      statusFilter === 'pending_grades' ||
-      statusFilter === 'upcoming'
-    ) {
-      return [...filtered].sort((x, y) => x.due_date.localeCompare(y.due_date));
-    }
-    return filtered;
-  }, [assignments, selectedSubjectFilter, statusFilter, searchQuery, subjectMap]);
-
-  const stagedAssignments = useMemo(
-    () => assignments.filter((a) => a.workflow_status === 'staged'),
-    [assignments]
-  );
-
-  // Syllabus rows for the selected subject in the Staging Tab
-  const selectedSubjectSyllabusRows = useMemo(() => {
-    const sub = subjectMap.get(syllabusStageSubjectId);
-    if (!sub) return [];
-    const rec = parseRecurringConfig(sub.recurring_config, sub.name);
-    if (rec.mode === 'math_syllabus' || sub.name.toLowerCase().includes('math')) {
-      return syllabusDays;
-    }
-    return rec.course_syllabus?.days || [];
-  }, [syllabusStageSubjectId, subjectMap, syllabusDays]);
-
   const handleQuickRevertApiOverride = async (
     assignment: GradebookAssignment,
     mode: 'original_api' | 'blank'
@@ -1383,14 +1181,16 @@ function GradebookHubContent() {
     const moodleMeta = parseAssignmentMoodleMeta(a.state_standards);
     const isApiSynced = isAssignmentApiSynced(a, sub);
     const isOverridden = Boolean(moodleMeta?.manual_override);
+    const hasPct = typeof a.percentage_score === 'number';
+    const isEditingInline = Boolean(editingInlineScoreIds[a.id]);
 
     if (a.is_graded === false) {
       return (
         <Chip
           size="small"
-          label="Ungraded / Review Only"
+          label="Review Only"
           variant="outlined"
-          sx={{ fontSize: '0.7rem', fontWeight: 500 }}
+          sx={{ fontSize: '0.75rem', fontWeight: 500 }}
         />
       );
     }
@@ -1401,24 +1201,10 @@ function GradebookHubContent() {
         return (
           <Stack
             direction="row"
-            spacing={0.75}
+            spacing={0.5}
             alignItems="center"
             justifyContent="flex-end"
-            flexWrap="wrap"
-            useFlexGap
           >
-            <Chip
-              size="small"
-              icon={<ShieldAlert size={12} />}
-              label="MANUAL OVERRIDE"
-              color="error"
-              sx={{
-                height: 22,
-                fontSize: '0.66rem',
-                fontWeight: 800,
-                letterSpacing: '0.03em',
-              }}
-            />
             <Button
               size="small"
               variant="outlined"
@@ -1427,9 +1213,10 @@ function GradebookHubContent() {
               sx={{
                 fontWeight: 700,
                 textTransform: 'none',
-                fontSize: '0.72rem',
+                fontSize: '0.75rem',
                 py: 0.25,
                 px: 1,
+                whiteSpace: 'nowrap',
               }}
             >
               Edit Override
@@ -1445,12 +1232,13 @@ function GradebookHubContent() {
                 sx={{
                   fontWeight: 600,
                   textTransform: 'none',
-                  fontSize: '0.7rem',
+                  fontSize: '0.75rem',
                   py: 0.25,
                   px: 1,
+                  whiteSpace: 'nowrap',
                 }}
               >
-                Revert to API
+                Revert
               </Button>
             </Tooltip>
             <Tooltip title="Remove manual override and clear grade to Blank (Ungraded)">
@@ -1463,10 +1251,11 @@ function GradebookHubContent() {
                 sx={{
                   fontWeight: 600,
                   textTransform: 'none',
-                  fontSize: '0.7rem',
+                  fontSize: '0.75rem',
                   py: 0.25,
                   px: 0.75,
                   color: 'text.secondary',
+                  whiteSpace: 'nowrap',
                 }}
               >
                 Clear
@@ -1477,14 +1266,14 @@ function GradebookHubContent() {
       }
 
       return (
-        <Stack direction="row" spacing={1} alignItems="center" justifyContent="flex-end">
+        <Stack direction="row" spacing={0.75} alignItems="center" justifyContent="flex-end">
           <Chip
             size="small"
             icon={<Lock size={11} />}
             label="API Synced"
             color="info"
             variant="outlined"
-            sx={{ height: 22, fontSize: '0.68rem', fontWeight: 700 }}
+            sx={{ height: 24, fontSize: '0.75rem', fontWeight: 700 }}
           />
           <Button
             size="small"
@@ -1494,15 +1283,39 @@ function GradebookHubContent() {
             sx={{
               fontWeight: 600,
               textTransform: 'none',
-              fontSize: '0.72rem',
+              fontSize: '0.75rem',
               borderColor: 'divider',
               py: 0.25,
-              px: 1.1,
+              px: 1,
+              whiteSpace: 'nowrap',
             }}
           >
-            Override Grade…
+            Override…
           </Button>
         </Stack>
+      );
+    }
+
+    if (hasPct && !isEditingInline) {
+      return (
+        <Button
+          size="small"
+          variant="text"
+          color="primary"
+          onClick={() =>
+            setEditingInlineScoreIds((prev) => ({ ...prev, [a.id]: true }))
+          }
+          sx={{
+            fontWeight: 600,
+            textTransform: 'none',
+            fontSize: '0.75rem',
+            py: 0.25,
+            px: 1,
+            whiteSpace: 'nowrap',
+          }}
+        >
+          Edit Score
+        </Button>
       );
     }
 
@@ -1518,7 +1331,7 @@ function GradebookHubContent() {
 
     if (mode === 'problems_calculator') {
       return (
-        <Stack direction="row" spacing={1} alignItems="center" justifyContent="flex-end">
+        <Stack direction="row" spacing={0.75} alignItems="center" justifyContent="flex-end">
           <TextField
             size="small"
             type="number"
@@ -1532,7 +1345,13 @@ function GradebookHubContent() {
                 [a.id]: { ...draft, total_problems: e.target.value },
               }))
             }
-            sx={{ width: 78 }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                handleSaveInlineScore(a);
+              }
+            }}
+            sx={{ width: 70 }}
           />
           <TextField
             size="small"
@@ -1547,7 +1366,13 @@ function GradebookHubContent() {
                 [a.id]: { ...draft, missed_problems: e.target.value },
               }))
             }
-            sx={{ width: 78 }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                handleSaveInlineScore(a);
+              }
+            }}
+            sx={{ width: 70 }}
           />
           <Button
             size="small"
@@ -1555,16 +1380,27 @@ function GradebookHubContent() {
             color="primary"
             disabled={savingInlineId === a.id}
             onClick={() => handleSaveInlineScore(a)}
-            sx={{ fontWeight: 600, textTransform: 'none', minWidth: 62 }}
+            sx={{ fontWeight: 600, textTransform: 'none', minWidth: 56, fontSize: '0.75rem' }}
           >
             {savingInlineId === a.id ? '...' : 'Save'}
           </Button>
+          {isEditingInline && (
+            <IconButton
+              size="small"
+              aria-label="Cancel score edit"
+              onClick={() =>
+                setEditingInlineScoreIds((prev) => ({ ...prev, [a.id]: false }))
+              }
+            >
+              <X size={14} />
+            </IconButton>
+          )}
         </Stack>
       );
     }
 
     return (
-      <Stack direction="row" spacing={1} alignItems="center" justifyContent="flex-end">
+      <Stack direction="row" spacing={0.75} alignItems="center" justifyContent="flex-end">
         <TextField
           size="small"
           type="number"
@@ -1577,7 +1413,13 @@ function GradebookHubContent() {
               [a.id]: { ...draft, points_earned: e.target.value },
             }))
           }
-          sx={{ width: 82 }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              handleSaveInlineScore(a);
+            }
+          }}
+          sx={{ width: 74 }}
         />
         <Typography variant="caption" color="text.secondary">
           /
@@ -1594,7 +1436,13 @@ function GradebookHubContent() {
               [a.id]: { ...draft, points_possible: e.target.value },
             }))
           }
-          sx={{ width: 82 }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              handleSaveInlineScore(a);
+            }
+          }}
+          sx={{ width: 74 }}
         />
         <Button
           size="small"
@@ -1602,19 +1450,31 @@ function GradebookHubContent() {
           color="primary"
           disabled={savingInlineId === a.id}
           onClick={() => handleSaveInlineScore(a)}
-          sx={{ fontWeight: 600, textTransform: 'none', minWidth: 62 }}
+          sx={{ fontWeight: 600, textTransform: 'none', minWidth: 56, fontSize: '0.75rem' }}
         >
           {savingInlineId === a.id ? '...' : 'Save'}
         </Button>
+        {isEditingInline && (
+          <IconButton
+            size="small"
+            aria-label="Cancel score edit"
+            onClick={() =>
+              setEditingInlineScoreIds((prev) => ({ ...prev, [a.id]: false }))
+            }
+          >
+            <X size={14} />
+          </IconButton>
+        )}
       </Stack>
     );
   };
 
   if (loading) {
     return (
-      <Box display="flex" justifyContent="center" alignItems="center" minHeight="50vh">
-        <CircularProgress />
-      </Box>
+      <Stack spacing={2.5}>
+        <Skeleton variant="rounded" height={116} sx={{ borderRadius: 1 }} />
+        <Skeleton variant="rounded" height={420} sx={{ borderRadius: 1 }} />
+      </Stack>
     );
   }
 
@@ -1623,6 +1483,7 @@ function GradebookHubContent() {
       onClick={() => {
         if (openMenuSubjectId) setOpenMenuSubjectId(null);
         if (globalSetupMenuOpen) setGlobalSetupMenuOpen(false);
+        if (confirmDeleteAssignmentId) setConfirmDeleteAssignmentId(null);
       }}
     >
       {/* CLEAN TOP HEADER & NAVIGATION */}
@@ -1633,7 +1494,7 @@ function GradebookHubContent() {
           p: 2.5,
           pb: 0,
           mb: 3,
-          borderRadius: 2,
+          borderRadius: 1,
           border: '1px solid',
           borderColor: 'divider',
           bgcolor: 'background.paper',
@@ -1756,6 +1617,7 @@ function GradebookHubContent() {
                   textTransform: 'none',
                   borderColor: 'divider',
                   height: 38,
+                  whiteSpace: 'nowrap',
                 }}
               >
                 Setup &amp; Rules
@@ -1771,7 +1633,7 @@ function GradebookHubContent() {
                     minWidth: 325,
                     width: 'max-content',
                     p: 0.75,
-                    borderRadius: 2,
+                    borderRadius: 1,
                     border: '1px solid',
                     borderColor: 'divider',
                     boxShadow: '0 12px 32px -8px rgba(15, 23, 42, 0.16)',
@@ -1894,7 +1756,13 @@ function GradebookHubContent() {
               }
               disabled={syncingPortalGrades}
               onClick={handleSyncPortalGrades}
-              sx={{ fontWeight: 600, textTransform: 'none', px: 1.75, height: 38 }}
+              sx={{
+                fontWeight: 600,
+                textTransform: 'none',
+                px: 1.75,
+                height: 38,
+                whiteSpace: 'nowrap',
+              }}
             >
               {syncingPortalGrades ? 'Syncing Portal...' : 'Sync Portal Grades'}
             </Button>
@@ -1908,16 +1776,19 @@ function GradebookHubContent() {
                 setEditingAssignment(null);
                 setEditingTemplate(null);
                 setModalInitialValues({
-                  subject_id:
-                    selectedSubjectFilter !== 'all'
-                      ? selectedSubjectFilter
-                      : subjects[0]?.id,
+                  subject_id: subjects[0]?.id,
                   term_name: selectedTerm,
                   academic_year: selectedAcademicYear,
                 });
                 setUnifiedModalOpen(true);
               }}
-              sx={{ fontWeight: 600, textTransform: 'none', px: 2, height: 38 }}
+              sx={{
+                fontWeight: 600,
+                textTransform: 'none',
+                px: 2,
+                height: 38,
+                whiteSpace: 'nowrap',
+              }}
             >
               Add Assignment
             </Button>
@@ -1971,6 +1842,7 @@ function GradebookHubContent() {
                     borderBottom: '2px solid',
                     borderColor: isSelected ? 'primary.main' : 'transparent',
                     color: isSelected ? 'primary.main' : 'text.secondary',
+                    whiteSpace: 'nowrap',
                   }}
                 >
                   {tab.label}
@@ -1985,7 +1857,7 @@ function GradebookHubContent() {
             color="primary"
             startIcon={<FileText size={15} />}
             onClick={() => router.push('/assignments')}
-            sx={{ fontWeight: 700, textTransform: 'none' }}
+            sx={{ fontWeight: 700, textTransform: 'none', whiteSpace: 'nowrap' }}
           >
             School Assignments Manager &rarr;
           </Button>
@@ -1999,7 +1871,7 @@ function GradebookHubContent() {
         <Card
           elevation={0}
           sx={{
-            borderRadius: 2,
+            borderRadius: 1,
             border: '1px solid',
             borderColor: 'divider',
             overflow: 'visible',
@@ -2018,10 +1890,11 @@ function GradebookHubContent() {
                   <TableCell
                     sx={{
                       py: 1.5,
-                      fontSize: '0.72rem',
+                      fontSize: '0.75rem',
                       fontWeight: 600,
                       letterSpacing: '0.05em',
                       color: 'text.secondary',
+                      whiteSpace: 'nowrap',
                     }}
                   >
                     CLASS / SUBJECT
@@ -2029,10 +1902,11 @@ function GradebookHubContent() {
                   <TableCell
                     sx={{
                       py: 1.5,
-                      fontSize: '0.72rem',
+                      fontSize: '0.75rem',
                       fontWeight: 600,
                       letterSpacing: '0.05em',
                       color: 'text.secondary',
+                      whiteSpace: 'nowrap',
                     }}
                   >
                     CURRENT GRADE
@@ -2040,10 +1914,11 @@ function GradebookHubContent() {
                   <TableCell
                     sx={{
                       py: 1.5,
-                      fontSize: '0.72rem',
+                      fontSize: '0.75rem',
                       fontWeight: 600,
                       letterSpacing: '0.05em',
                       color: 'text.secondary',
+                      whiteSpace: 'nowrap',
                     }}
                   >
                     STATUS &amp; PROGRESS
@@ -2051,10 +1926,11 @@ function GradebookHubContent() {
                   <TableCell
                     sx={{
                       py: 1.5,
-                      fontSize: '0.72rem',
+                      fontSize: '0.75rem',
                       fontWeight: 600,
                       letterSpacing: '0.05em',
                       color: 'text.secondary',
+                      whiteSpace: 'nowrap',
                     }}
                   >
                     HOURS &amp; CREDITS
@@ -2063,10 +1939,11 @@ function GradebookHubContent() {
                     align="right"
                     sx={{
                       py: 1.5,
-                      fontSize: '0.72rem',
+                      fontSize: '0.75rem',
                       fontWeight: 600,
                       letterSpacing: '0.05em',
                       color: 'text.secondary',
+                      whiteSpace: 'nowrap',
                     }}
                   >
                     CLASS STRUCTURE &amp; ACTIONS
@@ -2130,6 +2007,11 @@ function GradebookHubContent() {
                           <Stack direction="row" spacing={1.5} alignItems="center">
                             <IconButton
                               size="small"
+                              aria-label={
+                                isExpanded
+                                  ? `Collapse ${sum.subject_name}`
+                                  : `Expand ${sum.subject_name}`
+                              }
                               sx={{ p: 0.25, color: 'text.secondary' }}
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -2144,8 +2026,8 @@ function GradebookHubContent() {
                             </IconButton>
                             <Box
                               sx={{
-                                width: 10,
-                                height: 10,
+                                width: 8,
+                                height: 8,
                                 borderRadius: '50%',
                                 bgcolor: sub.color,
                                 flexShrink: 0,
@@ -2163,7 +2045,7 @@ function GradebookHubContent() {
                                     size="small"
                                     color="info"
                                     variant="outlined"
-                                    sx={{ height: 18, fontSize: '0.62rem', fontWeight: 700 }}
+                                    sx={{ height: 20, fontSize: '0.75rem', fontWeight: 700 }}
                                   />
                                 )}
                               </Stack>
@@ -2175,7 +2057,7 @@ function GradebookHubContent() {
                                     fontStyle: 'italic',
                                     color: 'text.secondary',
                                     fontWeight: 500,
-                                    fontSize: '0.72rem',
+                                    fontSize: '0.75rem',
                                   }}
                                 >
                                   {officialCourseName}
@@ -2192,7 +2074,7 @@ function GradebookHubContent() {
                         </TableCell>
 
                         {/* CURRENT GRADE */}
-                        <TableCell>
+                        <TableCell sx={{ whiteSpace: 'nowrap' }}>
                           <Stack direction="row" spacing={1} alignItems="center">
                             <Box
                               sx={{
@@ -2200,12 +2082,13 @@ function GradebookHubContent() {
                                 alignItems: 'center',
                                 px: 1.25,
                                 py: 0.4,
-                                borderRadius: 1.5,
+                                borderRadius: 1,
                                 bgcolor: gradeBg,
                                 color: gradeColor,
                                 fontWeight: 700,
-                                fontSize: '0.84rem',
+                                fontSize: '0.875rem',
                                 fontVariantNumeric: 'tabular-nums',
+                                whiteSpace: 'nowrap',
                               }}
                             >
                               {sum.formatted_display}
@@ -2215,7 +2098,7 @@ function GradebookHubContent() {
                                 size="small"
                                 label="Override"
                                 variant="outlined"
-                                sx={{ height: 20, fontSize: '0.68rem', fontWeight: 600 }}
+                                sx={{ height: 22, fontSize: '0.75rem', fontWeight: 600 }}
                               />
                             )}
                           </Stack>
@@ -2232,7 +2115,7 @@ function GradebookHubContent() {
                                   label={`${sum.pending_api_count} Pending Grades`}
                                   sx={{
                                     height: 22,
-                                    fontSize: '0.72rem',
+                                    fontSize: '0.75rem',
                                     fontWeight: 600,
                                     bgcolor: alpha(theme.palette.info.main, 0.12),
                                     color: 'info.dark',
@@ -2244,7 +2127,7 @@ function GradebookHubContent() {
                                   label="All Synced"
                                   sx={{
                                     height: 22,
-                                    fontSize: '0.72rem',
+                                    fontSize: '0.75rem',
                                     fontWeight: 600,
                                     bgcolor: alpha(theme.palette.success.main, 0.1),
                                     color: 'success.dark',
@@ -2257,7 +2140,7 @@ function GradebookHubContent() {
                                 label={`${sum.needs_grading_count} Need Grading`}
                                 sx={{
                                   height: 22,
-                                  fontSize: '0.72rem',
+                                  fontSize: '0.75rem',
                                   fontWeight: 600,
                                   bgcolor: alpha(theme.palette.warning.main, 0.12),
                                   color: 'warning.dark',
@@ -2269,7 +2152,7 @@ function GradebookHubContent() {
                                 label="Up to Date"
                                 sx={{
                                   height: 22,
-                                  fontSize: '0.72rem',
+                                  fontSize: '0.75rem',
                                   fontWeight: 600,
                                   bgcolor: alpha(theme.palette.success.main, 0.1),
                                   color: 'success.dark',
@@ -2281,7 +2164,7 @@ function GradebookHubContent() {
                                 label="No Graded Items"
                                 sx={{
                                   height: 22,
-                                  fontSize: '0.72rem',
+                                  fontSize: '0.75rem',
                                   fontWeight: 500,
                                   bgcolor: alpha(theme.palette.text.primary, 0.05),
                                   color: 'text.secondary',
@@ -2291,7 +2174,7 @@ function GradebookHubContent() {
                             <Typography
                               variant="caption"
                               color="text.secondary"
-                              sx={{ fontVariantNumeric: 'tabular-nums' }}
+                              sx={{ fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}
                             >
                               {sum.graded_count} graded • {sum.points_earned_so_far}/
                               {sum.policy.calculation_basis === 'preset_total_points'
@@ -2314,7 +2197,7 @@ function GradebookHubContent() {
                                         ? `${cat.percentage_numeric.toFixed(2)}%`
                                         : '—'
                                     } (${cat.weight_formatted})`}
-                                    sx={{ height: 19, fontSize: '0.65rem', fontWeight: 600 }}
+                                    sx={{ height: 22, fontSize: '0.75rem', fontWeight: 600 }}
                                   />
                                 ))}
                             </Stack>
@@ -2322,7 +2205,7 @@ function GradebookHubContent() {
                         </TableCell>
 
                         {/* HOURS & CREDITS */}
-                        <TableCell>
+                        <TableCell sx={{ whiteSpace: 'nowrap' }}>
                           <Typography
                             variant="body2"
                             fontWeight={600}
@@ -2343,7 +2226,11 @@ function GradebookHubContent() {
                         <TableCell
                           align="right"
                           onClick={(e) => e.stopPropagation()}
-                          sx={{ position: 'relative', zIndex: isMenuOpen ? 50 : 'auto' }}
+                          sx={{
+                            position: 'relative',
+                            zIndex: isMenuOpen ? 50 : 'auto',
+                            whiteSpace: 'nowrap',
+                          }}
                         >
                           <Stack
                             direction="row"
@@ -2359,9 +2246,10 @@ function GradebookHubContent() {
                               sx={{
                                 textTransform: 'none',
                                 fontWeight: 600,
-                                fontSize: '0.76rem',
+                                fontSize: '0.75rem',
                                 borderColor: 'divider',
                                 fontVariantNumeric: 'tabular-nums',
+                                whiteSpace: 'nowrap',
                               }}
                             >
                               Assignments (
@@ -2392,7 +2280,8 @@ function GradebookHubContent() {
                               sx={{
                                 textTransform: 'none',
                                 fontWeight: 600,
-                                fontSize: '0.76rem',
+                                fontSize: '0.75rem',
+                                whiteSpace: 'nowrap',
                               }}
                             >
                               Add
@@ -2403,6 +2292,7 @@ function GradebookHubContent() {
                               <Tooltip title="Class Setup & Structure Menu">
                                 <IconButton
                                   size="small"
+                                  aria-label={`Class setup menu for ${sub.name}`}
                                   onClick={() => {
                                     setGlobalSetupMenuOpen(false);
                                     setOpenMenuSubjectId(
@@ -2412,7 +2302,7 @@ function GradebookHubContent() {
                                   sx={{
                                     border: '1px solid',
                                     borderColor: isMenuOpen ? 'primary.main' : 'divider',
-                                    borderRadius: 1.5,
+                                    borderRadius: 1,
                                     p: 0.65,
                                   }}
                                 >
@@ -2431,7 +2321,7 @@ function GradebookHubContent() {
                                     minWidth: 310,
                                     width: 'max-content',
                                     p: 0.75,
-                                    borderRadius: 2,
+                                    borderRadius: 1,
                                     border: '1px solid',
                                     borderColor: 'divider',
                                     boxShadow: '0 12px 32px -8px rgba(15, 23, 42, 0.18)',
@@ -2606,7 +2496,7 @@ function GradebookHubContent() {
                                       size="small"
                                       color="info"
                                       variant="outlined"
-                                      sx={{ height: 22, fontSize: '0.68rem', fontWeight: 700 }}
+                                      sx={{ height: 22, fontSize: '0.75rem', fontWeight: 700 }}
                                     />
                                   )}
                                   <Typography variant="caption" color="text.secondary">
@@ -2631,7 +2521,8 @@ function GradebookHubContent() {
                                       sx={{
                                         textTransform: 'none',
                                         fontWeight: 700,
-                                        fontSize: '0.74rem',
+                                        fontSize: '0.75rem',
+                                        whiteSpace: 'nowrap',
                                       }}
                                     >
                                       {syncingPortalGrades ? 'Syncing...' : 'Refresh Portal'}
@@ -2649,8 +2540,9 @@ function GradebookHubContent() {
                                     sx={{
                                       textTransform: 'none',
                                       fontWeight: 600,
-                                      fontSize: '0.74rem',
+                                      fontSize: '0.75rem',
                                       borderColor: 'divider',
+                                      whiteSpace: 'nowrap',
                                     }}
                                   >
                                     Class Grading Policy
@@ -2673,7 +2565,8 @@ function GradebookHubContent() {
                                     sx={{
                                       textTransform: 'none',
                                       fontWeight: 600,
-                                      fontSize: '0.74rem',
+                                      fontSize: '0.75rem',
+                                      whiteSpace: 'nowrap',
                                     }}
                                   >
                                     Add {sub.name} Assignment
@@ -2687,7 +2580,7 @@ function GradebookHubContent() {
                                   sx={{
                                     p: 3,
                                     textAlign: 'center',
-                                    borderRadius: 1.5,
+                                    borderRadius: 1,
                                     bgcolor: 'background.paper',
                                   }}
                                 >
@@ -2737,7 +2630,7 @@ function GradebookHubContent() {
                                 <Paper
                                   variant="outlined"
                                   sx={{
-                                    borderRadius: 1.5,
+                                    borderRadius: 1,
                                     overflow: 'hidden',
                                     bgcolor: 'background.paper',
                                   }}
@@ -2754,74 +2647,76 @@ function GradebookHubContent() {
                                         <TableCell
                                           sx={{
                                             fontWeight: 700,
-                                            fontSize: '0.78rem',
-                                            color: 'text.primary',
+                                            fontSize: '0.75rem',
+                                            color: 'text.secondary',
+                                            letterSpacing: '0.04em',
                                             py: 1.4,
-                                            width: '36%',
+                                            width: '38%',
+                                            whiteSpace: 'nowrap',
                                           }}
                                         >
-                                          Grade item
+                                          ASSIGNMENT / ITEM
                                         </TableCell>
                                         <TableCell
                                           sx={{
                                             fontWeight: 700,
-                                            fontSize: '0.78rem',
-                                            color: 'text.primary',
+                                            fontSize: '0.75rem',
+                                            color: 'text.secondary',
+                                            letterSpacing: '0.04em',
                                             py: 1.4,
+                                            whiteSpace: 'nowrap',
                                           }}
                                         >
-                                          Calculated weight
+                                          DUE DATE
                                         </TableCell>
                                         <TableCell
                                           sx={{
                                             fontWeight: 700,
-                                            fontSize: '0.78rem',
-                                            color: 'text.primary',
+                                            fontSize: '0.75rem',
+                                            color: 'text.secondary',
+                                            letterSpacing: '0.04em',
                                             py: 1.4,
+                                            whiteSpace: 'nowrap',
                                           }}
                                         >
-                                          Grade
+                                          WEIGHT
                                         </TableCell>
                                         <TableCell
                                           sx={{
                                             fontWeight: 700,
-                                            fontSize: '0.78rem',
-                                            color: 'text.primary',
+                                            fontSize: '0.75rem',
+                                            color: 'text.secondary',
+                                            letterSpacing: '0.04em',
                                             py: 1.4,
+                                            whiteSpace: 'nowrap',
                                           }}
                                         >
-                                          Range
+                                          RANGE
                                         </TableCell>
                                         <TableCell
                                           sx={{
                                             fontWeight: 700,
-                                            fontSize: '0.78rem',
-                                            color: 'text.primary',
+                                            fontSize: '0.75rem',
+                                            color: 'text.secondary',
+                                            letterSpacing: '0.04em',
                                             py: 1.4,
+                                            whiteSpace: 'nowrap',
                                           }}
                                         >
-                                          Feedback
-                                        </TableCell>
-                                        <TableCell
-                                          sx={{
-                                            fontWeight: 700,
-                                            fontSize: '0.78rem',
-                                            color: 'text.primary',
-                                            py: 1.4,
-                                          }}
-                                        >
-                                          Contribution to course total
+                                          GRADE
                                         </TableCell>
                                         <TableCell
                                           align="right"
                                           sx={{
                                             fontWeight: 700,
-                                            fontSize: '0.78rem',
-                                            color: 'text.primary',
+                                            fontSize: '0.75rem',
+                                            color: 'text.secondary',
+                                            letterSpacing: '0.04em',
                                             py: 1.4,
+                                            whiteSpace: 'nowrap',
                                           }}
                                         >
-                                          Score / Edit
+                                          SCORE / ACTIONS
                                         </TableCell>
                                       </TableRow>
                                     </TableHead>
@@ -2832,7 +2727,7 @@ function GradebookHubContent() {
                                           bgcolor: alpha(theme.palette.text.primary, 0.03),
                                         }}
                                       >
-                                        <TableCell colSpan={7} sx={{ py: 1.1 }}>
+                                        <TableCell colSpan={6} sx={{ py: 1.1 }}>
                                           <Stack direction="row" spacing={1} alignItems="center">
                                             <ChevronDown size={15} />
                                             <Typography variant="body2" fontWeight={700}>
@@ -2844,7 +2739,7 @@ function GradebookHubContent() {
                                         </TableCell>
                                       </TableRow>
 
-                                      {/* TOP COURSE TOTAL AGGREGATION ROW (Matches uploaded template) */}
+                                      {/* TOP COURSE TOTAL AGGREGATION ROW */}
                                       <TableRow
                                         sx={{
                                           bgcolor: 'background.paper',
@@ -2864,7 +2759,7 @@ function GradebookHubContent() {
                                                 justifyContent: 'center',
                                                 color: 'text.secondary',
                                                 fontWeight: 800,
-                                                fontSize: '1rem',
+                                                fontSize: '1.125rem',
                                                 flexShrink: 0,
                                               }}
                                             >
@@ -2875,7 +2770,7 @@ function GradebookHubContent() {
                                                 variant="caption"
                                                 sx={{
                                                   display: 'block',
-                                                  fontSize: '0.64rem',
+                                                  fontSize: '0.75rem',
                                                   fontWeight: 700,
                                                   color: 'text.secondary',
                                                   textTransform: 'uppercase',
@@ -2891,34 +2786,53 @@ function GradebookHubContent() {
                                             </Box>
                                           </Stack>
                                         </TableCell>
-                                        <TableCell sx={{ fontVariantNumeric: 'tabular-nums' }}>
+                                        <TableCell
+                                          sx={{
+                                            fontVariantNumeric: 'tabular-nums',
+                                            whiteSpace: 'nowrap',
+                                          }}
+                                        >
                                           <Typography variant="body2" color="text.secondary">
-                                            -
+                                            &mdash;
                                           </Typography>
                                         </TableCell>
-                                        <TableCell sx={{ fontVariantNumeric: 'tabular-nums' }}>
-                                          <Typography variant="body2" fontWeight={700}>
-                                            {sum.moodle_report
-                                              ? sum.moodle_report.course_total_percentage !== null
-                                                ? sum.moodle_report.course_total_percentage.toFixed(2)
-                                                : '-'
-                                              : sum.effective_percentage !== null
-                                              ? sum.effective_percentage.toFixed(2)
-                                              : '-'}
+                                        <TableCell
+                                          sx={{
+                                            fontVariantNumeric: 'tabular-nums',
+                                            whiteSpace: 'nowrap',
+                                          }}
+                                        >
+                                          <Typography variant="body2" color="text.secondary">
+                                            100.00 %
                                           </Typography>
                                         </TableCell>
-                                        <TableCell sx={{ fontVariantNumeric: 'tabular-nums' }}>
+                                        <TableCell
+                                          sx={{
+                                            fontVariantNumeric: 'tabular-nums',
+                                            whiteSpace: 'nowrap',
+                                          }}
+                                        >
                                           <Typography variant="body2" color="text.secondary">
                                             0&ndash;100
                                           </Typography>
                                         </TableCell>
-                                        <TableCell />
-                                        <TableCell sx={{ fontVariantNumeric: 'tabular-nums' }}>
-                                          <Typography variant="body2" color="text.secondary">
-                                            -
+                                        <TableCell
+                                          sx={{
+                                            fontVariantNumeric: 'tabular-nums',
+                                            whiteSpace: 'nowrap',
+                                          }}
+                                        >
+                                          <Typography variant="body2" fontWeight={700}>
+                                            {sum.moodle_report
+                                              ? sum.moodle_report.course_total_percentage !== null
+                                                ? `${sum.moodle_report.course_total_percentage.toFixed(2)} %`
+                                                : '-'
+                                              : sum.effective_percentage !== null
+                                              ? `${sum.effective_percentage.toFixed(2)} %`
+                                              : '-'}
                                           </Typography>
                                         </TableCell>
-                                        <TableCell align="right" />
+                                        <TableCell align="right" sx={{ whiteSpace: 'nowrap' }} />
                                       </TableRow>
 
                                       {/* CASE A: API-SYNCED MOODLE GRADE CARD HIERARCHY */}
@@ -2956,7 +2870,7 @@ function GradebookHubContent() {
                                                     ),
                                                   }}
                                                 >
-                                                  <TableCell colSpan={7} sx={{ pl: 3.5, py: 1.1 }}>
+                                                  <TableCell colSpan={6} sx={{ pl: 3.5, py: 1.1 }}>
                                                     <Stack
                                                       direction="row"
                                                       spacing={1}
@@ -3000,271 +2914,292 @@ function GradebookHubContent() {
                                                         );
                                                       });
 
-                                                     const matchedMeta = matchedAssignment
-                                                        ? parseAssignmentMoodleMeta(
-                                                            matchedAssignment.state_standards
-                                                          )
-                                                        : null;
-                                                      const isManualOverride = Boolean(
-                                                        matchedMeta?.manual_override
-                                                      );
+                                                    const matchedMeta = matchedAssignment
+                                                      ? parseAssignmentMoodleMeta(
+                                                          matchedAssignment.state_standards
+                                                        )
+                                                      : null;
+                                                    const isManualOverride = Boolean(
+                                                      matchedMeta?.manual_override
+                                                    );
 
-                                                      const isAssignMod =
-                                                        item.item_module === 'assign';
-                                                      const badgeBg = isAssignMod
-                                                        ? '#2563EB'
-                                                        : '#E11D48';
-                                                      const overlineLabel = isAssignMod
-                                                        ? 'ASSIGNMENT'
-                                                        : 'QUIZ';
+                                                    const isAssignMod =
+                                                      item.item_module === 'assign';
+                                                    const badgeBg = isAssignMod
+                                                      ? theme.palette.primary.main
+                                                      : theme.palette.secondary.main;
+                                                    const overlineLabel = isAssignMod
+                                                      ? 'ASSIGNMENT'
+                                                      : 'QUIZ';
 
-                                                      const displayGrade = isManualOverride
-                                                        ? matchedAssignment &&
-                                                          typeof matchedAssignment.points_earned ===
-                                                            'number'
-                                                          ? matchedAssignment.points_earned.toFixed(
-                                                              2
-                                                            )
-                                                          : '-'
-                                                        : matchedAssignment &&
-                                                          typeof matchedAssignment.points_earned ===
-                                                            'number'
+                                                    const displayGrade = isManualOverride
+                                                      ? matchedAssignment &&
+                                                        typeof matchedAssignment.points_earned ===
+                                                          'number'
                                                         ? matchedAssignment.points_earned.toFixed(
                                                             2
                                                           )
-                                                        : item.grade_formatted || '-';
+                                                        : '-'
+                                                      : matchedAssignment &&
+                                                        typeof matchedAssignment.points_earned ===
+                                                          'number'
+                                                      ? matchedAssignment.points_earned.toFixed(
+                                                          2
+                                                        )
+                                                      : item.grade_formatted || '-';
 
-                                                      const originalApiLabel =
-                                                        matchedMeta?.api_grade_raw !== null &&
-                                                        matchedMeta?.api_grade_raw !== undefined
-                                                          ? matchedMeta.api_grade_raw.toFixed(2)
-                                                          : item.grade_formatted || '—';
+                                                    const originalApiLabel =
+                                                      matchedMeta?.api_grade_raw !== null &&
+                                                      matchedMeta?.api_grade_raw !== undefined
+                                                        ? matchedMeta.api_grade_raw.toFixed(2)
+                                                        : item.grade_formatted || '—';
 
-                                                      const displayFeedback =
-                                                        matchedAssignment?.teacher_comments ||
-                                                        item.feedback ||
-                                                        '';
+                                                    const displayFeedback =
+                                                      matchedAssignment?.teacher_comments ||
+                                                      item.feedback ||
+                                                      '';
+                                                    const effectiveDueDate =
+                                                      matchedAssignment?.due_date ||
+                                                      item.due_date ||
+                                                      null;
 
-                                                      return (
-                                                        <TableRow
-                                                          key={
-                                                            item.cmid ||
-                                                            item.item_id ||
-                                                            item.item_name
-                                                          }
-                                                          hover
-                                                          sx={
-                                                            isManualOverride
-                                                              ? {
-                                                                  bgcolor: alpha(
-                                                                    theme.palette.warning.main,
-                                                                    0.06
-                                                                  ),
-                                                                }
-                                                              : undefined
-                                                          }
-                                                        >
-                                                          <TableCell sx={{ pl: 5.5, py: 1.35 }}>
-                                                            <Stack
-                                                              direction="row"
-                                                              spacing={1.5}
-                                                              alignItems="center"
+                                                    return (
+                                                      <TableRow
+                                                        key={
+                                                          item.cmid ||
+                                                          item.item_id ||
+                                                          item.item_name
+                                                        }
+                                                        hover
+                                                        sx={
+                                                          isManualOverride
+                                                            ? {
+                                                                bgcolor: alpha(
+                                                                  theme.palette.warning.main,
+                                                                  0.06
+                                                                ),
+                                                              }
+                                                            : undefined
+                                                        }
+                                                      >
+                                                        {/* 1. ASSIGNMENT / ITEM (+ Feedback below title) */}
+                                                        <TableCell sx={{ pl: 5.5, py: 1.35 }}>
+                                                          <Stack
+                                                            direction="row"
+                                                            spacing={1.5}
+                                                            alignItems="flex-start"
+                                                          >
+                                                            <Box
+                                                              sx={{
+                                                                width: 28,
+                                                                height: 28,
+                                                                borderRadius: 1,
+                                                                bgcolor: badgeBg,
+                                                                color: '#fff',
+                                                                display: 'flex',
+                                                                alignItems: 'center',
+                                                                justifyContent: 'center',
+                                                                flexShrink: 0,
+                                                                mt: 0.25,
+                                                              }}
                                                             >
-                                                              <Box
+                                                              {isAssignMod ? (
+                                                                <FileText size={14} />
+                                                              ) : (
+                                                                <CheckSquare size={14} />
+                                                              )}
+                                                            </Box>
+                                                            <Box>
+                                                              <Typography
+                                                                variant="caption"
                                                                 sx={{
-                                                                  width: 30,
-                                                                  height: 30,
-                                                                  borderRadius: 1.25,
-                                                                  bgcolor: badgeBg,
-                                                                  color: '#fff',
-                                                                  display: 'flex',
-                                                                  alignItems: 'center',
-                                                                  justifyContent: 'center',
-                                                                  flexShrink: 0,
+                                                                  display: 'block',
+                                                                  fontSize: '0.75rem',
+                                                                  fontWeight: 700,
+                                                                  color: 'text.secondary',
+                                                                  textTransform: 'uppercase',
+                                                                  letterSpacing: '0.04em',
+                                                                  lineHeight: 1.2,
                                                                 }}
                                                               >
-                                                                {isAssignMod ? (
-                                                                  <FileText size={15} />
-                                                                ) : (
-                                                                  <CheckSquare size={15} />
-                                                                )}
-                                                              </Box>
-                                                              <Box>
+                                                                {overlineLabel}
+                                                                {item.week_number
+                                                                  ? ` • WEEK ${item.week_number}`
+                                                                  : ''}
+                                                              </Typography>
+                                                              <Stack
+                                                                direction="row"
+                                                                spacing={0.75}
+                                                                alignItems="center"
+                                                                flexWrap="wrap"
+                                                              >
                                                                 <Typography
-                                                                  variant="caption"
+                                                                  variant="body2"
+                                                                  fontWeight={700}
                                                                   sx={{
-                                                                    display: 'block',
-                                                                    fontSize: '0.64rem',
-                                                                    fontWeight: 700,
-                                                                    color: 'text.secondary',
-                                                                    textTransform: 'uppercase',
-                                                                    letterSpacing: '0.04em',
-                                                                    lineHeight: 1.1,
+                                                                    color: 'text.primary',
                                                                   }}
                                                                 >
-                                                                  {overlineLabel}
-                                                                  {item.week_number
-                                                                    ? ` • WEEK ${item.week_number}`
-                                                                    : ''}
-                                                                  {(matchedAssignment?.assigned_date ||
-                                                                    item.open_date) &&
-                                                                  (matchedAssignment?.due_date ||
-                                                                    item.due_date) &&
-                                                                  (matchedAssignment?.assigned_date ||
-                                                                    item.open_date) !==
-                                                                    (matchedAssignment?.due_date ||
-                                                                      item.due_date)
-                                                                    ? ` • OPENS ${
-                                                                        matchedAssignment?.assigned_date ||
-                                                                        item.open_date
-                                                                      } • CLOSES ${
-                                                                        matchedAssignment?.due_date ||
-                                                                        item.due_date
-                                                                      }`
-                                                                    : matchedAssignment?.due_date ||
-                                                                      item.due_date
-                                                                    ? ` • DUE ${
-                                                                        matchedAssignment?.due_date ||
-                                                                        item.due_date
-                                                                      }`
-                                                                    : ''}
+                                                                  {cleanItemTitle || item.item_name}
                                                                 </Typography>
-                                                                <Stack
-                                                                  direction="row"
-                                                                  spacing={0.75}
-                                                                  alignItems="center"
-                                                                  flexWrap="wrap"
-                                                                >
-                                                                  <Typography
-                                                                    variant="body2"
-                                                                    fontWeight={700}
+                                                                {isManualOverride && (
+                                                                  <Chip
+                                                                    size="small"
+                                                                    icon={
+                                                                      <ShieldAlert size={11} />
+                                                                    }
+                                                                    label="MANUAL OVERRIDE"
+                                                                    color="error"
                                                                     sx={{
-                                                                      color: 'text.primary',
+                                                                      height: 20,
+                                                                      fontSize: '0.75rem',
+                                                                      fontWeight: 700,
                                                                     }}
-                                                                  >
-                                                                    {item.item_name}
-                                                                  </Typography>
-                                                                  {isManualOverride && (
-                                                                    <Chip
-                                                                      size="small"
-                                                                      icon={
-                                                                        <ShieldAlert size={11} />
-                                                                      }
-                                                                      label="MANUAL OVERRIDE"
-                                                                      color="error"
-                                                                      sx={{
-                                                                        height: 19,
-                                                                        fontSize: '0.62rem',
-                                                                        fontWeight: 800,
-                                                                      }}
-                                                                    />
-                                                                  )}
-                                                                </Stack>
-                                                              </Box>
-                                                            </Stack>
-                                                          </TableCell>
-                                                          <TableCell
-                                                            sx={{
-                                                              fontVariantNumeric: 'tabular-nums',
-                                                            }}
+                                                                  />
+                                                                )}
+                                                              </Stack>
+                                                              {displayFeedback && (
+                                                                <Typography
+                                                                  variant="caption"
+                                                                  color="text.secondary"
+                                                                  sx={{
+                                                                    display: 'block',
+                                                                    mt: 0.35,
+                                                                    fontStyle: 'italic',
+                                                                  }}
+                                                                >
+                                                                  Feedback: {displayFeedback}
+                                                                </Typography>
+                                                              )}
+                                                            </Box>
+                                                          </Stack>
+                                                        </TableCell>
+
+                                                        {/* 2. DUE DATE (Single Row) */}
+                                                        <TableCell
+                                                          sx={{
+                                                            fontVariantNumeric: 'tabular-nums',
+                                                            whiteSpace: 'nowrap',
+                                                          }}
+                                                        >
+                                                          <Typography
+                                                            variant="body2"
+                                                            color="text.secondary"
+                                                            sx={{ whiteSpace: 'nowrap' }}
                                                           >
-                                                            <Typography variant="body2">
-                                                              {item.weight_formatted || '0.00 %'}
-                                                            </Typography>
-                                                          </TableCell>
-                                                          <TableCell
-                                                            sx={{
-                                                              fontVariantNumeric: 'tabular-nums',
-                                                            }}
-                                                          >
-                                                            <Typography
-                                                              variant="body2"
-                                                              fontWeight={
-                                                                displayGrade !== '-' ? 700 : 400
-                                                              }
-                                                              color={
-                                                                isManualOverride
-                                                                  ? 'error.main'
-                                                                  : 'text.primary'
-                                                              }
-                                                            >
-                                                              {displayGrade}
-                                                            </Typography>
-                                                            {isManualOverride && (
+                                                            {formatCompactDate(effectiveDueDate)}
+                                                          </Typography>
+                                                        </TableCell>
+
+                                                        {/* 3. WEIGHT (+ Contribution sub-caption) */}
+                                                        <TableCell
+                                                          sx={{
+                                                            fontVariantNumeric: 'tabular-nums',
+                                                            whiteSpace: 'nowrap',
+                                                          }}
+                                                        >
+                                                          <Typography variant="body2" fontWeight={600}>
+                                                            {item.weight_formatted || '0.00 %'}
+                                                          </Typography>
+                                                          {item.contribution_formatted &&
+                                                            item.contribution_formatted !== '-' && (
                                                               <Typography
                                                                 variant="caption"
                                                                 color="text.secondary"
                                                                 sx={{
                                                                   display: 'block',
-                                                                  fontSize: '0.63rem',
+                                                                  whiteSpace: 'nowrap',
                                                                 }}
                                                               >
-                                                                API: {originalApiLabel}
+                                                                Contrib: {item.contribution_formatted}
                                                               </Typography>
                                                             )}
-                                                          </TableCell>
-                                                          <TableCell
-                                                            sx={{
-                                                              fontVariantNumeric: 'tabular-nums',
-                                                            }}
+                                                        </TableCell>
+
+                                                        {/* 4. RANGE */}
+                                                        <TableCell
+                                                          sx={{
+                                                            fontVariantNumeric: 'tabular-nums',
+                                                            whiteSpace: 'nowrap',
+                                                          }}
+                                                        >
+                                                          <Typography
+                                                            variant="body2"
+                                                            color="text.secondary"
                                                           >
+                                                            {item.range_formatted || '0–100'}
+                                                          </Typography>
+                                                        </TableCell>
+
+                                                        {/* 5. GRADE */}
+                                                        <TableCell
+                                                          sx={{
+                                                            fontVariantNumeric: 'tabular-nums',
+                                                            whiteSpace: 'nowrap',
+                                                          }}
+                                                        >
+                                                          <Typography
+                                                            variant="body2"
+                                                            fontWeight={
+                                                              displayGrade !== '-' ? 700 : 400
+                                                            }
+                                                            color={
+                                                              isManualOverride
+                                                                ? 'error.main'
+                                                                : 'text.primary'
+                                                            }
+                                                          >
+                                                            {displayGrade}
+                                                          </Typography>
+                                                          {isManualOverride && (
                                                             <Typography
-                                                              variant="body2"
+                                                              variant="caption"
                                                               color="text.secondary"
+                                                              sx={{
+                                                                display: 'block',
+                                                                fontSize: '0.75rem',
+                                                              }}
                                                             >
-                                                              {item.range_formatted || '0–100'}
+                                                              API: {originalApiLabel}
                                                             </Typography>
-                                                          </TableCell>
-                                                          <TableCell>
-                                                            {displayFeedback ? (
-                                                              <Typography
-                                                                variant="caption"
-                                                                color="text.primary"
-                                                                sx={{ display: 'block' }}
-                                                              >
-                                                                {displayFeedback}
-                                                              </Typography>
-                                                            ) : null}
-                                                          </TableCell>
-                                                          <TableCell
-                                                            sx={{
-                                                              fontVariantNumeric: 'tabular-nums',
-                                                            }}
-                                                          >
-                                                            <Typography variant="body2">
-                                                              {item.contribution_formatted || '-'}
-                                                            </Typography>
-                                                          </TableCell>
-                                                          <TableCell align="right">
-                                                            {matchedAssignment ? (
-                                                              <Stack
-                                                                direction="row"
-                                                                spacing={0.5}
-                                                                justifyContent="flex-end"
-                                                                alignItems="center"
-                                                              >
-                                                                {renderInlineScoreControls(
-                                                                  matchedAssignment,
-                                                                  sub
-                                                                )}
-                                                                <Tooltip title="Warning: API-Synced Grade (Click to view or override)">
-                                                                  <IconButton
-                                                                    size="small"
-                                                                    onClick={() => {
-                                                                      setApiOverrideWarningAssignment(
-                                                                        matchedAssignment
-                                                                      );
-                                                                    }}
-                                                                  >
-                                                                    <Edit3 size={14} />
-                                                                  </IconButton>
-                                                                </Tooltip>
-                                                              </Stack>
-                                                            ) : null}
-                                                          </TableCell>
-                                                        </TableRow>
-                                                      );
-                                                    })}
+                                                          )}
+                                                        </TableCell>
+
+                                                        {/* 6. SCORE / ACTIONS */}
+                                                        <TableCell
+                                                          align="right"
+                                                          sx={{ whiteSpace: 'nowrap' }}
+                                                        >
+                                                          {matchedAssignment ? (
+                                                            <Stack
+                                                              direction="row"
+                                                              spacing={0.5}
+                                                              justifyContent="flex-end"
+                                                              alignItems="center"
+                                                            >
+                                                              {renderInlineScoreControls(
+                                                                matchedAssignment,
+                                                                sub
+                                                              )}
+                                                              <Tooltip title="Warning: API-Synced Grade (Click to view or override)">
+                                                                <IconButton
+                                                                  size="small"
+                                                                  aria-label={`View or override ${cleanItemTitle || item.item_name}`}
+                                                                  onClick={() => {
+                                                                    setApiOverrideWarningAssignment(
+                                                                      matchedAssignment
+                                                                    );
+                                                                  }}
+                                                                >
+                                                                  <Edit3 size={14} />
+                                                                </IconButton>
+                                                              </Tooltip>
+                                                            </Stack>
+                                                          ) : null}
+                                                        </TableCell>
+                                                      </TableRow>
+                                                    );
+                                                  })}
 
                                                 {/* CATEGORY TOTAL AGGREGATION ROW */}
                                                 {!isCatCollapsed && (
@@ -3294,7 +3229,7 @@ function GradebookHubContent() {
                                                             justifyContent: 'center',
                                                             color: 'text.secondary',
                                                             fontWeight: 800,
-                                                            fontSize: '1rem',
+                                                            fontSize: '1.125rem',
                                                             flexShrink: 0,
                                                           }}
                                                         >
@@ -3305,7 +3240,7 @@ function GradebookHubContent() {
                                                             variant="caption"
                                                             sx={{
                                                               display: 'block',
-                                                              fontSize: '0.64rem',
+                                                              fontSize: '0.75rem',
                                                               fontWeight: 700,
                                                               color: 'text.secondary',
                                                               textTransform: 'uppercase',
@@ -3325,14 +3260,46 @@ function GradebookHubContent() {
                                                       </Stack>
                                                     </TableCell>
                                                     <TableCell
-                                                      sx={{ fontVariantNumeric: 'tabular-nums' }}
+                                                      sx={{
+                                                        fontVariantNumeric: 'tabular-nums',
+                                                        whiteSpace: 'nowrap',
+                                                      }}
                                                     >
-                                                      <Typography variant="body2">
+                                                      <Typography
+                                                        variant="body2"
+                                                        color="text.secondary"
+                                                      >
+                                                        &mdash;
+                                                      </Typography>
+                                                    </TableCell>
+                                                    <TableCell
+                                                      sx={{
+                                                        fontVariantNumeric: 'tabular-nums',
+                                                        whiteSpace: 'nowrap',
+                                                      }}
+                                                    >
+                                                      <Typography variant="body2" fontWeight={600}>
                                                         {cat.weight_formatted}
                                                       </Typography>
                                                     </TableCell>
                                                     <TableCell
-                                                      sx={{ fontVariantNumeric: 'tabular-nums' }}
+                                                      sx={{
+                                                        fontVariantNumeric: 'tabular-nums',
+                                                        whiteSpace: 'nowrap',
+                                                      }}
+                                                    >
+                                                      <Typography
+                                                        variant="body2"
+                                                        color="text.secondary"
+                                                      >
+                                                        0&ndash;100
+                                                      </Typography>
+                                                    </TableCell>
+                                                    <TableCell
+                                                      sx={{
+                                                        fontVariantNumeric: 'tabular-nums',
+                                                        whiteSpace: 'nowrap',
+                                                      }}
                                                     >
                                                       <Typography
                                                         variant="body2"
@@ -3344,27 +3311,9 @@ function GradebookHubContent() {
                                                       </Typography>
                                                     </TableCell>
                                                     <TableCell
-                                                      sx={{ fontVariantNumeric: 'tabular-nums' }}
-                                                    >
-                                                      <Typography
-                                                        variant="body2"
-                                                        color="text.secondary"
-                                                      >
-                                                        0&ndash;100
-                                                      </Typography>
-                                                    </TableCell>
-                                                    <TableCell />
-                                                    <TableCell
-                                                      sx={{ fontVariantNumeric: 'tabular-nums' }}
-                                                    >
-                                                      <Typography
-                                                        variant="body2"
-                                                        color="text.secondary"
-                                                      >
-                                                        -
-                                                      </Typography>
-                                                    </TableCell>
-                                                    <TableCell align="right" />
+                                                      align="right"
+                                                      sx={{ whiteSpace: 'nowrap' }}
+                                                    />
                                                   </TableRow>
                                                 )}
                                               </React.Fragment>
@@ -3458,7 +3407,7 @@ function GradebookHubContent() {
                                                     }}
                                                   >
                                                     <TableCell
-                                                      colSpan={7}
+                                                      colSpan={6}
                                                       sx={{ pl: 3.5, py: 1.1 }}
                                                     >
                                                       <Stack
@@ -3482,8 +3431,8 @@ function GradebookHubContent() {
                                                           label={`${items.length} items`}
                                                           variant="outlined"
                                                           sx={{
-                                                            height: 18,
-                                                            fontSize: '0.62rem',
+                                                            height: 20,
+                                                            fontSize: '0.75rem',
                                                             fontWeight: 700,
                                                           }}
                                                         />
@@ -3494,8 +3443,8 @@ function GradebookHubContent() {
                                                             variant="outlined"
                                                             label="0% Weight"
                                                             sx={{
-                                                              height: 18,
-                                                              fontSize: '0.62rem',
+                                                              height: 20,
+                                                              fontSize: '0.75rem',
                                                               fontWeight: 700,
                                                             }}
                                                           />
@@ -3513,10 +3462,10 @@ function GradebookHubContent() {
                                                         a.category.includes('quiz') ||
                                                         a.category.includes('test');
                                                       const badgeBg = isUngradedCat
-                                                        ? '#64748B'
+                                                        ? theme.palette.text.secondary
                                                         : isQuizOrTest
-                                                          ? '#E11D48'
-                                                          : '#2563EB';
+                                                          ? theme.palette.secondary.main
+                                                          : theme.palette.primary.main;
                                                       const hasPct =
                                                         typeof a.percentage_score === 'number';
                                                       const contribVal =
@@ -3527,35 +3476,37 @@ function GradebookHubContent() {
                                                               (a.percentage_score / 100) *
                                                               itemWeightShare
                                                             ).toFixed(2)} %`
-                                                          : '0.00 %';
+                                                          : null;
 
                                                       return (
                                                         <TableRow key={a.id} hover>
+                                                          {/* 1. ASSIGNMENT / ITEM (+ Feedback folded below title) */}
                                                           <TableCell
                                                             sx={{ pl: 5.5, py: 1.35 }}
                                                           >
                                                             <Stack
                                                               direction="row"
                                                               spacing={1.5}
-                                                              alignItems="center"
+                                                              alignItems="flex-start"
                                                             >
                                                               <Box
                                                                 sx={{
-                                                                  width: 30,
-                                                                  height: 30,
-                                                                  borderRadius: 1.25,
+                                                                  width: 28,
+                                                                  height: 28,
+                                                                  borderRadius: 1,
                                                                   bgcolor: badgeBg,
                                                                   color: '#fff',
                                                                   display: 'flex',
                                                                   alignItems: 'center',
                                                                   justifyContent: 'center',
                                                                   flexShrink: 0,
+                                                                  mt: 0.25,
                                                                 }}
                                                               >
                                                                 {isQuizOrTest ? (
-                                                                  <CheckSquare size={15} />
+                                                                  <CheckSquare size={14} />
                                                                 ) : (
-                                                                  <FileText size={15} />
+                                                                  <FileText size={14} />
                                                                 )}
                                                               </Box>
                                                               <Box>
@@ -3563,12 +3514,12 @@ function GradebookHubContent() {
                                                                   variant="caption"
                                                                   sx={{
                                                                     display: 'block',
-                                                                    fontSize: '0.64rem',
+                                                                    fontSize: '0.75rem',
                                                                     fontWeight: 700,
                                                                     color: 'text.secondary',
                                                                     textTransform: 'uppercase',
                                                                     letterSpacing: '0.04em',
-                                                                    lineHeight: 1.1,
+                                                                    lineHeight: 1.2,
                                                                   }}
                                                                 >
                                                                   {catTitle}
@@ -3577,10 +3528,6 @@ function GradebookHubContent() {
                                                                     : mMeta?.week_number
                                                                       ? ` • WEEK ${mMeta.week_number}`
                                                                       : ''}
-                                                                  {a.assigned_date &&
-                                                                  a.assigned_date !== a.due_date
-                                                                    ? ` • OPENS ${a.assigned_date} • CLOSES ${a.due_date}`
-                                                                    : ` • DUE ${a.due_date}`}
                                                                 </Typography>
                                                                 <Typography
                                                                   variant="body2"
@@ -3588,29 +3535,89 @@ function GradebookHubContent() {
                                                                 >
                                                                   {a.title}
                                                                 </Typography>
+                                                                {a.teacher_comments && (
+                                                                  <Typography
+                                                                    variant="caption"
+                                                                    color="text.secondary"
+                                                                    sx={{
+                                                                      display: 'block',
+                                                                      mt: 0.35,
+                                                                      fontStyle: 'italic',
+                                                                    }}
+                                                                  >
+                                                                    Feedback: {a.teacher_comments}
+                                                                  </Typography>
+                                                                )}
                                                               </Box>
                                                             </Stack>
                                                           </TableCell>
+
+                                                          {/* 2. DUE DATE (Single Row) */}
                                                           <TableCell
                                                             sx={{
-                                                              fontVariantNumeric:
-                                                                'tabular-nums',
+                                                              fontVariantNumeric: 'tabular-nums',
+                                                              whiteSpace: 'nowrap',
                                                             }}
                                                           >
-                                                            <Typography variant="body2">
-                                                              {itemWeightShare.toFixed(2)} %
+                                                            <Typography
+                                                              variant="body2"
+                                                              color="text.secondary"
+                                                              sx={{ whiteSpace: 'nowrap' }}
+                                                            >
+                                                              {formatCompactDate(a.due_date)}
                                                             </Typography>
                                                           </TableCell>
+
+                                                          {/* 3. WEIGHT (+ Contribution sub-caption) */}
                                                           <TableCell
                                                             sx={{
-                                                              fontVariantNumeric:
-                                                                'tabular-nums',
+                                                              fontVariantNumeric: 'tabular-nums',
+                                                              whiteSpace: 'nowrap',
+                                                            }}
+                                                          >
+                                                            <Typography variant="body2" fontWeight={600}>
+                                                              {itemWeightShare.toFixed(2)} %
+                                                            </Typography>
+                                                            {contribVal && (
+                                                              <Typography
+                                                                variant="caption"
+                                                                color="text.secondary"
+                                                                sx={{
+                                                                  display: 'block',
+                                                                  whiteSpace: 'nowrap',
+                                                                }}
+                                                              >
+                                                                Contrib: {contribVal}
+                                                              </Typography>
+                                                            )}
+                                                          </TableCell>
+
+                                                          {/* 4. RANGE */}
+                                                          <TableCell
+                                                            sx={{
+                                                              fontVariantNumeric: 'tabular-nums',
+                                                              whiteSpace: 'nowrap',
+                                                            }}
+                                                          >
+                                                            <Typography
+                                                              variant="body2"
+                                                              color="text.secondary"
+                                                            >
+                                                              0&ndash;{a.points_possible ?? 100}
+                                                            </Typography>
+                                                          </TableCell>
+
+                                                          {/* 5. GRADE */}
+                                                          <TableCell
+                                                            sx={{
+                                                              fontVariantNumeric: 'tabular-nums',
+                                                              whiteSpace: 'nowrap',
                                                             }}
                                                           >
                                                             <Stack spacing={0.25}>
                                                               <Typography
                                                                 variant="body2"
-                                                                fontWeight={hasPct ? 600 : 400}
+                                                                fontWeight={hasPct ? 700 : 400}
                                                               >
                                                                 {hasPct &&
                                                                 a.percentage_score !== null
@@ -3626,7 +3633,7 @@ function GradebookHubContent() {
                                                                   <Typography
                                                                     variant="caption"
                                                                     color="text.secondary"
-                                                                    sx={{ fontSize: '0.64rem' }}
+                                                                    sx={{ fontSize: '0.75rem' }}
                                                                   >
                                                                     {Math.max(
                                                                       0,
@@ -3638,37 +3645,12 @@ function GradebookHubContent() {
                                                                 )}
                                                             </Stack>
                                                           </TableCell>
+
+                                                          {/* 6. SCORE / ACTIONS */}
                                                           <TableCell
-                                                            sx={{
-                                                              fontVariantNumeric:
-                                                                'tabular-nums',
-                                                            }}
+                                                            align="right"
+                                                            sx={{ whiteSpace: 'nowrap' }}
                                                           >
-                                                            <Typography
-                                                              variant="body2"
-                                                              color="text.secondary"
-                                                            >
-                                                              0&ndash;{a.points_possible ?? 100}
-                                                            </Typography>
-                                                          </TableCell>
-                                                          <TableCell>
-                                                            {a.teacher_comments ? (
-                                                              <Typography variant="caption">
-                                                                {a.teacher_comments}
-                                                              </Typography>
-                                                            ) : null}
-                                                          </TableCell>
-                                                          <TableCell
-                                                            sx={{
-                                                              fontVariantNumeric:
-                                                                'tabular-nums',
-                                                            }}
-                                                          >
-                                                            <Typography variant="body2">
-                                                              {contribVal}
-                                                            </Typography>
-                                                          </TableCell>
-                                                          <TableCell align="right">
                                                             <Stack
                                                               direction="row"
                                                               spacing={0.5}
@@ -3679,36 +3661,59 @@ function GradebookHubContent() {
                                                                 a,
                                                                 sub
                                                               )}
-                                                              <IconButton
-                                                                size="small"
-                                                                onClick={() => {
-                                                                  setEditingTemplate(null);
-                                                                  setEditingAssignment(a);
-                                                                  setUnifiedModalOpen(true);
-                                                                }}
-                                                              >
-                                                                <Edit3 size={14} />
-                                                              </IconButton>
-                                                              <IconButton
-                                                                size="small"
-                                                                color="error"
-                                                                onClick={async () => {
-                                                                  await supabase
-                                                                    .from('assignments')
-                                                                    .delete()
-                                                                    .eq('id', a.id);
-                                                                  setAssignments((prev) =>
-                                                                    prev.filter(
-                                                                      (item) => item.id !== a.id
-                                                                    )
-                                                                  );
-                                                                  toast.success(
-                                                                    'Assignment deleted'
-                                                                  );
-                                                                }}
-                                                              >
-                                                                <Trash2 size={14} />
-                                                              </IconButton>
+                                                              <Tooltip title="Edit Assignment Details">
+                                                                <IconButton
+                                                                  size="small"
+                                                                  aria-label={`Edit ${a.title}`}
+                                                                  onClick={() => {
+                                                                    setEditingTemplate(null);
+                                                                    setEditingAssignment(a);
+                                                                    setUnifiedModalOpen(true);
+                                                                  }}
+                                                                >
+                                                                  <Edit3 size={14} />
+                                                                </IconButton>
+                                                              </Tooltip>
+                                                              {confirmDeleteAssignmentId ===
+                                                              a.id ? (
+                                                                <Button
+                                                                  size="small"
+                                                                  variant="contained"
+                                                                  color="error"
+                                                                  onClick={(e) => {
+                                                                    e.stopPropagation();
+                                                                    handleDeleteAssignmentWithUndo(
+                                                                      a
+                                                                    );
+                                                                  }}
+                                                                  sx={{
+                                                                    textTransform: 'none',
+                                                                    fontWeight: 700,
+                                                                    fontSize: '0.75rem',
+                                                                    minWidth: 72,
+                                                                    py: 0.25,
+                                                                    px: 1,
+                                                                  }}
+                                                                >
+                                                                  Confirm?
+                                                                </Button>
+                                                              ) : (
+                                                                <Tooltip title="Delete Assignment">
+                                                                  <IconButton
+                                                                    size="small"
+                                                                    color="error"
+                                                                    aria-label={`Delete ${a.title}`}
+                                                                    onClick={(e) => {
+                                                                      e.stopPropagation();
+                                                                      setConfirmDeleteAssignmentId(
+                                                                        a.id
+                                                                      );
+                                                                    }}
+                                                                  >
+                                                                    <Trash2 size={14} />
+                                                                  </IconButton>
+                                                                </Tooltip>
+                                                              )}
                                                             </Stack>
                                                           </TableCell>
                                                         </TableRow>
@@ -3742,7 +3747,7 @@ function GradebookHubContent() {
                                                               justifyContent: 'center',
                                                               color: 'text.secondary',
                                                               fontWeight: 800,
-                                                              fontSize: '1rem',
+                                                              fontSize: '1.125rem',
                                                               flexShrink: 0,
                                                             }}
                                                           >
@@ -3753,7 +3758,7 @@ function GradebookHubContent() {
                                                               variant="caption"
                                                               sx={{
                                                                 display: 'block',
-                                                                fontSize: '0.64rem',
+                                                                fontSize: '0.75rem',
                                                                 fontWeight: 700,
                                                                 color: 'text.secondary',
                                                                 textTransform: 'uppercase',
@@ -3775,15 +3780,43 @@ function GradebookHubContent() {
                                                       <TableCell
                                                         sx={{
                                                           fontVariantNumeric: 'tabular-nums',
+                                                          whiteSpace: 'nowrap',
                                                         }}
                                                       >
-                                                        <Typography variant="body2">
+                                                        <Typography
+                                                          variant="body2"
+                                                          color="text.secondary"
+                                                        >
+                                                          &mdash;
+                                                        </Typography>
+                                                      </TableCell>
+                                                      <TableCell
+                                                        sx={{
+                                                          fontVariantNumeric: 'tabular-nums',
+                                                          whiteSpace: 'nowrap',
+                                                        }}
+                                                      >
+                                                        <Typography variant="body2" fontWeight={600}>
                                                           {catWeight.toFixed(2)} %
                                                         </Typography>
                                                       </TableCell>
                                                       <TableCell
                                                         sx={{
                                                           fontVariantNumeric: 'tabular-nums',
+                                                          whiteSpace: 'nowrap',
+                                                        }}
+                                                      >
+                                                        <Typography
+                                                          variant="body2"
+                                                          color="text.secondary"
+                                                        >
+                                                          0&ndash;100
+                                                        </Typography>
+                                                      </TableCell>
+                                                      <TableCell
+                                                        sx={{
+                                                          fontVariantNumeric: 'tabular-nums',
+                                                          whiteSpace: 'nowrap',
                                                         }}
                                                       >
                                                         <Typography
@@ -3801,38 +3834,16 @@ function GradebookHubContent() {
                                                             null &&
                                                           breakdown?.average_percentage !==
                                                             undefined
-                                                            ? breakdown.average_percentage.toFixed(
+                                                            ? `${breakdown.average_percentage.toFixed(
                                                                 2
-                                                              )
+                                                              )} %`
                                                             : '-'}
                                                         </Typography>
                                                       </TableCell>
                                                       <TableCell
-                                                        sx={{
-                                                          fontVariantNumeric: 'tabular-nums',
-                                                        }}
-                                                      >
-                                                        <Typography
-                                                          variant="body2"
-                                                          color="text.secondary"
-                                                        >
-                                                          0&ndash;100
-                                                        </Typography>
-                                                      </TableCell>
-                                                      <TableCell />
-                                                      <TableCell
-                                                        sx={{
-                                                          fontVariantNumeric: 'tabular-nums',
-                                                        }}
-                                                      >
-                                                        <Typography
-                                                          variant="body2"
-                                                          color="text.secondary"
-                                                        >
-                                                          -
-                                                        </Typography>
-                                                      </TableCell>
-                                                      <TableCell align="right" />
+                                                        align="right"
+                                                        sx={{ whiteSpace: 'nowrap' }}
+                                                      />
                                                     </TableRow>
                                                   )}
                                                 </React.Fragment>
@@ -3865,7 +3876,7 @@ function GradebookHubContent() {
         <Grid container spacing={3}>
           {/* LEFT: DAILY ATTENDANCE TRACKER */}
           <Grid item xs={12} md={6}>
-            <Card elevation={0} sx={{ borderRadius: 2, border: '1px solid', borderColor: 'divider' }}>
+            <Card elevation={0} sx={{ borderRadius: 1, border: '1px solid', borderColor: 'divider' }}>
               <Box sx={{ p: 2.25, borderBottom: '1px solid', borderColor: 'divider' }}>
                 <Typography variant="subtitle1" fontWeight={700}>
                   Daily Attendance Tracker
@@ -3887,7 +3898,7 @@ function GradebookHubContent() {
                       180) *
                       100
                   )}
-                  sx={{ mt: 1, height: 6, borderRadius: 3 }}
+                  sx={{ mt: 1, height: 6, borderRadius: 1 }}
                 />
               </Box>
 
@@ -3936,7 +3947,7 @@ function GradebookHubContent() {
                       fullWidth
                       variant="contained"
                       onClick={handleLogAttendance}
-                      sx={{ fontWeight: 600, textTransform: 'none' }}
+                      sx={{ fontWeight: 600, textTransform: 'none', whiteSpace: 'nowrap' }}
                     >
                       Log Attendance
                     </Button>
@@ -3946,13 +3957,13 @@ function GradebookHubContent() {
                 <Table size="small">
                   <TableHead>
                     <TableRow sx={{ bgcolor: alpha(theme.palette.text.primary, 0.02) }}>
-                      <TableCell sx={{ fontWeight: 600, fontSize: '0.72rem', color: 'text.secondary' }}>
+                      <TableCell sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', whiteSpace: 'nowrap' }}>
                         DATE
                       </TableCell>
-                      <TableCell sx={{ fontWeight: 600, fontSize: '0.72rem', color: 'text.secondary' }}>
+                      <TableCell sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', whiteSpace: 'nowrap' }}>
                         STATUS
                       </TableCell>
-                      <TableCell sx={{ fontWeight: 600, fontSize: '0.72rem', color: 'text.secondary' }}>
+                      <TableCell sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', whiteSpace: 'nowrap' }}>
                         HOURS
                       </TableCell>
                     </TableRow>
@@ -3960,10 +3971,10 @@ function GradebookHubContent() {
                   <TableBody>
                     {attendanceLogs.slice(0, 12).map((row) => (
                       <TableRow key={row.id}>
-                        <TableCell sx={{ fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>
-                          {row.attendance_date}
+                        <TableCell sx={{ fontWeight: 600, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
+                          {formatCompactDate(row.attendance_date)}
                         </TableCell>
-                        <TableCell>
+                        <TableCell sx={{ whiteSpace: 'nowrap' }}>
                           <Chip
                             size="small"
                             color={
@@ -3973,10 +3984,10 @@ function GradebookHubContent() {
                             }
                             variant="outlined"
                             label={row.status.toUpperCase()}
-                            sx={{ fontWeight: 600, fontSize: '0.68rem' }}
+                            sx={{ fontWeight: 600, fontSize: '0.75rem' }}
                           />
                         </TableCell>
-                        <TableCell sx={{ fontVariantNumeric: 'tabular-nums' }}>
+                        <TableCell sx={{ fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
                           {row.hours_logged} hrs
                         </TableCell>
                       </TableRow>
@@ -3989,7 +4000,7 @@ function GradebookHubContent() {
 
           {/* RIGHT: CARNEGIE UNIT & INSTRUCTIONAL HOURS TRACKER */}
           <Grid item xs={12} md={6}>
-            <Card elevation={0} sx={{ borderRadius: 2, border: '1px solid', borderColor: 'divider' }}>
+            <Card elevation={0} sx={{ borderRadius: 1, border: '1px solid', borderColor: 'divider' }}>
               <Box sx={{ p: 2.25, borderBottom: '1px solid', borderColor: 'divider' }}>
                 <Typography variant="subtitle1" fontWeight={700}>
                   Instructional Hours &amp; Carnegie Units
@@ -4035,7 +4046,7 @@ function GradebookHubContent() {
                       variant="contained"
                       color="primary"
                       onClick={handleLogInstructionalHours}
-                      sx={{ fontWeight: 600, textTransform: 'none' }}
+                      sx={{ fontWeight: 600, textTransform: 'none', whiteSpace: 'nowrap' }}
                     >
                       + Log Class Hours
                     </Button>
@@ -4045,16 +4056,16 @@ function GradebookHubContent() {
                 <Table size="small">
                   <TableHead>
                     <TableRow sx={{ bgcolor: alpha(theme.palette.text.primary, 0.02) }}>
-                      <TableCell sx={{ fontWeight: 600, fontSize: '0.72rem', color: 'text.secondary' }}>
+                      <TableCell sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', whiteSpace: 'nowrap' }}>
                         CLASS
                       </TableCell>
-                      <TableCell sx={{ fontWeight: 600, fontSize: '0.72rem', color: 'text.secondary' }}>
+                      <TableCell sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', whiteSpace: 'nowrap' }}>
                         HOURS
                       </TableCell>
-                      <TableCell sx={{ fontWeight: 600, fontSize: '0.72rem', color: 'text.secondary' }}>
+                      <TableCell sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', whiteSpace: 'nowrap' }}>
                         CARNEGIE UNIT
                       </TableCell>
-                      <TableCell sx={{ fontWeight: 600, fontSize: '0.72rem', color: 'text.secondary' }}>
+                      <TableCell sx={{ fontWeight: 600, fontSize: '0.75rem', color: 'text.secondary', whiteSpace: 'nowrap' }}>
                         CREDITS
                       </TableCell>
                     </TableRow>
@@ -4062,16 +4073,16 @@ function GradebookHubContent() {
                   <TableBody>
                     {subjectSummaries.map((sum) => (
                       <TableRow key={sum.subject_id}>
-                        <TableCell sx={{ fontWeight: 600 }}>
+                        <TableCell sx={{ fontWeight: 600, whiteSpace: 'nowrap' }}>
                           {sum.subject_name}
                         </TableCell>
-                        <TableCell sx={{ fontVariantNumeric: 'tabular-nums' }}>
+                        <TableCell sx={{ fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
                           {sum.instructional_hours} hrs
                         </TableCell>
-                        <TableCell sx={{ fontVariantNumeric: 'tabular-nums' }}>
+                        <TableCell sx={{ fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
                           {sum.carnegie_credits.toFixed(2)} cr
                         </TableCell>
-                        <TableCell sx={{ fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>
+                        <TableCell sx={{ fontVariantNumeric: 'tabular-nums', fontWeight: 600, whiteSpace: 'nowrap' }}>
                           {sum.effective_credits.toFixed(2)} cr
                         </TableCell>
                       </TableRow>
@@ -4092,7 +4103,7 @@ function GradebookHubContent() {
           <Card
             className="no-print"
             elevation={0}
-            sx={{ p: 2, borderRadius: 2, border: '1px solid', borderColor: 'divider' }}
+            sx={{ p: 2, borderRadius: 1, border: '1px solid', borderColor: 'divider' }}
           >
             <Stack
               direction={{ xs: 'column', md: 'row' }}
@@ -4225,7 +4236,7 @@ function GradebookHubContent() {
                   size="small"
                   startIcon={<Download size={15} />}
                   onClick={handleExportCsv}
-                  sx={{ fontWeight: 600, textTransform: 'none' }}
+                  sx={{ fontWeight: 600, textTransform: 'none', whiteSpace: 'nowrap' }}
                 >
                   Export CSV
                 </Button>
@@ -4235,7 +4246,7 @@ function GradebookHubContent() {
                   size="small"
                   startIcon={<Printer size={15} />}
                   onClick={() => window.print()}
-                  sx={{ fontWeight: 600, textTransform: 'none' }}
+                  sx={{ fontWeight: 600, textTransform: 'none', whiteSpace: 'nowrap' }}
                 >
                   Print / Save PDF
                 </Button>
@@ -4352,7 +4363,7 @@ function GradebookHubContent() {
                           setNewTestName('');
                           setNewTestScore('');
                         }}
-                        sx={{ textTransform: 'none' }}
+                        sx={{ textTransform: 'none', whiteSpace: 'nowrap' }}
                       >
                         + Test
                       </Button>
@@ -4394,7 +4405,7 @@ function GradebookHubContent() {
                           }));
                           setNewHonorTitle('');
                         }}
-                        sx={{ textTransform: 'none' }}
+                        sx={{ textTransform: 'none', whiteSpace: 'nowrap' }}
                       >
                         + Honor
                       </Button>
@@ -4410,7 +4421,7 @@ function GradebookHubContent() {
               elevation={0}
               sx={{
                 p: 4,
-                borderRadius: 2,
+                borderRadius: 1,
                 border: '1px solid',
                 borderColor: 'divider',
                 bgcolor: '#ffffff',
@@ -4457,18 +4468,18 @@ function GradebookHubContent() {
               <Table size="small" sx={{ mb: 3 }}>
                 <TableHead>
                   <TableRow sx={{ borderBottom: '2px solid #222', bgcolor: '#f8fafc' }}>
-                    <TableCell sx={{ fontWeight: 700, color: '#000', bgcolor: '#f8fafc' }}>CLASS / SUBJECT</TableCell>
-                    <TableCell sx={{ fontWeight: 700, color: '#000', bgcolor: '#f8fafc' }}>DISCIPLINE</TableCell>
-                    <TableCell sx={{ fontWeight: 700, color: '#000', bgcolor: '#f8fafc' }}>POINTS</TableCell>
-                    <TableCell sx={{ fontWeight: 700, color: '#000', bgcolor: '#f8fafc' }}>TERM GRADE</TableCell>
-                    <TableCell sx={{ fontWeight: 700, color: '#000', bgcolor: '#f8fafc' }}>CREDITS</TableCell>
+                    <TableCell sx={{ fontWeight: 700, color: '#000', bgcolor: '#f8fafc', whiteSpace: 'nowrap' }}>CLASS / SUBJECT</TableCell>
+                    <TableCell sx={{ fontWeight: 700, color: '#000', bgcolor: '#f8fafc', whiteSpace: 'nowrap' }}>DISCIPLINE</TableCell>
+                    <TableCell sx={{ fontWeight: 700, color: '#000', bgcolor: '#f8fafc', whiteSpace: 'nowrap' }}>POINTS</TableCell>
+                    <TableCell sx={{ fontWeight: 700, color: '#000', bgcolor: '#f8fafc', whiteSpace: 'nowrap' }}>TERM GRADE</TableCell>
+                    <TableCell sx={{ fontWeight: 700, color: '#000', bgcolor: '#f8fafc', whiteSpace: 'nowrap' }}>CREDITS</TableCell>
                     <TableCell sx={{ fontWeight: 700, color: '#000', bgcolor: '#f8fafc' }}>
                       TEACHER OBSERVATIONS &amp; NOTES
                     </TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {subjectSummaries.map((sum) => {
+                  {reportSubjectSummaries.map((sum) => {
                     const ov = termOverrides.find(
                       (o) =>
                         o.subject_id === sum.subject_id &&
@@ -4476,13 +4487,13 @@ function GradebookHubContent() {
                     );
                     return (
                       <TableRow key={sum.subject_id} sx={{ borderBottom: '1px solid #ddd' }}>
-                        <TableCell sx={{ fontWeight: 700, color: '#000' }}>
+                        <TableCell sx={{ fontWeight: 700, color: '#000', whiteSpace: 'nowrap' }}>
                           {sum.subject_name}
                         </TableCell>
-                        <TableCell sx={{ color: '#333' }}>
+                        <TableCell sx={{ color: '#333', whiteSpace: 'nowrap' }}>
                           {sum.policy.broader_discipline}
                         </TableCell>
-                        <TableCell sx={{ color: '#333', fontVariantNumeric: 'tabular-nums' }}>
+                        <TableCell sx={{ color: '#333', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
                           {sum.points_earned_so_far} /{' '}
                           {sum.policy.calculation_basis === 'preset_total_points'
                             ? sum.preset_total_points
@@ -4494,6 +4505,7 @@ function GradebookHubContent() {
                             fontWeight: 700,
                             color: '#000',
                             fontVariantNumeric: 'tabular-nums',
+                            whiteSpace: 'nowrap',
                           }}
                         >
                           {sum.formatted_display}
@@ -4503,6 +4515,7 @@ function GradebookHubContent() {
                             color: '#000',
                             fontWeight: 600,
                             fontVariantNumeric: 'tabular-nums',
+                            whiteSpace: 'nowrap',
                           }}
                         >
                           {sum.effective_credits.toFixed(2)}
@@ -4521,21 +4534,21 @@ function GradebookHubContent() {
               {reportDetailLevel === 'detailed' && (
                 <Box mt={3}>
                   <Typography variant="subtitle2" fontWeight={700} sx={{ color: '#000', mb: 1.5 }}>
-                    ITEMIZED GRADED ASSIGNMENTS
+                    ITEMIZED GRADED ASSIGNMENTS ({selectedTerm})
                   </Typography>
                   <Table size="small">
                     <TableHead>
                       <TableRow sx={{ borderBottom: '1.5px solid #222', bgcolor: '#f8fafc' }}>
-                        <TableCell sx={{ fontWeight: 700, color: '#000', bgcolor: '#f8fafc' }}>DATE</TableCell>
-                        <TableCell sx={{ fontWeight: 700, color: '#000', bgcolor: '#f8fafc' }}>CLASS</TableCell>
+                        <TableCell sx={{ fontWeight: 700, color: '#000', bgcolor: '#f8fafc', whiteSpace: 'nowrap' }}>DATE</TableCell>
+                        <TableCell sx={{ fontWeight: 700, color: '#000', bgcolor: '#f8fafc', whiteSpace: 'nowrap' }}>CLASS</TableCell>
                         <TableCell sx={{ fontWeight: 700, color: '#000', bgcolor: '#f8fafc' }}>ASSIGNMENT</TableCell>
-                        <TableCell sx={{ fontWeight: 700, color: '#000', bgcolor: '#f8fafc' }}>CATEGORY</TableCell>
-                        <TableCell sx={{ fontWeight: 700, color: '#000', bgcolor: '#f8fafc' }}>SCORE</TableCell>
+                        <TableCell sx={{ fontWeight: 700, color: '#000', bgcolor: '#f8fafc', whiteSpace: 'nowrap' }}>CATEGORY</TableCell>
+                        <TableCell sx={{ fontWeight: 700, color: '#000', bgcolor: '#f8fafc', whiteSpace: 'nowrap' }}>SCORE</TableCell>
                         <TableCell sx={{ fontWeight: 700, color: '#000', bgcolor: '#f8fafc' }}>COMMENTS</TableCell>
                       </TableRow>
                     </TableHead>
                     <TableBody>
-                      {assignments
+                      {reportFilteredAssignments
                         .filter(
                           (a) =>
                             a.is_graded !== false &&
@@ -4550,18 +4563,18 @@ function GradebookHubContent() {
                                 id: '',
                                 name: '',
                                 sort_order: 0,
-                                color: '#0C74E4',
+                                color: '#1b5698',
                               });
                           return (
                             <TableRow key={a.id} sx={{ borderBottom: '1px solid #eee' }}>
-                              <TableCell sx={{ color: '#333', fontVariantNumeric: 'tabular-nums' }}>
-                                {a.due_date}
+                              <TableCell sx={{ color: '#333', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
+                                {formatCompactDate(a.due_date)}
                               </TableCell>
-                              <TableCell sx={{ fontWeight: 600, color: '#000' }}>
+                              <TableCell sx={{ fontWeight: 600, color: '#000', whiteSpace: 'nowrap' }}>
                                 {sub?.name || 'General'}
                               </TableCell>
                               <TableCell sx={{ color: '#000' }}>{a.title}</TableCell>
-                              <TableCell sx={{ color: '#444' }}>
+                              <TableCell sx={{ color: '#444', whiteSpace: 'nowrap' }}>
                                 {typeMap.get(a.category)?.name || a.category}
                               </TableCell>
                               <TableCell
@@ -4569,6 +4582,7 @@ function GradebookHubContent() {
                                   fontWeight: 700,
                                   color: '#000',
                                   fontVariantNumeric: 'tabular-nums',
+                                  whiteSpace: 'nowrap',
                                 }}
                               >
                                 {typeof a.percentage_score === 'number'
@@ -4603,7 +4617,7 @@ function GradebookHubContent() {
               elevation={0}
               sx={{
                 p: 4.5,
-                borderRadius: 2,
+                borderRadius: 1,
                 border: '1px solid',
                 borderColor: 'divider',
                 bgcolor: '#ffffff',
@@ -4681,28 +4695,28 @@ function GradebookHubContent() {
                   <Table size="small" sx={{ border: '1px solid #cbd5e1' }}>
                     <TableHead>
                       <TableRow sx={{ bgcolor: '#f8fafc' }}>
-                        <TableCell sx={{ fontWeight: 700, color: '#000', bgcolor: '#f8fafc' }}>COURSE CODE</TableCell>
+                        <TableCell sx={{ fontWeight: 700, color: '#000', bgcolor: '#f8fafc', whiteSpace: 'nowrap' }}>COURSE CODE</TableCell>
                         <TableCell sx={{ fontWeight: 700, color: '#000', bgcolor: '#f8fafc' }}>COURSE TITLE</TableCell>
-                        <TableCell sx={{ fontWeight: 700, color: '#000', bgcolor: '#f8fafc' }}>SUBJECT AREA</TableCell>
-                        <TableCell sx={{ fontWeight: 700, color: '#000', bgcolor: '#f8fafc' }}>LEVEL</TableCell>
-                        <TableCell sx={{ fontWeight: 700, color: '#000', bgcolor: '#f8fafc' }}>FINAL GRADE</TableCell>
-                        <TableCell sx={{ fontWeight: 700, color: '#000', bgcolor: '#f8fafc' }}>CREDITS</TableCell>
-                        <TableCell sx={{ fontWeight: 700, color: '#000', bgcolor: '#f8fafc' }}>GPA PTS</TableCell>
+                        <TableCell sx={{ fontWeight: 700, color: '#000', bgcolor: '#f8fafc', whiteSpace: 'nowrap' }}>SUBJECT AREA</TableCell>
+                        <TableCell sx={{ fontWeight: 700, color: '#000', bgcolor: '#f8fafc', whiteSpace: 'nowrap' }}>LEVEL</TableCell>
+                        <TableCell sx={{ fontWeight: 700, color: '#000', bgcolor: '#f8fafc', whiteSpace: 'nowrap' }}>FINAL GRADE</TableCell>
+                        <TableCell sx={{ fontWeight: 700, color: '#000', bgcolor: '#f8fafc', whiteSpace: 'nowrap' }}>CREDITS</TableCell>
+                        <TableCell sx={{ fontWeight: 700, color: '#000', bgcolor: '#f8fafc', whiteSpace: 'nowrap' }}>GPA PTS</TableCell>
                       </TableRow>
                     </TableHead>
                     <TableBody>
                       {subjectSummaries.map((sum) => (
                         <TableRow key={sum.subject_id}>
-                          <TableCell sx={{ fontWeight: 600, color: '#333' }}>
+                          <TableCell sx={{ fontWeight: 600, color: '#333', whiteSpace: 'nowrap' }}>
                             {sum.policy.course_code}
                           </TableCell>
                           <TableCell sx={{ fontWeight: 700, color: '#000' }}>
                             {sum.subject_name}
                           </TableCell>
-                          <TableCell sx={{ color: '#333' }}>
+                          <TableCell sx={{ color: '#333', whiteSpace: 'nowrap' }}>
                             {sum.policy.broader_discipline}
                           </TableCell>
-                          <TableCell sx={{ color: '#333', textTransform: 'uppercase' }}>
+                          <TableCell sx={{ color: '#333', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>
                             {sum.policy.course_level}
                           </TableCell>
                           <TableCell
@@ -4710,6 +4724,7 @@ function GradebookHubContent() {
                               fontWeight: 700,
                               color: '#000',
                               fontVariantNumeric: 'tabular-nums',
+                              whiteSpace: 'nowrap',
                             }}
                           >
                             {sum.formatted_display}
@@ -4719,11 +4734,12 @@ function GradebookHubContent() {
                               fontWeight: 700,
                               color: '#000',
                               fontVariantNumeric: 'tabular-nums',
+                              whiteSpace: 'nowrap',
                             }}
                           >
                             {sum.effective_credits.toFixed(2)}
                           </TableCell>
-                          <TableCell sx={{ color: '#333', fontVariantNumeric: 'tabular-nums' }}>
+                          <TableCell sx={{ color: '#333', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
                             {sum.gpa_weighted.toFixed(2)}
                           </TableCell>
                         </TableRow>
@@ -4770,13 +4786,13 @@ function GradebookHubContent() {
                           <TableBody>
                             {discCourses.map((sum) => (
                               <TableRow key={sum.subject_id}>
-                                <TableCell sx={{ width: 110, fontWeight: 600, color: '#333' }}>
+                                <TableCell sx={{ width: 110, fontWeight: 600, color: '#333', whiteSpace: 'nowrap' }}>
                                   {sum.policy.course_code}
                                 </TableCell>
                                 <TableCell sx={{ fontWeight: 700, color: '#000' }}>
                                   {sum.subject_name}
                                 </TableCell>
-                                <TableCell sx={{ width: 120, color: '#333' }}>
+                                <TableCell sx={{ width: 120, color: '#333', whiteSpace: 'nowrap' }}>
                                   {selectedAcademicYear}
                                 </TableCell>
                                 <TableCell
@@ -4785,6 +4801,7 @@ function GradebookHubContent() {
                                     fontWeight: 700,
                                     color: '#000',
                                     fontVariantNumeric: 'tabular-nums',
+                                    whiteSpace: 'nowrap',
                                   }}
                                 >
                                   {sum.formatted_display}
@@ -4795,6 +4812,7 @@ function GradebookHubContent() {
                                     fontWeight: 700,
                                     color: '#000',
                                     fontVariantNumeric: 'tabular-nums',
+                                    whiteSpace: 'nowrap',
                                   }}
                                 >
                                   {sum.effective_credits.toFixed(2)} cr
@@ -5039,6 +5057,9 @@ function GradebookHubContent() {
       {overrideModalSubject && (
         <Box
           className="no-print"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="override-modal-title"
           onClick={() => setOverrideModalSubject(null)}
           sx={{
             position: 'fixed',
@@ -5059,7 +5080,7 @@ function GradebookHubContent() {
               width: '100%',
               maxWidth: 560,
               maxHeight: '90vh',
-              borderRadius: 2.5,
+              borderRadius: 1,
               border: '1px solid',
               borderColor: 'divider',
               boxShadow: '0 24px 48px -12px rgba(15, 23, 42, 0.18)',
@@ -5079,10 +5100,10 @@ function GradebookHubContent() {
                 justifyContent: 'space-between',
               }}
             >
-              <Typography variant="h6" fontWeight={700} sx={{ letterSpacing: '-0.02em' }}>
+              <Typography id="override-modal-title" variant="h6" fontWeight={700} sx={{ letterSpacing: '-0.02em' }}>
                 Final Grade Override &amp; Notes ({overrideModalSubject.name})
               </Typography>
-              <IconButton size="small" onClick={() => setOverrideModalSubject(null)}>
+              <IconButton size="small" aria-label="Close modal" onClick={() => setOverrideModalSubject(null)}>
                 <X size={18} />
               </IconButton>
             </Box>
@@ -5206,8 +5227,9 @@ export default function GradebookPage() {
   return (
     <Suspense
       fallback={
-        <Box display="flex" justifyContent="center" alignItems="center" minHeight="50vh">
-          <CircularProgress />
+        <Box sx={{ p: { xs: 2, md: 3 } }}>
+          <Skeleton variant="rounded" height={64} sx={{ mb: 2, borderRadius: 1 }} />
+          <Skeleton variant="rounded" height={420} sx={{ borderRadius: 1 }} />
         </Box>
       }
     >
@@ -5215,3 +5237,4 @@ export default function GradebookPage() {
     </Suspense>
   );
 }
+

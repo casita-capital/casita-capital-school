@@ -99,6 +99,17 @@ export function AssignmentTypesManagerModal({
     }
   }, [open, assignmentTypes]);
 
+  useEffect(() => {
+    if (!open) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [open, onClose]);
+
   const handleStartAdd = () => {
     setIsNew(true);
     setEditingType({
@@ -109,7 +120,7 @@ export function AssignmentTypesManagerModal({
       scoring_mode: 'points',
       default_points: 100,
       default_weight: 20,
-      color: '#0C74E4',
+      color: '#1b5698',
       icon: 'FileText',
       is_graded_by_default: true,
       sort_order: typesList.length + 1,
@@ -139,7 +150,7 @@ export function AssignmentTypesManagerModal({
         scoring_mode: editingType.scoring_mode,
         default_points: Number(editingType.default_points) || 100,
         default_weight: Number(editingType.default_weight) || 20,
-        color: editingType.color || '#0C74E4',
+        color: editingType.color || '#1b5698',
         icon: editingType.icon || 'FileText',
         is_graded_by_default: editingType.is_graded_by_default,
         sort_order: editingType.sort_order || typesList.length + 1,
@@ -198,6 +209,9 @@ export function AssignmentTypesManagerModal({
 
   return (
     <Box
+      role="dialog"
+      aria-modal="true"
+      aria-label="Assignment Types and Definitions"
       onClick={onClose}
       sx={{
         position: 'fixed',
@@ -217,7 +231,7 @@ export function AssignmentTypesManagerModal({
           width: '100%',
           maxWidth: 920,
           maxHeight: '90vh',
-          borderRadius: 3,
+          borderRadius: 1,
           display: 'flex',
           flexDirection: 'column',
           overflow: 'hidden',
@@ -237,7 +251,7 @@ export function AssignmentTypesManagerModal({
           <Stack direction="row" spacing={1.5} alignItems="center">
             <Layers size={20} color={theme.palette.primary.main} />
             <Box>
-              <Typography variant="h6" fontWeight={800}>
+              <Typography variant="h6" fontWeight={700}>
                 Assignment Types &amp; Definitions
               </Typography>
               <Typography variant="caption" color="text.secondary">
@@ -250,7 +264,7 @@ export function AssignmentTypesManagerModal({
             size="small"
             startIcon={<Plus size={16} />}
             onClick={handleStartAdd}
-            sx={{ fontWeight: 700, textTransform: 'none' }}
+            sx={{ fontWeight: 700, textTransform: 'none', borderRadius: 1 }}
           >
             New Assignment Type
           </Button>
@@ -263,12 +277,12 @@ export function AssignmentTypesManagerModal({
             sx={{
               p: 2.5,
               mb: 3,
-              borderRadius: 2.5,
+              borderRadius: 1,
               bgcolor: alpha(theme.palette.primary.main, 0.04),
               borderColor: alpha(theme.palette.primary.main, 0.3),
             }}
           >
-            <Typography variant="subtitle2" fontWeight={800} color="primary.main" mb={2}>
+            <Typography variant="subtitle2" fontWeight={700} color="primary.main" mb={2}>
               {isNew ? 'Create New Assignment Type' : `Edit "${editingType.name}" Definition`}
             </Typography>
             <Grid container spacing={2}>
@@ -405,7 +419,7 @@ export function AssignmentTypesManagerModal({
                     disabled={saving}
                     startIcon={<Save size={15} />}
                     onClick={handleSaveType}
-                    sx={{ fontWeight: 700 }}
+                    sx={{ fontWeight: 700, borderRadius: 1 }}
                   >
                     {saving ? 'Saving...' : 'Save Type'}
                   </Button>
@@ -418,11 +432,11 @@ export function AssignmentTypesManagerModal({
         <Table size="small">
           <TableHead sx={{ bgcolor: 'action.hover' }}>
             <TableRow>
-              <TableCell sx={{ fontWeight: 800 }}>ASSIGNMENT TYPE</TableCell>
-              <TableCell sx={{ fontWeight: 800 }}>DEFINITION / MEANING</TableCell>
-              <TableCell sx={{ fontWeight: 800 }}>SCORING METHOD</TableCell>
-              <TableCell sx={{ fontWeight: 800 }}>DEFAULT PTS / WT</TableCell>
-              <TableCell align="right" sx={{ fontWeight: 800 }}>
+              <TableCell sx={{ fontWeight: 700, whiteSpace: 'nowrap' }}>ASSIGNMENT TYPE</TableCell>
+              <TableCell sx={{ fontWeight: 700, whiteSpace: 'nowrap' }}>DEFINITION / MEANING</TableCell>
+              <TableCell sx={{ fontWeight: 700, whiteSpace: 'nowrap' }}>SCORING METHOD</TableCell>
+              <TableCell sx={{ fontWeight: 700, whiteSpace: 'nowrap' }}>DEFAULT PTS / WT</TableCell>
+              <TableCell align="right" sx={{ fontWeight: 700, whiteSpace: 'nowrap' }}>
                 ACTIONS
               </TableCell>
             </TableRow>
@@ -430,7 +444,7 @@ export function AssignmentTypesManagerModal({
           <TableBody>
             {typesList.map((t) => (
               <TableRow key={t.slug} hover>
-                <TableCell sx={{ width: 190 }}>
+                <TableCell sx={{ width: 190, whiteSpace: 'nowrap' }}>
                   <Chip
                     label={t.name}
                     size="small"
@@ -438,8 +452,8 @@ export function AssignmentTypesManagerModal({
                       bgcolor: alpha(t.color, 0.14),
                       color: t.color,
                       border: `1px solid ${alpha(t.color, 0.3)}`,
-                      fontWeight: 800,
-                      fontSize: '0.73rem',
+                      fontWeight: 700,
+                      fontSize: '0.75rem',
                     }}
                   />
                 </TableCell>
@@ -448,7 +462,7 @@ export function AssignmentTypesManagerModal({
                     {t.description || 'No description provided.'}
                   </Typography>
                 </TableCell>
-                <TableCell sx={{ width: 170 }}>
+                <TableCell sx={{ width: 170, whiteSpace: 'nowrap' }}>
                   <Chip
                     size="small"
                     variant="outlined"
@@ -463,19 +477,20 @@ export function AssignmentTypesManagerModal({
                         ? 'Completion (100%)'
                         : 'Pass / Fail'
                     }
-                    sx={{ fontWeight: 700, fontSize: '0.7rem' }}
+                    sx={{ fontWeight: 700, fontSize: '0.75rem' }}
                   />
                 </TableCell>
-                <TableCell sx={{ width: 130, fontVariantNumeric: 'tabular-nums' }}>
+                <TableCell sx={{ width: 130, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
                   <Typography variant="caption" fontWeight={700}>
                     {t.default_points} pts · {t.default_weight}%
                   </Typography>
                 </TableCell>
-                <TableCell align="right" sx={{ width: 100 }}>
+                <TableCell align="right" sx={{ width: 100, whiteSpace: 'nowrap' }}>
                   <Stack direction="row" spacing={0.5} justifyContent="flex-end">
                     <IconButton
                       size="small"
                       color="primary"
+                      aria-label={`Edit ${t.name}`}
                       onClick={() => {
                         setIsNew(false);
                         setEditingType(t);
@@ -486,6 +501,7 @@ export function AssignmentTypesManagerModal({
                     <IconButton
                       size="small"
                       color="error"
+                      aria-label={`Delete ${t.name}`}
                       onClick={() => handleDeleteType(t)}
                     >
                       <Trash2 size={15} />
@@ -509,7 +525,7 @@ export function AssignmentTypesManagerModal({
             justifyContent: 'flex-end',
           }}
         >
-          <Button onClick={onClose} variant="outlined" sx={{ fontWeight: 700 }}>
+          <Button onClick={onClose} variant="outlined" sx={{ fontWeight: 700, borderRadius: 1 }}>
             Done
           </Button>
         </Box>
@@ -559,6 +575,17 @@ export function ClassGradingPolicyModal({
     const sub = subjects.find((s) => s.id === targetId) || subjects[0];
     setPolicy(parseSubjectGradingPolicy(sub));
   }, [open, initialSubjectId, subjects]);
+
+  useEffect(() => {
+    if (!open) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [open, onClose]);
 
   const handleSelectSubject = (nextId: string) => {
     setSelectedSubjectId(nextId);
@@ -647,6 +674,9 @@ export function ClassGradingPolicyModal({
 
   return (
     <Box
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Class Structure and Grading Setup for ${currentSubject.name}`}
       onClick={onClose}
       sx={{
         position: 'fixed',
@@ -666,7 +696,7 @@ export function ClassGradingPolicyModal({
           width: '100%',
           maxWidth: 880,
           maxHeight: '90vh',
-          borderRadius: 2.5,
+          borderRadius: 1,
           display: 'flex',
           flexDirection: 'column',
           overflow: 'hidden',
@@ -720,7 +750,7 @@ export function ClassGradingPolicyModal({
                 </option>
               ))}
             </TextField>
-            <IconButton size="small" onClick={onClose}>
+            <IconButton size="small" aria-label="Close grading policy modal" onClick={onClose}>
               <X size={18} />
             </IconButton>
           </Stack>
@@ -729,7 +759,7 @@ export function ClassGradingPolicyModal({
         <Box sx={{ p: 3, overflowY: 'auto', flex: 1 }}>
           <Stack spacing={2.5}>
             {/* SECTION 1: HOW GRADES ARE DETERMINED FOR THIS CLASS */}
-            <Paper variant="outlined" sx={{ p: 2.5, borderRadius: 2 }}>
+            <Paper variant="outlined" sx={{ p: 2.5, borderRadius: 1 }}>
               <Typography variant="subtitle2" fontWeight={700} mb={2}>
                 1. Grade Display &amp; Calculation Basis
               </Typography>

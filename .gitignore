@@ -34,3 +34,6 @@ yarn-error.log*
 *.pem
 .idea/
 .vscode/
+
+# local skill binaries
+**/scripts/bin/

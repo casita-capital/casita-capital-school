@@ -2,15 +2,17 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  Alert,
   alpha,
   Box,
   Button,
   Card,
-  CardContent,
+  Checkbox,
   Chip,
-  CircularProgress,
+  Divider,
   Grid,
   IconButton,
+  Skeleton,
   Stack,
   Table,
   TableBody,
@@ -24,24 +26,38 @@ import {
 } from '@mui/material';
 import {
   AlertCircle,
-  ArrowRight,
   Award,
   CheckCircle2,
+  CheckSquare,
   Clock,
   Edit3,
   ExternalLink,
-  FileText,
   GraduationCap,
   LogIn,
   Package,
   Plus,
   Printer,
+  RefreshCw,
+  Repeat,
   Sparkles,
 } from 'lucide-react';
+import toast from 'react-hot-toast';
 import { RouterLink } from 'src/components/base/router-link';
-import { UnifiedAssignmentModal } from 'src/components/assignments/unified-assignment-modal';
+import {
+  UnifiedAssignmentModal,
+  UnifiedAssignmentModalInitialValues,
+} from 'src/components/assignments/unified-assignment-modal';
 import { useSchoolSettings } from 'src/contexts/school-settings';
 import { createClient } from 'src/services/supabase/client';
+import { getCachedActiveUserName, resolveAndSyncActiveUser } from 'src/utils/active-user';
+import {
+  computeNextUncompletedOccurrenceDate,
+  expandTasksForDateRange,
+  parseTaskRecurrenceConfig,
+  ScheduledTaskOccurrence,
+  SchoolTaskRow,
+  serializeTaskRecurrenceConfig,
+} from 'src/utils/task-recurrence';
 import {
   AssignmentTypeConfig,
   calculateSubjectGradeSummary,
@@ -99,6 +115,10 @@ interface ExternalWeekItem {
   assignmentRecord?: GradebookAssignment;
 }
 
+function isRecordArray<T>(val: unknown): val is T[] {
+  return Array.isArray(val);
+}
+
 function formatIsoDate(d: Date): string {
   const yyyy = d.getFullYear();
   const mm = String(d.getMonth() + 1).padStart(2, '0');
@@ -106,15 +126,44 @@ function formatIsoDate(d: Date): string {
   return `${yyyy}-${mm}-${dd}`;
 }
 
+function formatHumanDate(isoStr: string | null | undefined, includeWeekday = true): string {
+  if (!isoStr) return '—';
+  const d = new Date(`${isoStr}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return isoStr;
+  return d.toLocaleDateString(
+    'en-US',
+    includeWeekday
+      ? { weekday: 'short', month: 'short', day: 'numeric' }
+      : { month: 'short', day: 'numeric' }
+  );
+}
+
+function getAcademicYearBounds(now: Date): { academicYear: string; fullTermName: string } {
+  const year = now.getFullYear();
+  const month = now.getMonth(); // 0-indexed, July (6) starts new academic year
+  const startYear = month >= 6 ? year : year - 1;
+  const endYear = startYear + 1;
+  const academicYear = `${startYear}-${endYear}`;
+  return {
+    academicYear,
+    fullTermName: `Full Year ${academicYear}`,
+  };
+}
+
 function getCurrentWeekBounds(): {
   todayStr: string;
+  todayHumanLabel: string;
   mondayStr: string;
   fridayStr: string;
   sundayStr: string;
   weekRangeLabel: string;
+  academicYear: string;
+  fullTermName: string;
 } {
   const now = new Date();
   const todayStr = formatIsoDate(now);
+  const todayHumanLabel = formatHumanDate(todayStr, true);
+  const { academicYear, fullTermName } = getAcademicYearBounds(now);
   const day = now.getDay();
   const diffToMonday = day === 0 ? -6 : 1 - day;
 
@@ -136,10 +185,13 @@ function getCurrentWeekBounds(): {
 
   return {
     todayStr,
+    todayHumanLabel,
     mondayStr: formatIsoDate(mon),
     fridayStr: formatIsoDate(fri),
     sundayStr: formatIsoDate(sun),
     weekRangeLabel,
+    academicYear,
+    fullTermName,
   };
 }
 
@@ -149,6 +201,7 @@ export default function SchoolDashboardPage() {
   const supabase = createClient();
 
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [subjects, setSubjects] = useState<SubjectWithGrading[]>([]);
   const [assignments, setAssignments] = useState<GradebookAssignment[]>([]);
@@ -156,94 +209,84 @@ export default function SchoolDashboardPage() {
     useState<AssignmentTypeConfig[]>(DEFAULT_ASSIGNMENT_TYPES);
   const [termOverrides, setTermOverrides] = useState<SubjectTermOverride[]>([]);
   const [instructionalHours, setInstructionalHours] = useState<InstructionalHourRow[]>([]);
+  const [tasks, setTasks] = useState<SchoolTaskRow[]>([]);
 
   const [editingAssignment, setEditingAssignment] = useState<GradebookAssignment | null>(null);
+  const [modalInitialValues, setModalInitialValues] = useState<
+    UnifiedAssignmentModalInitialValues | undefined
+  >(undefined);
+  const [gradingFromOverdueQueue, setGradingFromOverdueQueue] = useState<boolean>(false);
   const [modalOpen, setModalOpen] = useState(false);
 
-  const { todayStr, mondayStr, sundayStr, weekRangeLabel } = useMemo(
-    () => getCurrentWeekBounds(),
-    []
-  );
+  const {
+    todayStr,
+    todayHumanLabel,
+    mondayStr,
+    sundayStr,
+    weekRangeLabel,
+    academicYear,
+    fullTermName,
+  } = useMemo(() => getCurrentWeekBounds(), []);
 
   const loadDashboardData = useCallback(async () => {
+    setLoading(true);
+    setLoadError(null);
     try {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-      const activeEmail =
-        user?.email ||
-        (typeof window !== 'undefined' ? localStorage.getItem('school_active_user_email') : null) ||
-        'blake.womble@gmail.com';
-
-      let targetRecord: UserProfile | null = null;
-
-      if (user?.id) {
-        const { data: byAuthId } = await supabase
-          .from('users')
-          .select('full_name, email, role')
-          .eq('auth_id', user.id)
-          .maybeSingle();
-
-        if (byAuthId) targetRecord = byAuthId as UserProfile;
+      const resolvedUser = await resolveAndSyncActiveUser(supabase);
+      if (resolvedUser) {
+        setProfile({
+          full_name: resolvedUser.fullName,
+          email: resolvedUser.email,
+          role: resolvedUser.role,
+        });
+      } else {
+        setProfile(null);
       }
 
-      if (!targetRecord && activeEmail) {
-        const { data: byEmail } = await supabase
-          .from('users')
-          .select('full_name, email, role')
-          .eq('email', activeEmail)
-          .maybeSingle();
-
-        if (byEmail) targetRecord = byEmail as UserProfile;
-      }
-
-      if (!targetRecord) {
-        const { data: fallbackUser } = await supabase
-          .from('users')
-          .select('full_name, email, role')
-          .eq('email', 'blake.womble@gmail.com')
-          .maybeSingle();
-
-        if (fallbackUser) targetRecord = fallbackUser as UserProfile;
-      }
-
-      setProfile(
-        targetRecord || {
-          full_name: 'Blake Womble',
-          email: 'blake.womble@gmail.com',
-          role: 'admin',
-        }
-      );
-
-      const [subRes, assignRes, typeRes, ovRes, hrRes] = await Promise.all([
+      const [subRes, assignRes, typeRes, ovRes, hrRes, taskRes] = await Promise.all([
         supabase.from('subjects').select('*').order('sort_order', { ascending: true }),
         supabase.from('assignments').select('*').order('due_date', { ascending: true }),
         supabase.from('assignment_types').select('*').order('sort_order', { ascending: true }),
         supabase.from('subject_term_overrides').select('*'),
         supabase.from('instructional_hours').select('id, subject_id, minutes'),
+        supabase.from('tasks').select('*').order('created_at', { ascending: false }),
       ]);
 
-      if (subRes.data) {
-        setSubjects(subRes.data as unknown as SubjectWithGrading[]);
+      const firstError =
+        subRes.error ||
+        assignRes.error ||
+        typeRes.error ||
+        ovRes.error ||
+        hrRes.error ||
+        taskRes.error;
+      if (firstError) {
+        setLoadError(
+          `Unable to load academic records (${firstError.message}). Check your connection and try again.`
+        );
       }
-      if (assignRes.data) {
-        setAssignments(assignRes.data as unknown as GradebookAssignment[]);
+
+      if (isRecordArray<SubjectWithGrading>(subRes.data)) {
+        setSubjects(subRes.data);
       }
-      if (typeRes.data && typeRes.data.length > 0) {
-        setAssignmentTypes(typeRes.data as unknown as AssignmentTypeConfig[]);
+      if (isRecordArray<GradebookAssignment>(assignRes.data)) {
+        setAssignments(assignRes.data);
       }
-      if (ovRes.data) {
-        setTermOverrides(ovRes.data as unknown as SubjectTermOverride[]);
+      if (isRecordArray<AssignmentTypeConfig>(typeRes.data) && typeRes.data.length > 0) {
+        setAssignmentTypes(typeRes.data);
       }
-      if (hrRes.data) {
-        setInstructionalHours(hrRes.data as unknown as InstructionalHourRow[]);
+      if (isRecordArray<SubjectTermOverride>(ovRes.data)) {
+        setTermOverrides(ovRes.data);
       }
-    } catch {
-      setProfile({
-        full_name: 'Blake Womble',
-        email: 'blake.womble@gmail.com',
-        role: 'admin',
-      });
+      if (isRecordArray<InstructionalHourRow>(hrRes.data)) {
+        setInstructionalHours(hrRes.data);
+      }
+      if (isRecordArray<SchoolTaskRow>(taskRes.data)) {
+        setTasks(taskRes.data);
+      }
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'Unexpected network error while loading dashboard.';
+      setLoadError(`Unable to load academic records (${message}).`);
     } finally {
       setLoading(false);
     }
@@ -294,8 +337,7 @@ export default function SchoolDashboardPage() {
       const override = termOverrides.find(
         (ov) =>
           ov.subject_id === sub.id &&
-          ov.term_name === 'Full Year 2026-2027' &&
-          ov.academic_year === '2026-2027'
+          (ov.term_name === fullTermName || ov.academic_year === academicYear)
       );
       const loggedMinutes = instructionalHours
         .filter((h) => h.subject_id === sub.id)
@@ -309,7 +351,7 @@ export default function SchoolDashboardPage() {
         loggedMinutes,
       });
     });
-  }, [subjects, assignments, assignmentTypes, termOverrides, instructionalHours]);
+  }, [subjects, assignments, assignmentTypes, termOverrides, instructionalHours, fullTermName, academicYear]);
 
   const overallGpa = useMemo(() => {
     let gradedCredits = 0;
@@ -479,7 +521,7 @@ export default function SchoolDashboardPage() {
         });
       }
 
-      // Also include any syllabus Activities scheduled on this week's classes (placed on the SAME weekday as their class)
+      // Also include any syllabus Activities scheduled on this week's classes
       if (hasSyllabusActivities && activeSyl?.days) {
         for (const [clsNum, schedInfo] of classDayByNumber.entries()) {
           const sylDay = activeSyl.days.find((d) => d.day_number === clsNum);
@@ -558,10 +600,186 @@ export default function SchoolDashboardPage() {
     return items.sort((a, b) => a.dueDate.localeCompare(b.dueDate));
   }, [subjects, assignments, mondayStr, sundayStr, typeMap]);
 
+  const supplyItemsThisWeek = useMemo(
+    () => externalThisWeekItems.filter((item) => item.supplies && item.supplies.length > 0),
+    [externalThisWeekItems]
+  );
+
+  const weeklyScheduledTasks = useMemo(() => {
+    const expanded = expandTasksForDateRange(tasks, mondayStr, sundayStr);
+    const expandedIds = new Set(expanded.map((occ) => occ.task.id));
+
+    // Also include uncompleted one-time tasks that have no due date or are overdue before this week
+    const additionalUncompleted: ScheduledTaskOccurrence[] = tasks
+      .filter((t) => {
+        if (t.is_recurring || expandedIds.has(t.id) || t.status === 'completed') return false;
+        const dateOnly = t.due_date ? t.due_date.slice(0, 10) : null;
+        return !dateOnly || dateOnly < mondayStr;
+      })
+      .map((t) => {
+        const occDate = t.due_date ? t.due_date.slice(0, 10) : '';
+        return {
+          occurrenceId: `${t.id}-${occDate || 'unscheduled'}`,
+          taskId: t.id,
+          title: t.title,
+          description: t.description,
+          priority: t.priority,
+          occurrenceDate: occDate,
+          isCompleted: t.status === 'completed',
+          isRecurring: false,
+          recurrenceSummary: null,
+          task: t,
+        };
+      });
+
+    return [...additionalUncompleted, ...expanded];
+  }, [tasks, mondayStr, sundayStr]);
+
+  const handleToggleDashboardTaskOccurrence = async (occ: ScheduledTaskOccurrence) => {
+    try {
+      const supabase = createClient();
+      await resolveAndSyncActiveUser(supabase);
+
+      if (occ.isRecurring) {
+        const cfg = parseTaskRecurrenceConfig(occ.task.recurrence_config, occ.task.due_date);
+        const completedSet = new Set(cfg.completed_dates);
+        if (occ.isCompleted) {
+          completedSet.delete(occ.occurrenceDate);
+        } else {
+          completedSet.add(occ.occurrenceDate);
+        }
+        const nextCfg = {
+          ...cfg,
+          completed_dates: Array.from(completedSet).sort(),
+        };
+        const { nextDate, allCompleted } = computeNextUncompletedOccurrenceDate(nextCfg);
+        const nextStatus = allCompleted ? 'completed' : 'pending';
+        const serializedCfg = serializeTaskRecurrenceConfig(nextCfg);
+
+        const { error: updateErr } = await supabase
+          .schema('school')
+          .from('tasks')
+          .update({
+            due_date: nextDate,
+            status: nextStatus,
+            recurrence_config: serializedCfg,
+          })
+          .eq('id', occ.task.id);
+
+        if (updateErr) throw updateErr;
+
+        setTasks((prev) =>
+          prev.map((t) =>
+            t.id === occ.task.id
+              ? {
+                  ...t,
+                  due_date: nextDate,
+                  status: nextStatus,
+                  recurrence_config: serializedCfg,
+                }
+              : t
+          )
+        );
+        toast.success(
+          occ.isCompleted
+            ? `Unmarked occurrence (${occ.occurrenceDate})`
+            : `Completed occurrence (${occ.occurrenceDate})`
+        );
+      } else {
+        const nextStatus = occ.isCompleted ? 'pending' : 'completed';
+        const { error: updateErr } = await supabase
+          .schema('school')
+          .from('tasks')
+          .update({ status: nextStatus })
+          .eq('id', occ.task.id);
+
+        if (updateErr) throw updateErr;
+
+        setTasks((prev) =>
+          prev.map((t) => (t.id === occ.task.id ? { ...t, status: nextStatus } : t))
+        );
+        toast.success(nextStatus === 'completed' ? 'Task completed!' : 'Task marked pending');
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to update task');
+    }
+  };
+
   if (loading) {
     return (
-      <Box display="flex" justifyContent="center" alignItems="center" minHeight="50vh">
-        <CircularProgress />
+      <Box aria-busy="true" aria-label="Loading school dashboard">
+        <Card
+          elevation={0}
+          sx={{
+            p: 3,
+            mb: 3,
+            borderRadius: 1,
+            border: '1px solid',
+            borderColor: 'divider',
+            bgcolor: 'background.paper',
+          }}
+        >
+          <Stack
+            direction={{ xs: 'column', md: 'row' }}
+            justifyContent="space-between"
+            alignItems={{ xs: 'flex-start', md: 'center' }}
+            spacing={2}
+          >
+            <Box sx={{ width: '100%', maxWidth: 420 }}>
+              <Skeleton variant="text" width="65%" height={36} />
+              <Skeleton variant="text" width="85%" height={22} />
+            </Box>
+            <Stack direction="row" spacing={1.5}>
+              <Skeleton variant="rounded" width={140} height={36} sx={{ borderRadius: 1 }} />
+              <Skeleton variant="rounded" width={150} height={36} sx={{ borderRadius: 1 }} />
+              <Skeleton variant="rounded" width={160} height={36} sx={{ borderRadius: 1 }} />
+            </Stack>
+          </Stack>
+        </Card>
+
+        <Grid container spacing={3} sx={{ mb: 3 }}>
+          <Grid item xs={12} lg={6}>
+            <Card
+              elevation={0}
+              sx={{
+                p: 2,
+                borderRadius: 1,
+                border: '1px solid',
+                borderColor: 'divider',
+              }}
+            >
+              <Skeleton variant="text" width="55%" height={28} sx={{ mb: 1 }} />
+              <Skeleton variant="rounded" width="100%" height={260} sx={{ borderRadius: 1 }} />
+            </Card>
+          </Grid>
+          <Grid item xs={12} lg={6}>
+            <Card
+              elevation={0}
+              sx={{
+                p: 2,
+                borderRadius: 1,
+                border: '1px solid',
+                borderColor: 'divider',
+              }}
+            >
+              <Skeleton variant="text" width="50%" height={28} sx={{ mb: 1 }} />
+              <Skeleton variant="rounded" width="100%" height={260} sx={{ borderRadius: 1 }} />
+            </Card>
+          </Grid>
+        </Grid>
+
+        <Card
+          elevation={0}
+          sx={{
+            p: 2,
+            borderRadius: 1,
+            border: '1px solid',
+            borderColor: 'divider',
+          }}
+        >
+          <Skeleton variant="text" width="45%" height={28} sx={{ mb: 1 }} />
+          <Skeleton variant="rounded" width="100%" height={220} sx={{ borderRadius: 1 }} />
+        </Card>
       </Box>
     );
   }
@@ -570,44 +788,81 @@ export default function SchoolDashboardPage() {
 
   return (
     <Box>
-      {/* Clean Unified Greeting Header */}
+      {/* Actionable Error Banner when Supabase queries fail */}
+      {loadError && (
+        <Alert
+          severity="error"
+          sx={{ mb: 3, borderRadius: 1 }}
+          action={
+            <Button
+              color="inherit"
+              size="small"
+              startIcon={<RefreshCw size={14} />}
+              onClick={loadDashboardData}
+            >
+              Retry
+            </Button>
+          }
+        >
+          {loadError}
+        </Alert>
+      )}
+
+      {/* Editorial Academy Header Bar */}
       <Card
         elevation={0}
         sx={{
-          p: 2.5,
+          p: 3,
           mb: 3,
-          borderRadius: 2.5,
+          borderRadius: 1,
           border: '1px solid',
           borderColor: 'divider',
           bgcolor: 'background.paper',
         }}
       >
         <Stack
-          direction={{ xs: 'column', sm: 'row' }}
+          direction={{ xs: 'column', md: 'row' }}
           justifyContent="space-between"
-          alignItems={{ xs: 'flex-start', sm: 'center' }}
+          alignItems={{ xs: 'flex-start', md: 'center' }}
           spacing={2}
         >
           <Box>
             <Typography
-              variant="h4"
+              variant="h3"
               sx={{
-                fontWeight: 700,
-                letterSpacing: '-0.02em',
-                fontSize: { xs: '1.4rem', sm: '1.7rem' },
+                fontSize: { xs: '1.5rem', sm: '1.85rem' },
                 lineHeight: 1.15,
               }}
             >
               {firstName ? `Welcome back, ${firstName}` : schoolName}
             </Typography>
-            <Typography variant="body2" color="text.secondary" sx={{ mt: 0.4 }}>
-              {schoolName} · Weekly binder planning, gradebook overview, and external course schedule.
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+              {todayHumanLabel} · Week of {weekRangeLabel} · Academic Year {academicYear}
             </Typography>
           </Box>
 
-          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+          <Stack direction="row" spacing={1.5} alignItems="center" flexWrap="wrap" useFlexGap>
             {profile ? (
               <>
+                <Button
+                  component={RouterLink}
+                  href="/gradebook"
+                  variant="outlined"
+                  size="small"
+                  startIcon={<GraduationCap size={16} />}
+                  sx={{
+                    fontWeight: 600,
+                    textTransform: 'none',
+                    whiteSpace: 'nowrap',
+                    borderRadius: 1,
+                    px: 2,
+                    py: 1,
+                    borderColor: 'divider',
+                    color: 'text.primary',
+                  }}
+                >
+                  Gradebook &amp; Reports
+                </Button>
                 <Button
                   component={RouterLink}
                   href="/calendar"
@@ -615,11 +870,12 @@ export default function SchoolDashboardPage() {
                   size="small"
                   startIcon={<Plus size={16} />}
                   sx={{
-                    fontWeight: 700,
+                    fontWeight: 600,
                     textTransform: 'none',
-                    borderRadius: 2,
-                    px: 1.75,
-                    py: 0.85,
+                    whiteSpace: 'nowrap',
+                    borderRadius: 1,
+                    px: 2,
+                    py: 1,
                     borderColor: 'divider',
                     color: 'text.primary',
                   }}
@@ -634,11 +890,12 @@ export default function SchoolDashboardPage() {
                   size="small"
                   startIcon={<Printer size={16} />}
                   sx={{
-                    fontWeight: 700,
+                    fontWeight: 600,
                     textTransform: 'none',
-                    borderRadius: 2,
+                    whiteSpace: 'nowrap',
+                    borderRadius: 1,
                     px: 2,
-                    py: 0.85,
+                    py: 1,
                     boxShadow: 'none',
                   }}
                 >
@@ -652,7 +909,7 @@ export default function SchoolDashboardPage() {
                 variant="contained"
                 color="primary"
                 startIcon={<LogIn size={18} />}
-                sx={{ fontWeight: 600, textTransform: 'none' }}
+                sx={{ fontWeight: 600, textTransform: 'none', whiteSpace: 'nowrap', borderRadius: 1 }}
               >
                 Sign In to Start
               </Button>
@@ -661,127 +918,15 @@ export default function SchoolDashboardPage() {
         </Stack>
       </Card>
 
-      {/* Top Row: Weekly Binder Planner + Assignments & Tasks */}
-      <Grid container spacing={2.5} sx={{ mb: 3 }}>
-        {/* Weekly Binder Planner Card */}
-        <Grid item xs={12} md={6}>
-          <Card
-            elevation={0}
-            sx={{
-              height: '100%',
-              borderRadius: 2.5,
-              border: '1px solid',
-              borderColor: alpha(theme.palette.primary.main, 0.35),
-              bgcolor: alpha(theme.palette.primary.main, 0.02),
-            }}
-          >
-            <CardContent sx={{ p: 3, display: 'flex', flexDirection: 'column', height: '100%' }}>
-              <Box display="flex" alignItems="center" gap={1.5} mb={1.5}>
-                <Box
-                  sx={{
-                    p: 1,
-                    borderRadius: 2,
-                    bgcolor: 'primary.main',
-                    color: '#ffffff',
-                    display: 'flex',
-                  }}
-                >
-                  <Printer size={20} />
-                </Box>
-                <Typography variant="h5" fontWeight={700}>
-                  Weekly Binder Planner
-                </Typography>
-              </Box>
-              <Typography variant="body2" color="text.secondary" sx={{ mb: 2.5, lineHeight: 1.6 }}>
-                Print-ready 2-page weekly binder spread with subject rows, top 3 daily priorities, habits tracker, and auto-populated recurring assignments.
-              </Typography>
-              <Box sx={{ mt: 'auto' }}>
-                <Button
-                  component={RouterLink}
-                  href="/calendar/planner"
-                  variant="contained"
-                  color="primary"
-                  fullWidth
-                  endIcon={<ArrowRight size={16} />}
-                  sx={{
-                    fontWeight: 700,
-                    textTransform: 'none',
-                    borderRadius: 2,
-                    py: 1,
-                    boxShadow: 'none',
-                  }}
-                >
-                  Open Weekly Binder
-                </Button>
-              </Box>
-            </CardContent>
-          </Card>
-        </Grid>
-
-        {/* Assignments & Tasks Card */}
-        <Grid item xs={12} md={6}>
-          <Card
-            elevation={0}
-            sx={{
-              height: '100%',
-              borderRadius: 2.5,
-              border: '1px solid',
-              borderColor: 'divider',
-            }}
-          >
-            <CardContent sx={{ p: 3, display: 'flex', flexDirection: 'column', height: '100%' }}>
-              <Box display="flex" alignItems="center" gap={1.5} mb={1.5}>
-                <Box
-                  sx={{
-                    p: 1,
-                    borderRadius: 2,
-                    bgcolor: alpha(theme.palette.success.main, 0.12),
-                    color: 'success.main',
-                    display: 'flex',
-                  }}
-                >
-                  <FileText size={20} />
-                </Box>
-                <Typography variant="h5" fontWeight={700}>
-                  Assignments &amp; Tasks
-                </Typography>
-              </Box>
-              <Typography variant="body2" color="text.secondary" sx={{ mb: 2.5, lineHeight: 1.6 }}>
-                Organize homework, projects, tests, and family to-do tasks scoped by subject and due date.
-              </Typography>
-              <Box sx={{ mt: 'auto' }}>
-                <Button
-                  component={RouterLink}
-                  href="/assignments"
-                  variant="outlined"
-                  color="inherit"
-                  fullWidth
-                  endIcon={<ArrowRight size={16} />}
-                  sx={{
-                    fontWeight: 700,
-                    textTransform: 'none',
-                    borderRadius: 2,
-                    py: 1,
-                    borderColor: 'divider',
-                  }}
-                >
-                  Open Assignments
-                </Button>
-              </Box>
-            </CardContent>
-          </Card>
-        </Grid>
-      </Grid>
-
-      {/* Two-Column Middle Section: Past-Due Needs Grading (Left) & Class Grade Summary (Right) */}
-      <Grid container spacing={2.5} sx={{ mb: 3 }}>
+      {/* Primary Operational Row: Past-Due Needs Grading (Left) & Class Grade Summary (Right) */}
+      <Grid container spacing={3} sx={{ mb: 3 }}>
         {/* Left Column: Past-Due Assignments Needing Grades */}
         <Grid item xs={12} lg={6}>
           <Card
             elevation={0}
             sx={{
               height: '100%',
-              borderRadius: 2.5,
+              borderRadius: 1,
               border: '1px solid',
               borderColor: 'divider',
               display: 'flex',
@@ -790,20 +935,20 @@ export default function SchoolDashboardPage() {
           >
             <Box
               sx={{
-                p: 2.25,
+                p: 2,
                 borderBottom: '1px solid',
                 borderColor: 'divider',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'space-between',
-                gap: 1.5,
+                gap: 2,
               }}
             >
-              <Stack direction="row" spacing={1.25} alignItems="center">
+              <Stack direction="row" spacing={1.5} alignItems="center">
                 <Box
                   sx={{
-                    p: 0.85,
-                    borderRadius: 1.5,
+                    p: 1,
+                    borderRadius: 1,
                     bgcolor: alpha(theme.palette.warning.main, 0.14),
                     color: 'warning.main',
                     display: 'flex',
@@ -813,18 +958,23 @@ export default function SchoolDashboardPage() {
                 </Box>
                 <Box>
                   <Stack direction="row" spacing={1} alignItems="center">
-                    <Typography variant="subtitle1" fontWeight={700}>
+                    <Typography variant="h5">
                       Past-Due Assignments Needing Grades
                     </Typography>
                     <Chip
                       size="small"
                       label={pastDueUngradedAssignments.length}
                       color={pastDueUngradedAssignments.length > 0 ? 'warning' : 'success'}
-                      sx={{ height: 20, fontSize: '0.72rem', fontWeight: 700 }}
+                      sx={{
+                        height: 22,
+                        fontSize: '0.75rem',
+                        fontWeight: 700,
+                        fontVariantNumeric: 'tabular-nums',
+                      }}
                     />
                   </Stack>
                   <Typography variant="caption" color="text.secondary">
-                    Assignments with a due date before {todayStr} that do not have a score entered yet
+                    Due before {todayHumanLabel} without a recorded score
                   </Typography>
                 </Box>
               </Stack>
@@ -833,28 +983,59 @@ export default function SchoolDashboardPage() {
                 component={RouterLink}
                 href="/gradebook?tab=assignments"
                 size="small"
-                sx={{ fontWeight: 700, textTransform: 'none', whiteSpace: 'nowrap' }}
+                sx={{ fontWeight: 600, textTransform: 'none', whiteSpace: 'nowrap', borderRadius: 1 }}
               >
                 Gradebook →
               </Button>
             </Box>
 
-            <TableContainer sx={{ maxHeight: 380, flex: 1 }}>
+            <TableContainer
+              tabIndex={0}
+              role="region"
+              aria-label="Past-Due Assignments Needing Grades"
+              sx={{ maxHeight: 400, flex: 1 }}
+            >
               <Table size="small" stickyHeader>
                 <TableHead>
-                  <TableRow>
-                    <TableCell sx={{ fontWeight: 600, fontSize: '0.72rem', color: 'text.secondary' }}>
+                  <TableRow sx={{ bgcolor: alpha(theme.palette.text.primary, 0.02) }}>
+                    <TableCell
+                      sx={{
+                        fontWeight: 700,
+                        fontSize: '0.75rem',
+                        color: 'text.secondary',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
                       ASSIGNMENT
                     </TableCell>
-                    <TableCell sx={{ fontWeight: 600, fontSize: '0.72rem', color: 'text.secondary' }}>
+                    <TableCell
+                      sx={{
+                        fontWeight: 700,
+                        fontSize: '0.75rem',
+                        color: 'text.secondary',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
                       CLASS
                     </TableCell>
-                    <TableCell sx={{ fontWeight: 600, fontSize: '0.72rem', color: 'text.secondary' }}>
+                    <TableCell
+                      sx={{
+                        fontWeight: 700,
+                        fontSize: '0.75rem',
+                        color: 'text.secondary',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
                       DUE DATE
                     </TableCell>
                     <TableCell
                       align="right"
-                      sx={{ fontWeight: 600, fontSize: '0.72rem', color: 'text.secondary' }}
+                      sx={{
+                        fontWeight: 700,
+                        fontSize: '0.75rem',
+                        color: 'text.secondary',
+                        whiteSpace: 'nowrap',
+                      }}
                     >
                       ACTION
                     </TableCell>
@@ -864,7 +1045,7 @@ export default function SchoolDashboardPage() {
                   {pastDueUngradedAssignments.length === 0 ? (
                     <TableRow>
                       <TableCell colSpan={4} align="center" sx={{ py: 5 }}>
-                        <Stack spacing={0.75} alignItems="center">
+                        <Stack spacing={1} alignItems="center">
                           <CheckCircle2 size={24} color={theme.palette.success.main} />
                           <Typography variant="body2" fontWeight={600}>
                             All past-due assignments are graded!
@@ -881,7 +1062,7 @@ export default function SchoolDashboardPage() {
                       const typeInfo = typeMap.get(a.category);
                       return (
                         <TableRow key={a.id} hover>
-                          <TableCell>
+                          <TableCell sx={{ py: 1.25 }}>
                             <Typography variant="body2" fontWeight={600}>
                               {a.title}
                             </Typography>
@@ -889,9 +1070,14 @@ export default function SchoolDashboardPage() {
                               {typeInfo?.name || a.category}
                             </Typography>
                           </TableCell>
-                          <TableCell>
+                          <TableCell sx={{ py: 1.25, whiteSpace: 'nowrap' }}>
                             {sub ? (
-                              <Stack direction="row" spacing={0.75} alignItems="center">
+                              <Stack
+                                direction="row"
+                                spacing={1}
+                                alignItems="center"
+                                sx={{ flexWrap: 'nowrap' }}
+                              >
                                 <Box
                                   sx={{
                                     width: 8,
@@ -901,41 +1087,58 @@ export default function SchoolDashboardPage() {
                                     flexShrink: 0,
                                   }}
                                 />
-                                <Typography variant="caption" fontWeight={600}>
+                                <Typography
+                                  variant="caption"
+                                  fontWeight={600}
+                                  color="text.primary"
+                                  noWrap
+                                >
                                   {sub.name}
                                 </Typography>
                               </Stack>
                             ) : (
-                              <Typography variant="caption" color="text.secondary">
+                              <Typography variant="caption" color="text.secondary" noWrap>
                                 —
                               </Typography>
                             )}
                           </TableCell>
-                          <TableCell>
-                            <Typography
-                              variant="caption"
-                              fontWeight={700}
-                              color="error.main"
-                              sx={{ fontVariantNumeric: 'tabular-nums' }}
-                            >
-                              {a.due_date}
-                            </Typography>
+                          <TableCell sx={{ py: 1.25, whiteSpace: 'nowrap' }}>
+                            <Tooltip title={a.due_date} placement="top" arrow>
+                              <Typography
+                                variant="caption"
+                                fontWeight={700}
+                                color="error.main"
+                                noWrap
+                                sx={{
+                                  fontVariantNumeric: 'tabular-nums',
+                                  whiteSpace: 'nowrap',
+                                  display: 'inline-block',
+                                }}
+                              >
+                                {formatHumanDate(a.due_date, true)}
+                              </Typography>
+                            </Tooltip>
                           </TableCell>
-                          <TableCell align="right">
+                          <TableCell align="right" sx={{ py: 1.25, whiteSpace: 'nowrap' }}>
                             <Button
+                              id={`overdue-grade-btn-${a.id}`}
                               size="small"
                               variant="outlined"
                               color="primary"
                               startIcon={<Edit3 size={13} />}
                               onClick={() => {
                                 setEditingAssignment(a);
+                                setModalInitialValues(undefined);
+                                setGradingFromOverdueQueue(true);
                                 setModalOpen(true);
                               }}
                               sx={{
                                 fontWeight: 600,
                                 textTransform: 'none',
-                                py: 0.25,
-                                px: 1,
+                                whiteSpace: 'nowrap',
+                                borderRadius: 1,
+                                py: 0.5,
+                                px: 1.25,
                                 fontSize: '0.75rem',
                               }}
                             >
@@ -958,7 +1161,7 @@ export default function SchoolDashboardPage() {
             elevation={0}
             sx={{
               height: '100%',
-              borderRadius: 2.5,
+              borderRadius: 1,
               border: '1px solid',
               borderColor: 'divider',
               display: 'flex',
@@ -967,20 +1170,20 @@ export default function SchoolDashboardPage() {
           >
             <Box
               sx={{
-                p: 2.25,
+                p: 2,
                 borderBottom: '1px solid',
                 borderColor: 'divider',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'space-between',
-                gap: 1.5,
+                gap: 2,
               }}
             >
-              <Stack direction="row" spacing={1.25} alignItems="center">
+              <Stack direction="row" spacing={1.5} alignItems="center">
                 <Box
                   sx={{
-                    p: 0.85,
-                    borderRadius: 1.5,
+                    p: 1,
+                    borderRadius: 1,
                     bgcolor: alpha(theme.palette.primary.main, 0.12),
                     color: 'primary.main',
                     display: 'flex',
@@ -990,22 +1193,29 @@ export default function SchoolDashboardPage() {
                 </Box>
                 <Box>
                   <Stack direction="row" spacing={1} alignItems="center">
-                    <Typography variant="subtitle1" fontWeight={700}>
+                    <Typography variant="h5">
                       Class Grades Summary
                     </Typography>
                     {overallGpa !== null && (
-                      <Chip
-                        size="small"
-                        icon={<Award size={13} />}
-                        label={`${overallGpa.toFixed(2)} GPA`}
-                        color="primary"
-                        variant="outlined"
-                        sx={{ height: 20, fontSize: '0.72rem', fontWeight: 700 }}
-                      />
+                      <Tooltip title="Cumulative Unweighted GPA across graded courses" placement="top" arrow>
+                        <Chip
+                          size="small"
+                          icon={<Award size={13} />}
+                          label={`${overallGpa.toFixed(2)} Unweighted GPA`}
+                          color="primary"
+                          variant="outlined"
+                          sx={{
+                            height: 22,
+                            fontSize: '0.75rem',
+                            fontWeight: 700,
+                            fontVariantNumeric: 'tabular-nums',
+                          }}
+                        />
+                      </Tooltip>
                     )}
                   </Stack>
                   <Typography variant="caption" color="text.secondary">
-                    Current standing across all subjects for 2026–2027
+                    Current standing across all subjects for {academicYear}
                   </Typography>
                 </Box>
               </Stack>
@@ -1014,31 +1224,60 @@ export default function SchoolDashboardPage() {
                 component={RouterLink}
                 href="/gradebook"
                 size="small"
-                sx={{ fontWeight: 700, textTransform: 'none', whiteSpace: 'nowrap' }}
+                sx={{ fontWeight: 600, textTransform: 'none', whiteSpace: 'nowrap', borderRadius: 1 }}
               >
                 Full Gradebook →
               </Button>
             </Box>
 
-            <TableContainer sx={{ maxHeight: 380, flex: 1 }}>
+            <TableContainer
+              tabIndex={0}
+              role="region"
+              aria-label="Class Grades Summary"
+              sx={{ maxHeight: 400, flex: 1 }}
+            >
               <Table size="small" stickyHeader>
                 <TableHead>
-                  <TableRow>
-                    <TableCell sx={{ fontWeight: 600, fontSize: '0.72rem', color: 'text.secondary' }}>
+                  <TableRow sx={{ bgcolor: alpha(theme.palette.text.primary, 0.02) }}>
+                    <TableCell
+                      sx={{
+                        fontWeight: 700,
+                        fontSize: '0.75rem',
+                        color: 'text.secondary',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
                       SUBJECT / CLASS
                     </TableCell>
-                    <TableCell sx={{ fontWeight: 600, fontSize: '0.72rem', color: 'text.secondary' }}>
-                      PROVIDER
+                    <TableCell
+                      sx={{
+                        fontWeight: 700,
+                        fontSize: '0.75rem',
+                        color: 'text.secondary',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      INSTRUCTOR / PROVIDER
                     </TableCell>
                     <TableCell
                       align="center"
-                      sx={{ fontWeight: 600, fontSize: '0.72rem', color: 'text.secondary' }}
+                      sx={{
+                        fontWeight: 700,
+                        fontSize: '0.75rem',
+                        color: 'text.secondary',
+                        whiteSpace: 'nowrap',
+                      }}
                     >
                       GRADED ITEMS
                     </TableCell>
                     <TableCell
                       align="right"
-                      sx={{ fontWeight: 600, fontSize: '0.72rem', color: 'text.secondary' }}
+                      sx={{
+                        fontWeight: 700,
+                        fontSize: '0.75rem',
+                        color: 'text.secondary',
+                        whiteSpace: 'nowrap',
+                      }}
                     >
                       CURRENT GRADE
                     </TableCell>
@@ -1051,17 +1290,17 @@ export default function SchoolDashboardPage() {
                     const officialCourse = cfg ? getOfficialCourseSubtitle(cfg) : null;
                     const isExternal = cfg?.instructor_info?.provider_type === 'external';
                     const providerLabel = isExternal
-                      ? cfg?.instructor_info?.outside_entity_name || 'External'
-                      : cfg?.instructor_info?.teacher_name || 'Internal (Mom)';
+                      ? cfg?.instructor_info?.outside_entity_name || 'External Provider'
+                      : cfg?.instructor_info?.teacher_name || 'Parent Instructor';
 
                     return (
                       <TableRow key={sum.subject_id} hover>
-                        <TableCell>
+                        <TableCell sx={{ py: 1.25 }}>
                           <Stack direction="row" spacing={1} alignItems="center">
                             <Box
                               sx={{
-                                width: 9,
-                                height: 9,
+                                width: 8,
+                                height: 8,
                                 borderRadius: '50%',
                                 bgcolor: sub?.color || 'primary.main',
                                 flexShrink: 0,
@@ -1075,7 +1314,7 @@ export default function SchoolDashboardPage() {
                                 <Typography
                                   variant="caption"
                                   color="text.secondary"
-                                  sx={{ fontStyle: 'italic', display: 'block', lineHeight: 1.2 }}
+                                  sx={{ fontStyle: 'italic', display: 'block', lineHeight: 1.3 }}
                                 >
                                   {officialCourse}
                                 </Typography>
@@ -1083,21 +1322,26 @@ export default function SchoolDashboardPage() {
                             </Box>
                           </Stack>
                         </TableCell>
-                        <TableCell>
-                          <Typography variant="caption" color="text.secondary" fontWeight={500}>
+                        <TableCell sx={{ py: 1.25, whiteSpace: 'nowrap' }}>
+                          <Typography variant="caption" color="text.secondary" fontWeight={500} noWrap>
                             {providerLabel}
                           </Typography>
                         </TableCell>
-                        <TableCell align="center">
+                        <TableCell align="center" sx={{ py: 1.25, whiteSpace: 'nowrap' }}>
                           <Typography
                             variant="caption"
                             color="text.secondary"
-                            sx={{ fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}
+                            noWrap
+                            sx={{
+                              fontVariantNumeric: 'tabular-nums',
+                              fontWeight: 600,
+                              whiteSpace: 'nowrap',
+                            }}
                           >
                             {sum.graded_count} / {sum.total_assignments}
                           </Typography>
                         </TableCell>
-                        <TableCell align="right">
+                        <TableCell align="right" sx={{ py: 1.25, whiteSpace: 'nowrap' }}>
                           {sum.effective_percentage !== null || sum.is_overridden ? (
                             <Chip
                               size="small"
@@ -1107,7 +1351,9 @@ export default function SchoolDashboardPage() {
                                   ? 'success'
                                   : (sum.effective_percentage ?? 100) >= 80
                                   ? 'primary'
-                                  : 'warning'
+                                  : (sum.effective_percentage ?? 100) >= 70
+                                  ? 'warning'
+                                  : 'error'
                               }
                               sx={{
                                 fontWeight: 700,
@@ -1116,7 +1362,7 @@ export default function SchoolDashboardPage() {
                               }}
                             />
                           ) : (
-                            <Typography variant="caption" color="text.secondary">
+                            <Typography variant="caption" color="text.secondary" noWrap>
                               No Grades Yet
                             </Typography>
                           )}
@@ -1131,32 +1377,260 @@ export default function SchoolDashboardPage() {
         </Grid>
       </Grid>
 
-      {/* Bottom Full-Width Section: External Assignments & Activities Scheduled for This Week */}
+      {/* Full-Width Section: To-Do Tasks Scheduled / Due This Week */}
       <Card
         elevation={0}
         sx={{
-          borderRadius: 2.5,
+          mb: 3,
+          borderRadius: 1,
           border: '1px solid',
           borderColor: 'divider',
         }}
       >
         <Box
           sx={{
-            p: 2.25,
+            p: 2,
             borderBottom: '1px solid',
             borderColor: 'divider',
             display: 'flex',
             flexDirection: { xs: 'column', sm: 'row' },
             alignItems: { sm: 'center' },
             justifyContent: 'space-between',
-            gap: 1.5,
+            gap: 2,
           }}
         >
-          <Stack direction="row" spacing={1.25} alignItems="center">
+          <Stack direction="row" spacing={1.5} alignItems="center">
             <Box
               sx={{
-                p: 0.85,
-                borderRadius: 1.5,
+                p: 1,
+                borderRadius: 1,
+                bgcolor: alpha(theme.palette.primary.main, 0.12),
+                color: 'primary.main',
+                display: 'flex',
+              }}
+            >
+              <CheckSquare size={22} />
+            </Box>
+            <Box>
+              <Typography variant="h6" fontWeight={700}>
+                To-Do Tasks Scheduled This Week
+              </Typography>
+              <Typography variant="caption" color="text.secondary">
+                Week of {mondayStr} to {sundayStr} — includes one-time tasks due this week and recurring task occurrences
+              </Typography>
+            </Box>
+          </Stack>
+          <Stack direction="row" spacing={1} alignItems="center">
+            <Chip
+              label={`${weeklyScheduledTasks.filter((t) => !t.isCompleted).length} remaining · ${weeklyScheduledTasks.filter((t) => t.isCompleted).length} done`}
+              size="small"
+              color={
+                weeklyScheduledTasks.length > 0 &&
+                weeklyScheduledTasks.every((t) => t.isCompleted)
+                  ? 'success'
+                  : 'primary'
+              }
+              variant="outlined"
+              sx={{ fontWeight: 700 }}
+            />
+            <Button
+              component={RouterLink}
+              href="/tasks"
+              size="small"
+              variant="contained"
+              startIcon={<Plus size={14} />}
+              sx={{ fontWeight: 600 }}
+            >
+              Manage Tasks
+            </Button>
+          </Stack>
+        </Box>
+
+        {weeklyScheduledTasks.length === 0 ? (
+          <Box sx={{ p: 4, textAlign: 'center' }}>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+              No To-Do tasks scheduled or due this week ({mondayStr} – {sundayStr}).
+            </Typography>
+            <Button
+              component={RouterLink}
+              href="/tasks"
+              size="small"
+              variant="outlined"
+              startIcon={<Plus size={14} />}
+            >
+              Add a One-Time or Recurring Task
+            </Button>
+          </Box>
+        ) : (
+          <TableContainer>
+            <Table size="small">
+              <TableHead sx={{ bgcolor: alpha(theme.palette.primary.main, 0.03) }}>
+                <TableRow>
+                  <TableCell width={52} align="center" sx={{ fontWeight: 700 }}>
+                    Done
+                  </TableCell>
+                  <TableCell sx={{ fontWeight: 700 }}>To-Do Task</TableCell>
+                  <TableCell sx={{ fontWeight: 700 }} width={180}>
+                    Scheduled / Due Date
+                  </TableCell>
+                  <TableCell sx={{ fontWeight: 700 }} width={200}>
+                    Recurrence
+                  </TableCell>
+                  <TableCell sx={{ fontWeight: 700 }} width={120}>
+                    Priority
+                  </TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {weeklyScheduledTasks.map((occ) => {
+                  const isToday = occ.occurrenceDate === todayStr;
+                  const isOverdue =
+                    Boolean(occ.occurrenceDate) &&
+                    occ.occurrenceDate < todayStr &&
+                    !occ.isCompleted;
+                  const priorityColor =
+                    occ.task.priority === 'high'
+                      ? 'error'
+                      : occ.task.priority === 'medium'
+                        ? 'info'
+                        : 'default';
+
+                  return (
+                    <TableRow
+                      key={occ.occurrenceId}
+                      hover
+                      sx={{
+                        opacity: occ.isCompleted ? 0.65 : 1,
+                        bgcolor: isToday && !occ.isCompleted
+                          ? alpha(theme.palette.primary.main, 0.04)
+                          : 'transparent',
+                      }}
+                    >
+                      <TableCell align="center">
+                        <Checkbox
+                          size="small"
+                          checked={occ.isCompleted}
+                          onChange={() => handleToggleDashboardTaskOccurrence(occ)}
+                          color="success"
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <Typography
+                          variant="subtitle2"
+                          fontWeight={600}
+                          sx={{
+                            textDecoration: occ.isCompleted ? 'line-through' : 'none',
+                            color: occ.isCompleted ? 'text.secondary' : 'text.primary',
+                          }}
+                        >
+                          {occ.task.title}
+                        </Typography>
+                        {occ.task.description && (
+                          <Typography
+                            variant="caption"
+                            color="text.secondary"
+                            sx={{ display: 'block' }}
+                          >
+                            {occ.task.description}
+                          </Typography>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        {occ.occurrenceDate ? (
+                          <Stack direction="row" spacing={0.75} alignItems="center">
+                            <Chip
+                              label={
+                                isToday
+                                  ? `Today (${occ.occurrenceDate})`
+                                  : isOverdue
+                                    ? `Overdue (${occ.occurrenceDate})`
+                                    : new Date(`${occ.occurrenceDate}T12:00:00`).toLocaleDateString(
+                                        undefined,
+                                        {
+                                          weekday: 'short',
+                                          month: 'short',
+                                          day: 'numeric',
+                                        }
+                                      )
+                              }
+                              size="small"
+                              color={
+                                isOverdue
+                                  ? 'error'
+                                  : isToday
+                                    ? 'primary'
+                                    : 'default'
+                              }
+                              variant={isToday || isOverdue ? 'filled' : 'outlined'}
+                              sx={{ fontWeight: 600, fontSize: '0.72rem' }}
+                            />
+                          </Stack>
+                        ) : (
+                          <Typography variant="caption" color="text.secondary">
+                            No due date
+                          </Typography>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        {occ.isRecurring ? (
+                          <Chip
+                            icon={<Repeat size={12} />}
+                            label={occ.recurrenceSummary || 'Recurring'}
+                            size="small"
+                            color="secondary"
+                            variant="outlined"
+                            sx={{ fontWeight: 600, fontSize: '0.7rem' }}
+                          />
+                        ) : (
+                          <Typography variant="caption" color="text.secondary">
+                            One-Time
+                          </Typography>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        <Chip
+                          label={(occ.task.priority || 'medium').toUpperCase()}
+                          size="small"
+                          color={priorityColor}
+                          variant={occ.task.priority === 'high' ? 'filled' : 'outlined'}
+                          sx={{ fontWeight: 700, fontSize: '0.68rem', height: 22 }}
+                        />
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        )}
+      </Card>
+
+      {/* Bottom Full-Width Section: External Assignments & Activities Scheduled for This Week */}
+      <Card
+        elevation={0}
+        sx={{
+          borderRadius: 1,
+          border: '1px solid',
+          borderColor: 'divider',
+        }}
+      >
+        <Box
+          sx={{
+            p: 2,
+            borderBottom: '1px solid',
+            borderColor: 'divider',
+            display: 'flex',
+            flexDirection: { xs: 'column', sm: 'row' },
+            alignItems: { sm: 'center' },
+            justifyContent: 'space-between',
+            gap: 2,
+          }}
+        >
+          <Stack direction="row" spacing={1.5} alignItems="center">
+            <Box
+              sx={{
+                p: 1,
+                borderRadius: 1,
                 bgcolor: alpha(theme.palette.info.main, 0.12),
                 color: 'info.main',
                 display: 'flex',
@@ -1166,18 +1640,18 @@ export default function SchoolDashboardPage() {
             </Box>
             <Box>
               <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
-                <Typography variant="subtitle1" fontWeight={700}>
-                  External Course Assignments &amp; Activities Scheduled This Week
+                <Typography variant="h5">
+                  External Course Assignments &amp; Activities This Week
                 </Typography>
                 <Chip
                   size="small"
                   label={weekRangeLabel}
                   variant="outlined"
-                  sx={{ height: 20, fontSize: '0.72rem', fontWeight: 600 }}
+                  sx={{ height: 22, fontSize: '0.75rem', fontWeight: 600 }}
                 />
               </Stack>
               <Typography variant="caption" color="text.secondary">
-                Quizzes, tests, homework, and hands-on syllabus activities with parent supply checklists (Memoria Academy, Amanda Holliday Math, Science Shepherd)
+                Scheduled assessments, homework, and syllabus lab activities across external providers
               </Typography>
             </Box>
           </Stack>
@@ -1186,117 +1660,137 @@ export default function SchoolDashboardPage() {
             component={RouterLink}
             href="/automations?tab=syllabus"
             size="small"
-            sx={{ fontWeight: 700, textTransform: 'none', whiteSpace: 'nowrap' }}
+            sx={{ fontWeight: 600, textTransform: 'none', whiteSpace: 'nowrap', borderRadius: 1 }}
           >
             View Syllabi →
           </Button>
         </Box>
 
-        {/* Parent Supply Sourcing Banner when any Activity this week requires supplies */}
-        {externalThisWeekItems.some((item) => item.supplies && item.supplies.length > 0) && (
+        {/* Flattened Parent Supply Sourcing Banner (no nested cards inside cards) */}
+        {supplyItemsThisWeek.length > 0 && (
           <Box
             sx={{
-              px: 2.25,
-              py: 1.75,
+              px: 2.5,
+              py: 2,
               bgcolor: alpha(theme.palette.success.main, 0.06),
               borderBottom: '1px solid',
               borderColor: alpha(theme.palette.success.main, 0.2),
             }}
           >
-            <Stack spacing={1.25}>
+            <Stack spacing={1.5}>
               <Stack direction="row" spacing={1} alignItems="center">
                 <Package size={16} color={theme.palette.success.main} />
                 <Typography variant="subtitle2" fontWeight={700} color="success.main">
                   Parent Supply Sourcing Checklist for This Week&apos;s Activities
                 </Typography>
               </Stack>
-              <Grid container spacing={1.5}>
-                {externalThisWeekItems
-                  .filter((item) => item.supplies && item.supplies.length > 0)
-                  .map((actItem) => (
-                    <Grid item xs={12} md={6} key={`supply-banner-${actItem.id}`}>
-                      <Box
-                        sx={{
-                          p: 1.5,
-                          borderRadius: 1.5,
-                          bgcolor: 'background.paper',
-                          border: '1px solid',
-                          borderColor: alpha(theme.palette.success.main, 0.28),
-                        }}
-                      >
-                        <Stack
-                          direction="row"
-                          justifyContent="space-between"
-                          alignItems="center"
-                          spacing={1}
-                          sx={{ mb: 0.75 }}
-                        >
-                          <Typography variant="caption" fontWeight={700}>
-                            {actItem.subjectName}
-                            {actItem.classNumber ? ` · Class ${actItem.classNumber}` : ''} —{' '}
-                            {actItem.title}
-                          </Typography>
-                          <Chip
-                            size="small"
-                            color="success"
-                            variant="outlined"
-                            label={
-                              actItem.weekdayLabel
-                                ? `${actItem.weekdayLabel} (${actItem.dueDate})`
-                                : actItem.dueDate
-                            }
-                            sx={{ height: 18, fontSize: '0.65rem', fontWeight: 700 }}
-                          />
-                        </Stack>
-                        <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
-                          {actItem.supplies?.map((supply, sIdx) => (
-                            <Chip
-                              key={`${actItem.id}-supply-${sIdx}`}
-                              size="small"
-                              label={supply}
-                              sx={{
-                                height: 20,
-                                fontSize: '0.68rem',
-                                fontWeight: 600,
-                                bgcolor: alpha(theme.palette.success.main, 0.1),
-                                color: 'text.primary',
-                              }}
-                            />
-                          ))}
-                        </Stack>
-                      </Box>
-                    </Grid>
-                  ))}
-              </Grid>
+
+              <Stack
+                divider={<Divider sx={{ borderColor: alpha(theme.palette.success.main, 0.16) }} />}
+                spacing={1.25}
+              >
+                {supplyItemsThisWeek.map((actItem) => (
+                  <Stack
+                    key={`supply-banner-${actItem.id}`}
+                    direction={{ xs: 'column', md: 'row' }}
+                    justifyContent="space-between"
+                    alignItems={{ xs: 'flex-start', md: 'center' }}
+                    spacing={1}
+                  >
+                    <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+                      <Typography variant="body2" fontWeight={600}>
+                        {actItem.subjectName}
+                        {actItem.classNumber ? ` · Class ${actItem.classNumber}` : ''} — {actItem.title}
+                      </Typography>
+                      <Chip
+                        size="small"
+                        color="success"
+                        variant="outlined"
+                        label={
+                          actItem.weekdayLabel
+                            ? `${actItem.weekdayLabel}, ${formatHumanDate(actItem.dueDate, false)}`
+                            : formatHumanDate(actItem.dueDate, true)
+                        }
+                        sx={{ height: 22, fontSize: '0.75rem', fontWeight: 600 }}
+                      />
+                    </Stack>
+
+                    <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+                      {actItem.supplies?.map((supply, sIdx) => (
+                        <Chip
+                          key={`${actItem.id}-supply-${sIdx}`}
+                          size="small"
+                          label={supply}
+                          sx={{
+                            height: 22,
+                            fontSize: '0.75rem',
+                            fontWeight: 600,
+                            bgcolor: alpha(theme.palette.success.main, 0.12),
+                            color: 'text.primary',
+                          }}
+                        />
+                      ))}
+                    </Stack>
+                  </Stack>
+                ))}
+              </Stack>
             </Stack>
           </Box>
         )}
 
+        {/* Streamlined 5-Column External Schedule Table */}
         <TableContainer>
           <Table size="small">
             <TableHead>
               <TableRow sx={{ bgcolor: alpha(theme.palette.text.primary, 0.02) }}>
-                <TableCell sx={{ fontWeight: 600, fontSize: '0.72rem', color: 'text.secondary' }}>
+                <TableCell
+                  sx={{
+                    fontWeight: 700,
+                    fontSize: '0.75rem',
+                    color: 'text.secondary',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
                   ASSESSMENT / ACTIVITY
                 </TableCell>
-                <TableCell sx={{ fontWeight: 600, fontSize: '0.72rem', color: 'text.secondary' }}>
+                <TableCell
+                  sx={{
+                    fontWeight: 700,
+                    fontSize: '0.75rem',
+                    color: 'text.secondary',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
                   CLASS &amp; PROVIDER
                 </TableCell>
-                <TableCell sx={{ fontWeight: 600, fontSize: '0.72rem', color: 'text.secondary' }}>
+                <TableCell
+                  sx={{
+                    fontWeight: 700,
+                    fontSize: '0.75rem',
+                    color: 'text.secondary',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
                   CATEGORY
                 </TableCell>
-                <TableCell sx={{ fontWeight: 600, fontSize: '0.72rem', color: 'text.secondary' }}>
-                  SUPPLIES NEEDED
-                </TableCell>
-                <TableCell sx={{ fontWeight: 600, fontSize: '0.72rem', color: 'text.secondary' }}>
-                  OPENS
-                </TableCell>
-                <TableCell sx={{ fontWeight: 600, fontSize: '0.72rem', color: 'text.secondary' }}>
-                  SCHEDULED DAY / DUE
+                <TableCell
+                  sx={{
+                    fontWeight: 700,
+                    fontSize: '0.75rem',
+                    color: 'text.secondary',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  SCHEDULED / DUE
                 </TableCell>
                 <TableCell
                   align="right"
-                  sx={{ fontWeight: 600, fontSize: '0.72rem', color: 'text.secondary' }}
+                  sx={{
+                    fontWeight: 700,
+                    fontSize: '0.75rem',
+                    color: 'text.secondary',
+                    whiteSpace: 'nowrap',
+                  }}
                 >
                   STATUS / GRADE
                 </TableCell>
@@ -1305,7 +1799,7 @@ export default function SchoolDashboardPage() {
             <TableBody>
               {externalThisWeekItems.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={7} align="center" sx={{ py: 4 }}>
+                  <TableCell colSpan={5} align="center" sx={{ py: 4 }}>
                     <Typography variant="body2" color="text.secondary">
                       No external quizzes, tests, assignments, or syllabus activities are scheduled for this week ({weekRangeLabel}).
                     </Typography>
@@ -1314,11 +1808,12 @@ export default function SchoolDashboardPage() {
               ) : (
                 externalThisWeekItems.map((item) => {
                   const isActivityRow = item.categoryLabel.toLowerCase() === 'activity';
+                  const supplyCount = item.supplies?.length ?? 0;
                   return (
                     <TableRow key={item.id} hover>
-                      <TableCell>
-                        <Stack spacing={0.25}>
-                          <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap">
+                      <TableCell sx={{ py: 1.25 }}>
+                        <Stack spacing={0.5}>
+                          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
                             {isActivityRow && (
                               <Sparkles size={14} color={theme.palette.success.main} />
                             )}
@@ -1330,7 +1825,7 @@ export default function SchoolDashboardPage() {
                                 size="small"
                                 label={`Week ${item.weekNumber}`}
                                 variant="outlined"
-                                sx={{ height: 18, fontSize: '0.65rem', fontWeight: 600 }}
+                                sx={{ height: 20, fontSize: '0.75rem', fontWeight: 600 }}
                               />
                             )}
                             {item.classNumber !== null && item.classNumber !== undefined && (
@@ -1339,8 +1834,29 @@ export default function SchoolDashboardPage() {
                                 label={`Class ${item.classNumber}`}
                                 color="success"
                                 variant="outlined"
-                                sx={{ height: 18, fontSize: '0.65rem', fontWeight: 600 }}
+                                sx={{ height: 20, fontSize: '0.75rem', fontWeight: 600 }}
                               />
+                            )}
+                            {supplyCount > 0 && (
+                              <Tooltip
+                                title={`Supplies needed: ${item.supplies?.join(', ')}`}
+                                placement="top"
+                                arrow
+                              >
+                                <Chip
+                                  size="small"
+                                  icon={<Package size={12} />}
+                                  label={`${supplyCount} ${supplyCount === 1 ? 'supply' : 'supplies'}`}
+                                  color="success"
+                                  sx={{
+                                    height: 20,
+                                    fontSize: '0.75rem',
+                                    fontWeight: 600,
+                                    bgcolor: alpha(theme.palette.success.main, 0.12),
+                                    color: 'text.primary',
+                                  }}
+                                />
+                              </Tooltip>
                             )}
                           </Stack>
                           {item.classTopic && (
@@ -1350,8 +1866,8 @@ export default function SchoolDashboardPage() {
                           )}
                         </Stack>
                       </TableCell>
-                      <TableCell>
-                        <Stack direction="row" spacing={0.75} alignItems="center">
+                      <TableCell sx={{ py: 1.25, whiteSpace: 'nowrap' }}>
+                        <Stack direction="row" spacing={1} alignItems="center" sx={{ flexWrap: 'nowrap' }}>
                           <Box
                             sx={{
                               width: 8,
@@ -1362,10 +1878,16 @@ export default function SchoolDashboardPage() {
                             }}
                           />
                           <Box>
-                            <Typography variant="caption" fontWeight={700} display="block">
+                            <Typography
+                              variant="caption"
+                              fontWeight={700}
+                              color="text.primary"
+                              display="block"
+                              noWrap
+                            >
                               {item.subjectName}
                             </Typography>
-                            <Typography variant="caption" color="text.secondary">
+                            <Typography variant="caption" color="text.secondary" noWrap>
                               {item.courseSubtitle
                                 ? `${item.courseSubtitle} · ${item.providerName}`
                                 : item.providerName}
@@ -1373,70 +1895,48 @@ export default function SchoolDashboardPage() {
                           </Box>
                         </Stack>
                       </TableCell>
-                      <TableCell>
+                      <TableCell sx={{ py: 1.25, whiteSpace: 'nowrap' }}>
                         <Chip
                           size="small"
                           label={item.categoryLabel}
                           color={isActivityRow ? 'success' : 'default'}
                           variant="outlined"
-                          sx={{ height: 20, fontSize: '0.68rem', fontWeight: 600 }}
+                          sx={{ height: 22, fontSize: '0.75rem', fontWeight: 600 }}
                         />
                       </TableCell>
-                      <TableCell sx={{ maxWidth: 290 }}>
-                        {item.supplies && item.supplies.length > 0 ? (
-                          <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
-                            {item.supplies.map((supply, sIdx) => (
-                              <Chip
-                                key={`${item.id}-tbl-supply-${sIdx}`}
-                                size="small"
-                                label={supply}
-                                sx={{
-                                  height: 19,
-                                  fontSize: '0.66rem',
-                                  fontWeight: 600,
-                                  bgcolor: alpha(theme.palette.success.main, 0.1),
-                                }}
-                              />
-                            ))}
-                          </Stack>
-                        ) : (
-                          <Typography variant="caption" color="text.secondary">
-                            —
-                          </Typography>
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        <Typography
-                          variant="caption"
-                          color="text.secondary"
-                          sx={{ fontVariantNumeric: 'tabular-nums' }}
-                        >
-                          {item.openDate || '—'}
-                        </Typography>
-                      </TableCell>
-                      <TableCell>
-                        <Stack spacing={0.15}>
-                          {item.weekdayLabel && (
-                            <Typography
-                              variant="caption"
-                              fontWeight={700}
-                              color={isActivityRow ? 'success.main' : 'text.primary'}
-                            >
-                              {item.weekdayLabel}
-                            </Typography>
-                          )}
+                      <TableCell sx={{ py: 1.25, whiteSpace: 'nowrap' }}>
+                        <Stack spacing={0.25}>
                           <Typography
                             variant="caption"
-                            fontWeight={600}
-                            color="text.secondary"
-                            sx={{ fontVariantNumeric: 'tabular-nums' }}
+                            fontWeight={700}
+                            color={isActivityRow ? 'success.main' : 'text.primary'}
+                            noWrap
+                            sx={{ fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}
                           >
-                            {item.dueDate}
+                            {item.weekdayLabel
+                              ? `${item.weekdayLabel}, ${formatHumanDate(item.dueDate, false)}`
+                              : formatHumanDate(item.dueDate, true)}
                           </Typography>
+                          {item.openDate && item.openDate !== item.dueDate && (
+                            <Typography
+                              variant="caption"
+                              color="text.secondary"
+                              noWrap
+                              sx={{ fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}
+                            >
+                              Opens {formatHumanDate(item.openDate, false)}
+                            </Typography>
+                          )}
                         </Stack>
                       </TableCell>
-                      <TableCell align="right">
-                        <Stack direction="row" spacing={1} justifyContent="flex-end" alignItems="center">
+                      <TableCell align="right" sx={{ py: 1.25, whiteSpace: 'nowrap' }}>
+                        <Stack
+                          direction="row"
+                          spacing={1}
+                          justifyContent="flex-end"
+                          alignItems="center"
+                          sx={{ flexWrap: 'nowrap' }}
+                        >
                           {item.isScored && item.scoreDisplay ? (
                             <Chip
                               size="small"
@@ -1445,7 +1945,7 @@ export default function SchoolDashboardPage() {
                               sx={{
                                 height: 22,
                                 fontWeight: 700,
-                                fontSize: '0.72rem',
+                                fontSize: '0.75rem',
                                 fontVariantNumeric: 'tabular-nums',
                               }}
                             />
@@ -1456,24 +1956,46 @@ export default function SchoolDashboardPage() {
                               color={item.statusLabel === 'Due This Week' ? 'warning' : 'info'}
                               variant="outlined"
                               label={item.statusLabel}
-                              sx={{ height: 22, fontWeight: 600, fontSize: '0.7rem' }}
+                              sx={{ height: 22, fontWeight: 600, fontSize: '0.75rem' }}
                             />
                           )}
-                          {item.assignmentRecord && (
-                            <Tooltip title="Edit or Enter Grade">
-                              <IconButton
-                                size="small"
-                                onClick={() => {
-                                  if (item.assignmentRecord) {
-                                    setEditingAssignment(item.assignmentRecord);
-                                    setModalOpen(true);
-                                  }
-                                }}
-                              >
-                                <Edit3 size={14} />
-                              </IconButton>
-                            </Tooltip>
-                          )}
+                          <Tooltip
+                            title={
+                              item.assignmentRecord
+                                ? 'Edit or Enter Grade'
+                                : 'Log Grade or Create Assignment Record'
+                            }
+                          >
+                            <IconButton
+                              aria-label={
+                                item.assignmentRecord
+                                  ? `Enter or edit grade for ${item.title}`
+                                  : `Log grade or create assignment record for ${item.title}`
+                              }
+                              size="small"
+                              onClick={() => {
+                                setGradingFromOverdueQueue(false);
+                                if (item.assignmentRecord) {
+                                  setEditingAssignment(item.assignmentRecord);
+                                  setModalInitialValues(undefined);
+                                } else {
+                                  setEditingAssignment(null);
+                                  setModalInitialValues({
+                                    subject_id: item.subjectId,
+                                    title: item.title,
+                                    due_date: item.dueDate,
+                                    assigned_date: item.openDate || item.dueDate,
+                                    category: item.categoryLabel.toLowerCase(),
+                                    is_graded: true,
+                                    syllabus_day_number: item.classNumber ?? null,
+                                  });
+                                }
+                                setModalOpen(true);
+                              }}
+                            >
+                              <Edit3 size={14} />
+                            </IconButton>
+                          </Tooltip>
                         </Stack>
                       </TableCell>
                     </TableRow>
@@ -1491,21 +2013,102 @@ export default function SchoolDashboardPage() {
         onClose={() => {
           setModalOpen(false);
           setEditingAssignment(null);
+          setModalInitialValues(undefined);
+          setGradingFromOverdueQueue(false);
         }}
         subjects={subjects}
         assignmentTypes={assignmentTypes}
         editingAssignment={editingAssignment}
+        initialValues={modalInitialValues}
         onSaved={(savedAssignment) => {
           if (savedAssignment) {
+            const wasFromOverdue = gradingFromOverdueQueue;
+            const remainingOverdue = pastDueUngradedAssignments.filter(
+              (item) => item.id !== savedAssignment.id
+            );
+
             setAssignments((prev) => {
               const exists = prev.some((a) => a.id === savedAssignment.id);
               return exists
                 ? prev.map((a) => (a.id === savedAssignment.id ? savedAssignment : a))
                 : [savedAssignment, ...prev];
             });
+
+            toast.success(
+              (t) => (
+                <Stack direction="row" spacing={1.5} alignItems="center">
+                  <Typography variant="body2" fontWeight={600}>
+                    Saved &ldquo;{savedAssignment.title}&rdquo;
+                  </Typography>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    onClick={() => {
+                      toast.dismiss(t.id);
+                      setEditingAssignment(savedAssignment);
+                      setModalInitialValues(undefined);
+                      setGradingFromOverdueQueue(wasFromOverdue);
+                      setModalOpen(true);
+                    }}
+                    sx={{
+                      fontSize: '0.75rem',
+                      fontWeight: 600,
+                      textTransform: 'none',
+                      py: 0.25,
+                      px: 1,
+                      minWidth: 0,
+                      borderRadius: 1,
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    Re-edit
+                  </Button>
+                  {wasFromOverdue && remainingOverdue.length > 0 && (
+                    <Button
+                      size="small"
+                      variant="contained"
+                      color="primary"
+                      onClick={() => {
+                        toast.dismiss(t.id);
+                        setEditingAssignment(remainingOverdue[0]);
+                        setModalInitialValues(undefined);
+                        setGradingFromOverdueQueue(true);
+                        setModalOpen(true);
+                      }}
+                      sx={{
+                        fontSize: '0.75rem',
+                        fontWeight: 600,
+                        textTransform: 'none',
+                        py: 0.25,
+                        px: 1,
+                        minWidth: 0,
+                        borderRadius: 1,
+                        boxShadow: 'none',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      Grade Next ({remainingOverdue.length}) →
+                    </Button>
+                  )}
+                </Stack>
+              ),
+              { duration: 5000 }
+            );
+
+            if (wasFromOverdue && remainingOverdue.length > 0 && typeof document !== 'undefined') {
+              const nextId = `overdue-grade-btn-${remainingOverdue[0].id}`;
+              window.requestAnimationFrame(() => {
+                const nextBtn = document.getElementById(nextId);
+                if (nextBtn) {
+                  nextBtn.focus();
+                }
+              });
+            }
           }
           setModalOpen(false);
           setEditingAssignment(null);
+          setModalInitialValues(undefined);
+          setGradingFromOverdueQueue(false);
         }}
       />
     </Box>

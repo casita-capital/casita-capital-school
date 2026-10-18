@@ -1,0 +1,138 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-18T01:54:00Z",
+  "title": "Design System: Casita Capital School",
+  "extensions": {
+    "colorMeta": {
+      "oxford-blue": {
+        "role": "primary",
+        "displayName": "Oxford Blue",
+        "canonical": "#1b5698",
+        "tonalRamp": ["#0a223d", "#10335b", "#16457a", "#1b5698", "#4878ad", "#769bc1", "#a4bcd6", "#d1deea"]
+      },
+      "academy-pine": {
+        "role": "primary",
+        "displayName": "Academy Pine",
+        "canonical": "#0d735c",
+        "tonalRamp": ["#052e25", "#084537", "#0a5c4a", "#0d735c", "#3d8f7d", "#6eab9d", "#9ec7be", "#cee3de"]
+      },
+      "terracotta-ink": {
+        "role": "primary",
+        "displayName": "Terracotta Ink",
+        "canonical": "#b8422e",
+        "tonalRamp": ["#4a1a12", "#6e281c", "#933525", "#b8422e", "#c66858", "#d48e82", "#e3b3ab", "#f1d9d5"]
+      },
+      "botanical-sage": {
+        "role": "secondary",
+        "displayName": "Botanical Sage",
+        "canonical": "#1e6f3d",
+        "tonalRamp": ["#0c2c18", "#124325", "#185931", "#1e6f3d", "#4b8c64", "#78a98b", "#a5c5b1", "#d2e2d8"]
+      },
+      "gilded-ochre": {
+        "role": "secondary",
+        "displayName": "Gilded Ochre",
+        "canonical": "#b85d0c",
+        "tonalRamp": ["#4a2505", "#6e3807", "#934a0a", "#b85d0c", "#c67d3d", "#d49e6d", "#e3be9e", "#f1dece"]
+      },
+      "crimson-seal": {
+        "role": "secondary",
+        "displayName": "Crimson Seal",
+        "canonical": "#c43235",
+        "tonalRamp": ["#4e1415", "#761e20", "#9d282a", "#c43235", "#d05b5d", "#dc8486", "#e7adae", "#f3d6d7"]
+      },
+      "warm-ivory": {
+        "role": "neutral",
+        "displayName": "Warm Ivory",
+        "canonical": "#fcfbf8",
+        "tonalRamp": ["#171614", "#26231e", "#3f3a32", "#595348", "#787063", "#cdc5b6", "#f7f4ee", "#fcfbf8"]
+      },
+      "parchment-paper": {
+        "role": "neutral",
+        "displayName": "Parchment Paper",
+        "canonical": "#f7f4ee",
+        "tonalRamp": ["#171614", "#26231e", "#3f3a32", "#595348", "#9e9688", "#e2dcd0", "#efeae0", "#f7f4ee"]
+      },
+      "obsidian-ink": {
+        "role": "neutral",
+        "displayName": "Obsidian Ink",
+        "canonical": "#171614",
+        "tonalRamp": ["#171614", "#26231e", "#3f3a32", "#595348", "#787063", "#9e9688", "#e2dcd0", "#fcfbf8"]
+      }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display (Newsreader Serif)", "purpose": "Page greeting headers and printable binder titles." },
+      "headline": { "displayName": "Headline (Newsreader Serif)", "purpose": "Section headers and major card titles." },
+      "title": { "displayName": "Title (Newsreader Serif)", "purpose": "Operational card headers and modal titles." },
+      "body": { "displayName": "Body (Inter Sans)", "purpose": "Assignment titles, syllabus notes, and table rows." },
+      "label": { "displayName": "Label (Inter Sans)", "purpose": "Chips, badges, dates, and table column headers (12px floor)." }
+    },
+    "shadows": [
+      { "name": "card-rest", "value": "none", "purpose": "Cards are flat at rest and bounded by 1px solid warm-stone-border." },
+      { "name": "menu-overlay", "value": "0 8px 24px rgba(23, 22, 20, 0.14)", "purpose": "Floating menus, popovers, and modal dialogs." }
+    ],
+    "motion": [
+      { "name": "ease-standard", "value": "cubic-bezier(0.22, 1, 0.36, 1)", "purpose": "Crisp transitions on hover and focus states." }
+    ],
+    "breakpoints": [
+      { "name": "sm", "value": "600px" },
+      { "name": "md", "value": "900px" },
+      { "name": "lg", "value": "1200px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Action Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Primary CTA button for opening the Weekly Binder or saving grades.",
+      "html": "<button class=\"ds-btn-primary\">Open Weekly Binder</button>",
+      "css": ".ds-btn-primary { background: #1b5698; color: #fcfbf8; padding: 8px 16px; border-radius: 6px; font-family: 'Inter', sans-serif; font-size: 0.875rem; font-weight: 600; border: 1px solid transparent; cursor: pointer; transition: background-color 0.15s ease; } .ds-btn-primary:hover { background: #16457a; } .ds-btn-primary:focus-visible { outline: 2px solid #1b5698; outline-offset: 2px; }"
+    },
+    {
+      "name": "Outlined Utility Button",
+      "kind": "button",
+      "refersTo": "button-outlined",
+      "description": "Secondary action button for inline table grading and header navigation.",
+      "html": "<button class=\"ds-btn-outlined\">Enter Grade</button>",
+      "css": ".ds-btn-outlined { background: #fcfbf8; color: #171614; padding: 6px 12px; border-radius: 6px; font-family: 'Inter', sans-serif; font-size: 0.75rem; font-weight: 600; border: 1px solid #e2dcd0; cursor: pointer; transition: border-color 0.15s ease, background-color 0.15s ease; } .ds-btn-outlined:hover { border-color: #1b5698; background: #f7f4ee; } .ds-btn-outlined:focus-visible { outline: 2px solid #1b5698; outline-offset: 2px; }"
+    },
+    {
+      "name": "Academic Operational Card",
+      "kind": "card",
+      "refersTo": "card-surface",
+      "description": "Flat-canvas bordered container with Newsreader serif title and 12px tabular badge.",
+      "html": "<div class=\"ds-card\"><div class=\"ds-card-header\"><h3 class=\"ds-card-title\">Class Grades Summary</h3><span class=\"ds-chip\">3.92 Unweighted GPA</span></div><p class=\"ds-card-sub\">Current standing across all subjects for 2026-2027</p></div>",
+      "css": ".ds-card { background: #fcfbf8; color: #171614; border: 1px solid #e2dcd0; border-radius: 6px; padding: 16px 20px; } .ds-card-header { display: flex; align-items: center; gap: 8px; } .ds-card-title { font-family: 'Newsreader', Georgia, serif; font-size: 1.125rem; font-weight: 600; margin: 0; } .ds-chip { font-family: 'Inter', sans-serif; font-size: 0.75rem; font-weight: 700; font-variant-numeric: tabular-nums; padding: 2px 8px; border-radius: 6px; border: 1px solid #1b5698; color: #1b5698; } .ds-card-sub { font-family: 'Inter', sans-serif; font-size: 0.75rem; color: #3f3a32; margin: 4px 0 0 0; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Classical Academy Binder",
+    "overview": "Casita Capital School is an Operate-mode academic command center built for daily family homeschooling, classical co-op coordination, and physical weekly binder printing. Its visual world replaces cold, neon-accented SaaS admin templates with the tactile warmth of archival paper, fountain-pen ink, and editorial serif headings (Newsreader) paired with crisp tabular UI typography (Inter).",
+    "keyCharacteristics": [
+      "Editorial Academic Pairing: Newsreader serif for page titles and card headers (h1–h5), paired with Inter (tabular-nums) for high-density tables and controls.",
+      "Warm Archival Surfaces: Stone and parchment neutrals (#fcfbf8 / #f7f4ee in light mode; #171614 / #26231e in dark mode).",
+      "Strict 6px / 8px Geometry: Every card, button, input, and menu item adheres to the centralized 6px border radius and 8px spatial grid.",
+      "Operational Directness: Live academic tables and daily timelines always occupy the primary viewport."
+    ],
+    "rules": [
+      { "name": "The Dynamic Accent Rule", "body": "Never hardcode a preset's hex or RGBA value in layout or page components. Always reference theme.palette.primary.main so switching the Academy Accent Ink updates every active state cohesively.", "section": "colors" },
+      { "name": "The No Dark-Glow Rule", "body": "Never apply colored zero-offset or neon halo shadows on dark surfaces. Use 1px solid structural borders and neutral elevation shadows.", "section": "colors" },
+      { "name": "The 12px Floor Rule", "body": "Functional UI text—including chips, table headers, course subtitles, and date badges—must never drop below 0.75rem (12px).", "section": "typography" },
+      { "name": "The Sentence-Case Caption Rule", "body": "variant='caption' is strictly sentence-case and smaller (0.75rem) than body2 (0.875rem). Reserve UPPERCASE exclusively for short 1–3 word overline labels and TableHead cells.", "section": "typography" },
+      { "name": "The Tabular Numerals Rule", "body": "Every due date, time slot, score ratio, percentage, and GPA badge must set fontVariantNumeric: 'tabular-nums' and format dates for human reading.", "section": "typography" },
+      { "name": "The Flat-Canvas Card Rule", "body": "Operational cards use elevation={0} and 1px solid borders. Never nest bordered cards inside other bordered cards.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do consume colors, typography, 8px spacing, and 6px border-radius (borderRadius: 1) exclusively from src/theme/.",
+      "Do format dates in human-readable form (Fri, Oct 18) with fontVariantNumeric: 'tabular-nums'.",
+      "Do use semantic interactive elements (<Button>, <ButtonBase>, <IconButton aria-label='...'>) with visible :focus-visible outlines for all clickable controls.",
+      "Do surface explicit <Alert severity='error'> banners with retry actions whenever Supabase queries fail."
+    ],
+    "donts": [
+      "Don't place static promotional navigation cards on operational dashboards when those links already exist in the sidebar and header.",
+      "Don't nest bordered cards inside other bordered cards (nested-cards).",
+      "Don't use fontSize below 0.75rem (12px) on any functional text, chip, or badge.",
+      "Don't hardcode #0C74E4 or rgba(12, 116, 228, ...) in components; always derive from theme.palette.primary.main."
+    ]
+  }
+}
