@@ -58,13 +58,24 @@ interface RootThemeProviderProps {
 
 export function RootThemeProvider({ children }: RootThemeProviderProps) {
     const customization = useCustomization();
+    const activePaletteMode = customization.paletteMode || 'dark';
 
     useEffect(() => {
         installReact19ElementRefFilter();
     }, []);
 
+    useEffect(() => {
+        if (typeof document !== 'undefined') {
+            document.documentElement.style.colorScheme = activePaletteMode;
+            document.documentElement.setAttribute('data-color-scheme', activePaletteMode);
+            if (document.body) {
+                document.body.style.colorScheme = activePaletteMode;
+            }
+        }
+    }, [activePaletteMode]);
+
     const theme = createTheme({
-        paletteMode: customization.paletteMode || 'dark',
+        paletteMode: activePaletteMode,
         colorPreset: customization.colorPreset || 'monacoBlue',
         layout: customization.layout || 'vertical-shells-dark-alternate',
         headingFont: customization.headingFont || 'inter',

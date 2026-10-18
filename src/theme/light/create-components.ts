@@ -13,6 +13,14 @@ export const createComponents = ({ palette }: ComponentsConfig): Components => {
       styleOverrides: {
         root: {
           color: palette.text!.primary,
+          colorScheme: 'light',
+        },
+      },
+    },
+    MuiTableContainer: {
+      styleOverrides: {
+        root: {
+          colorScheme: 'light',
         },
       },
     },
@@ -237,11 +245,12 @@ export const createComponents = ({ palette }: ComponentsConfig): Components => {
     MuiCssBaseline: {
       styleOverrides: {
         html: {
-          colorScheme: 'light',
+          colorScheme: 'light !important',
         },
         body: {
           backgroundColor: palette.background!.default,
           color: palette.text!.primary,
+          colorScheme: 'light',
         },
         'input, textarea, select': {
           color: palette.text!.primary,

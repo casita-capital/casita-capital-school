@@ -17,6 +17,14 @@ export const createComponents = ({ palette }: ComponentsConfig): Components => {
           backgroundImage: 'none !important',
           backgroundColor: lighten(palette.neutral![900], 0.035),
           color: palette.text!.primary,
+          colorScheme: 'dark',
+        },
+      },
+    },
+    MuiTableContainer: {
+      styleOverrides: {
+        root: {
+          colorScheme: 'dark',
         },
       },
     },
