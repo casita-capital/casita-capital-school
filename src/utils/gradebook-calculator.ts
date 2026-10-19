@@ -3,6 +3,7 @@ import {
   DAY_KEYS,
   DayKey,
   getActiveCourseSyllabus,
+  getApiSyllabusWeekStartDay,
   MathSyllabusDay,
   ResolvedSubjectCounters,
   resolveSyllabusDaySupplies,
@@ -1429,7 +1430,7 @@ export function generateWeekAssignmentsFromTemplatesAndPolicy(params: {
   const thuSyl = thuDayNum ? syllabusMap.get(thuDayNum) : undefined;
 
   // 0a. If this subject has an API-synced syllabus with auto_create_gradebook_assignments enabled,
-  // pull the linked assessments for counters.week_num and place them on quiz_assignment_target_day!
+  // pull the linked assessments for the syllabus week being completed during this Mon-Fri week and place them on quiz_assignment_target_day!
   const courseSyl = recurringConfig.course_syllabus;
   if (
     courseSyl &&
@@ -1439,7 +1440,10 @@ export function generateWeekAssignmentsFromTemplatesAndPolicy(params: {
     courseSyl.weeks &&
     courseSyl.weeks.length > 0
   ) {
-    const matchedWeek = courseSyl.weeks.find((w) => w.week_number === counters.week_num);
+    const startDay = getApiSyllabusWeekStartDay(courseSyl.api_auto_populate);
+    const assessmentWeekNum =
+      startDay !== 'monday' ? Math.max(1, counters.week_num - 1) : counters.week_num;
+    const matchedWeek = courseSyl.weeks.find((w) => w.week_number === assessmentWeekNum);
     if (matchedWeek && matchedWeek.linked_assessments.length > 0) {
       const targetDayKey = courseSyl.api_auto_populate.quiz_assignment_target_day || 'thursday';
       const targetDayInfo =

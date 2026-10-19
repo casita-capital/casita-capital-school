@@ -73,9 +73,18 @@ export interface ApiWeekdayRule {
 
 export interface ApiSyllabusAutoPopulateConfig {
   enabled: boolean;
+  week_start_day?: DayKey;
   quiz_assignment_target_day: DayKey;
   auto_create_gradebook_assignments: boolean;
   weekday_rules: Record<DayKey, ApiWeekdayRule>;
+}
+
+export interface ResolvedWeekdaySyllabusWeek {
+  dayKey: DayKey;
+  weekNumber: number;
+  isFromPreviousWeek: boolean;
+  weekObj: ApiSyllabusWeek | null;
+  startDay: DayKey;
 }
 
 export interface ApiLinkedAssessment {
@@ -324,6 +333,7 @@ export function createDefaultApiAutoPopulateConfig(
   if (isFable) {
     return {
       enabled: true,
+      week_start_day: 'thursday',
       quiz_assignment_target_day: 'thursday',
       auto_create_gradebook_assignments: true,
       weekday_rules: {
@@ -364,7 +374,7 @@ export function createDefaultApiAutoPopulateConfig(
           api_source: 'day_1',
           format_as_checkboxes: true,
           strip_week_header: true,
-          include_linked_quiz_line: true,
+          include_linked_quiz_line: false,
           custom_additional_lines: '',
         },
         friday: createDefaultApiWeekdayRule(),
@@ -556,21 +566,100 @@ function parseApiAutoPopulateConfig(
       ? (targetDayRaw as DayKey)
       : def.quiz_assignment_target_day;
 
+  const startDayRaw = raw.week_start_day;
+  const week_start_day: DayKey | undefined =
+    typeof startDayRaw === 'string' && DAY_KEYS.includes(startDayRaw as DayKey)
+      ? (startDayRaw as DayKey)
+      : def.week_start_day;
+
   const rulesRaw = isRecord(raw.weekday_rules) ? raw.weekday_rules : {};
+  const weekday_rules: Record<DayKey, ApiWeekdayRule> = {
+    monday: parseApiWeekdayRule(rulesRaw.monday, def.weekday_rules.monday),
+    tuesday: parseApiWeekdayRule(rulesRaw.tuesday, def.weekday_rules.tuesday),
+    wednesday: parseApiWeekdayRule(rulesRaw.wednesday, def.weekday_rules.wednesday),
+    thursday: parseApiWeekdayRule(rulesRaw.thursday, def.weekday_rules.thursday),
+    friday: parseApiWeekdayRule(rulesRaw.friday, def.weekday_rules.friday),
+  };
+
+  const inferredStartDay =
+    week_start_day ??
+    DAY_KEYS.find((dk) => weekday_rules[dk].enabled && weekday_rules[dk].api_source === 'day_1');
+
   return {
     enabled: typeof raw.enabled === 'boolean' ? raw.enabled : def.enabled,
+    ...(inferredStartDay ? { week_start_day: inferredStartDay } : {}),
     quiz_assignment_target_day,
     auto_create_gradebook_assignments:
       typeof raw.auto_create_gradebook_assignments === 'boolean'
         ? raw.auto_create_gradebook_assignments
         : def.auto_create_gradebook_assignments,
-    weekday_rules: {
-      monday: parseApiWeekdayRule(rulesRaw.monday, def.weekday_rules.monday),
-      tuesday: parseApiWeekdayRule(rulesRaw.tuesday, def.weekday_rules.tuesday),
-      wednesday: parseApiWeekdayRule(rulesRaw.wednesday, def.weekday_rules.wednesday),
-      thursday: parseApiWeekdayRule(rulesRaw.thursday, def.weekday_rules.thursday),
-      friday: parseApiWeekdayRule(rulesRaw.friday, def.weekday_rules.friday),
-    },
+    weekday_rules,
+  };
+}
+
+/**
+ * Determines which weekday starts a new syllabus week ("Day 1") for an API-synced course.
+ * If Day 1 occurs mid-week (e.g., Thursday for Composition & Grammar), any active weekday
+ * before that start day (e.g., Monday-Wednesday) belongs to the previous syllabus week (Week N - 1).
+ */
+export function getApiSyllabusWeekStartDay(
+  autoPop?: ApiSyllabusAutoPopulateConfig | null
+): DayKey {
+  if (!autoPop) return 'monday';
+  if (autoPop.week_start_day && DAY_KEYS.includes(autoPop.week_start_day)) {
+    return autoPop.week_start_day;
+  }
+  const day1Key = DAY_KEYS.find(
+    (dk) => autoPop.weekday_rules[dk]?.enabled && autoPop.weekday_rules[dk]?.api_source === 'day_1'
+  );
+  return day1Key || 'monday';
+}
+
+/**
+ * Returns the active weekdays that occur earlier in the Mon-Fri week than `startDay`
+ * and therefore pull their syllabus material from the previous week (Week N - 1).
+ */
+export function getPreviousWeekdaysBeforeStartDay(
+  startDay: DayKey,
+  autoPop?: ApiSyllabusAutoPopulateConfig | null
+): DayKey[] {
+  const startIdx = DAY_KEYS.indexOf(startDay);
+  if (startIdx <= 0) return [];
+  const earlierDays = DAY_KEYS.slice(0, startIdx);
+  if (!autoPop) return earlierDays;
+  return earlierDays.filter((dk) => {
+    const rule = autoPop.weekday_rules[dk];
+    return rule && rule.enabled && (rule.api_source !== 'none' || rule.attend_class);
+  });
+}
+
+/**
+ * Resolves which syllabus week object (`Week N` vs `Week N - 1`) applies to a given weekday
+ * in the Monday-Friday Weekly Binder.
+ */
+export function resolveApiSyllabusWeekForWeekday(
+  weeks: ApiSyllabusWeek[],
+  selectedWeekNum: number,
+  dayKey: DayKey,
+  autoPop?: ApiSyllabusAutoPopulateConfig | null
+): ResolvedWeekdaySyllabusWeek {
+  const startDay = getApiSyllabusWeekStartDay(autoPop);
+  const startIdx = DAY_KEYS.indexOf(startDay);
+  const dayIdx = DAY_KEYS.indexOf(dayKey);
+  const isFromPreviousWeek = startIdx > 0 && dayIdx >= 0 && dayIdx < startIdx;
+  const targetWeekNum = isFromPreviousWeek ? Math.max(1, selectedWeekNum - 1) : selectedWeekNum;
+
+  const weekObj =
+    weeks.find((w) => w.week_number === targetWeekNum) ||
+    weeks[Math.min(weeks.length - 1, Math.max(0, targetWeekNum - 1))] ||
+    null;
+
+  return {
+    dayKey,
+    weekNumber: weekObj?.week_number ?? targetWeekNum,
+    isFromPreviousWeek,
+    weekObj,
+    startDay,
   };
 }
 
@@ -1159,6 +1248,71 @@ export function getOfficialCourseSubtitle(config: SubjectRecurringConfig): strin
   return null;
 }
 
+function mergeDay4And5Lines(day4Text?: string, day5Text?: string): string[] {
+  const d4Lines = (day4Text || '')
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const d5Lines = (day5Text || '')
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
+
+  const sectionHeaderRegex = /^(fable|grammar|memory work|novels)\s*:$/i;
+  const hasStructuredSections =
+    d4Lines.some((l) => sectionHeaderRegex.test(l.replace(/^[-*•]\s*/, '').trim())) ||
+    d5Lines.some((l) => sectionHeaderRegex.test(l.replace(/^[-*•]\s*/, '').trim()));
+
+  if (!hasStructuredSections) {
+    return [...d4Lines, ...d5Lines];
+  }
+
+  const sectionOrder: string[] = [];
+  const sectionItems = new Map<string, string[]>();
+  const preamble: string[] = [];
+
+  const ingestLines = (lines: string[]) => {
+    let currentSection: string | null = null;
+    for (const raw of lines) {
+      const cleaned = raw.replace(/^[-*•]\s*/, '').trim();
+      if (!cleaned || /^day\s+\d+\s*:?$/i.test(cleaned)) continue;
+      if (sectionHeaderRegex.test(cleaned)) {
+        const canonical = cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+        currentSection = canonical;
+        if (!sectionItems.has(canonical)) {
+          sectionOrder.push(canonical);
+          sectionItems.set(canonical, []);
+        }
+        continue;
+      }
+      if (currentSection) {
+        const list = sectionItems.get(currentSection) || [];
+        if (!list.some((existing) => existing.toLowerCase() === cleaned.toLowerCase())) {
+          list.push(raw);
+          sectionItems.set(currentSection, list);
+        }
+      } else {
+        if (!preamble.some((existing) => existing.toLowerCase() === cleaned.toLowerCase())) {
+          preamble.push(raw);
+        }
+      }
+    }
+  };
+
+  ingestLines(d4Lines);
+  ingestLines(d5Lines);
+
+  const merged: string[] = [...preamble];
+  for (const sec of sectionOrder) {
+    const items = sectionItems.get(sec) || [];
+    if (items.length > 0) {
+      merged.push(sec);
+      merged.push(...items);
+    }
+  }
+  return merged;
+}
+
 export function formatApiWeekBlockForWeekday(
   week: ApiSyllabusWeek,
   rule: ApiWeekdayRule,
@@ -1219,12 +1373,9 @@ export function formatApiWeekBlockForWeekday(
       }
       break;
     case 'day_4_and_5': {
-      if (week.days_breakdown.day_4) {
-        rawLinesToFormat.push(...week.days_breakdown.day_4.split('\n').map((l) => l.trim()).filter(Boolean));
-      }
-      if (week.days_breakdown.day_5) {
-        rawLinesToFormat.push(...week.days_breakdown.day_5.split('\n').map((l) => l.trim()).filter(Boolean));
-      }
+      rawLinesToFormat.push(
+        ...mergeDay4And5Lines(week.days_breakdown.day_4, week.days_breakdown.day_5)
+      );
       break;
     }
     case 'read_only':
@@ -1269,6 +1420,12 @@ export function formatApiWeekBlockForWeekday(
 
     if (!dayPrefixStripped) continue;
 
+    // Preserve standalone section headers (e.g. "Fable:", "Grammar:") without checkbox/bullet prefix
+    if (/^(fable|grammar|memory work|novels)\s*:$/i.test(dayPrefixStripped)) {
+      formattedLines.push(dayPrefixStripped);
+      continue;
+    }
+
     if (rule.format_as_checkboxes) {
       if (
         dayPrefixStripped.startsWith('- [ ]') ||
@@ -1289,7 +1446,13 @@ export function formatApiWeekBlockForWeekday(
     formattedLines.push(customReplaced);
   }
 
-  if (rule.include_linked_quiz_line && week.linked_assessments.length > 0) {
+  // Only append linked assessments when enabled and not on 'day_1' (since Day 1 starts a new week's live class,
+  // whereas assessments for a syllabus week are completed on Day 4/5 or full_week/complete_and_do).
+  if (
+    rule.include_linked_quiz_line &&
+    rule.api_source !== 'day_1' &&
+    week.linked_assessments.length > 0
+  ) {
     const existingJoined = formattedLines.join('\n').toLowerCase();
     for (const assessment of week.linked_assessments) {
       const shortName = assessment.name
@@ -1313,6 +1476,8 @@ export function formatApiWeekBlockForWeekday(
 /**
  * Generates structured { title, description } Monday-Friday notes for a single subject on a given week.
  * When "Include Attend Class label" is enabled, that label becomes the bold Header (title) of the note.
+ * When a course's "Day 1" starts mid-week (e.g., Thursday for Composition & Grammar), weekdays before
+ * that start day (e.g., Monday-Wednesday) automatically pull their blocks from the previous week (Week N - 1).
  */
 export function generateSubjectWeekNotesStructured(
   config: SubjectRecurringConfig,
@@ -1339,23 +1504,31 @@ export function generateSubjectWeekNotesStructured(
     courseSyl.weeks &&
     courseSyl.weeks.length > 0
   ) {
-    const targetWeek =
-      courseSyl.weeks.find((w) => w.week_number === counters.week_num) ||
-      courseSyl.weeks[Math.min(courseSyl.weeks.length - 1, Math.max(0, counters.week_num - 1))];
-
-    if (targetWeek) {
-      const tokens = {
-        week: counters.week_num,
-        class_num: counters.class_num,
-        lesson: counters.lesson_num,
-        prev_lesson: Math.max(1, counters.lesson_num - 1),
-      };
-      for (const dayKey of DAY_KEYS) {
-        const rule = courseSyl.api_auto_populate.weekday_rules[dayKey];
-        result[dayKey] = formatApiWeekBlockForWeekday(targetWeek, rule, tokens);
+    for (const dayKey of DAY_KEYS) {
+      const rule = courseSyl.api_auto_populate.weekday_rules[dayKey];
+      const resolved = resolveApiSyllabusWeekForWeekday(
+        courseSyl.weeks,
+        counters.week_num,
+        dayKey,
+        courseSyl.api_auto_populate
+      );
+      if (resolved.weekObj) {
+        const effectiveLesson = resolved.isFromPreviousWeek
+          ? Math.max(1, counters.lesson_num - 1)
+          : counters.lesson_num;
+        const effectiveClassNum = resolved.isFromPreviousWeek
+          ? Math.max(1, counters.class_num - 1)
+          : counters.class_num;
+        const tokens = {
+          week: resolved.weekNumber,
+          class_num: effectiveClassNum,
+          lesson: effectiveLesson,
+          prev_lesson: Math.max(1, effectiveLesson - 1),
+        };
+        result[dayKey] = formatApiWeekBlockForWeekday(resolved.weekObj, rule, tokens);
       }
-      return result;
     }
+    return result;
   }
 
   if (config.mode === 'math_syllabus') {

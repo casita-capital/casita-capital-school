@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import {
+  alpha,
   Box,
   Button,
   Card,
@@ -73,10 +74,13 @@ import {
   WeeklySubjectOverrides,
   generateSubjectWeekNotesStructured,
   getActiveCourseSyllabus,
+  getApiSyllabusWeekStartDay,
   getOfficialCourseSubtitle,
+  getPreviousWeekdaysBeforeStartDay,
   getSubjectCourseSyllabi,
   parseRecurringConfig,
   parseSubjectOverrides,
+  resolveApiSyllabusWeekForWeekday,
   resolveSubjectCountersForWeek,
   resolveSyllabusDaySupplies,
 } from 'src/utils/recurring-planner';
@@ -254,8 +258,11 @@ function PlannerContent() {
   // On-Screen View Mode & Page Jump / Date Picker Refs (never affects @media print)
   const [screenViewMode, setScreenViewMode] = useState<ScreenViewMode>('binder_2page');
   const datePickerInputRef = useRef<HTMLInputElement | null>(null);
+  const printRootRef = useRef<HTMLDivElement | null>(null);
   const page1Ref = useRef<HTMLDivElement | null>(null);
   const page2Ref = useRef<HTMLDivElement | null>(null);
+  const page1InnerRef = useRef<HTMLDivElement | null>(null);
+  const page2InnerRef = useRef<HTMLDivElement | null>(null);
 
   // Debounced Sidebar Save State
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
@@ -1743,7 +1750,109 @@ function PlannerContent() {
     }
   };
 
+  const resetPrintAutoFit = useCallback(() => {
+    const rootEl = printRootRef.current;
+    if (rootEl) {
+      rootEl.classList.remove('print-measuring');
+    }
+    const densityClasses = [
+      'print-density-compact',
+      'print-density-tight',
+      'print-density-ultra',
+    ];
+    for (const pageEl of [page1Ref.current, page2Ref.current]) {
+      if (!pageEl) continue;
+      pageEl.classList.remove(...densityClasses);
+    }
+    for (const innerEl of [page1InnerRef.current, page2InnerRef.current]) {
+      if (!innerEl) continue;
+      innerEl.style.transform = '';
+      innerEl.style.transformOrigin = '';
+      innerEl.style.width = '';
+      innerEl.style.height = '';
+    }
+  }, []);
+
+  const applyPrintAutoFit = useCallback(() => {
+    const rootEl = printRootRef.current;
+    if (!rootEl) return;
+
+    resetPrintAutoFit();
+
+    // Safe printable height in CSS pixels for US Letter portrait (9.75in = 936px at 96dpi)
+    const TARGET_PRINT_HEIGHT_PX = 936;
+    const densityTiers = [
+      'print-density-compact',
+      'print-density-tight',
+      'print-density-ultra',
+    ];
+
+    rootEl.classList.add('print-measuring');
+
+    const pages: Array<{
+      pageEl: HTMLDivElement | null;
+      innerEl: HTMLDivElement | null;
+    }> = [
+      { pageEl: page1Ref.current, innerEl: page1InnerRef.current },
+      { pageEl: page2Ref.current, innerEl: page2InnerRef.current },
+    ];
+
+    for (const { pageEl, innerEl } of pages) {
+      if (!pageEl || !innerEl) continue;
+
+      let contentHeight = innerEl.scrollHeight;
+
+      if (contentHeight > TARGET_PRINT_HEIGHT_PX) {
+        for (const tierClass of densityTiers) {
+          pageEl.classList.remove(...densityTiers);
+          pageEl.classList.add(tierClass);
+          contentHeight = innerEl.scrollHeight;
+          if (contentHeight <= TARGET_PRINT_HEIGHT_PX) {
+            break;
+          }
+        }
+      }
+
+      if (contentHeight > TARGET_PRINT_HEIGHT_PX) {
+        const rawScale = TARGET_PRINT_HEIGHT_PX / contentHeight;
+        const scale = Math.max(0.5, Math.floor(rawScale * 1000) / 1000);
+        innerEl.style.width = `${(100 / scale).toFixed(3)}%`;
+        innerEl.style.transform = `scale(${scale})`;
+        innerEl.style.transformOrigin = 'top left';
+        const unscaledHeight = Math.max(
+          innerEl.scrollHeight,
+          Math.floor(TARGET_PRINT_HEIGHT_PX / scale)
+        );
+        const finalScale = Math.min(
+          scale,
+          Math.max(0.5, Math.floor((TARGET_PRINT_HEIGHT_PX / unscaledHeight) * 1000) / 1000)
+        );
+        innerEl.style.width = `${(100 / finalScale).toFixed(3)}%`;
+        innerEl.style.transform = `scale(${finalScale})`;
+        innerEl.style.height = `${Math.floor(TARGET_PRINT_HEIGHT_PX / finalScale)}px`;
+      }
+    }
+
+    rootEl.classList.remove('print-measuring');
+  }, [resetPrintAutoFit]);
+
+  useEffect(() => {
+    const handleBeforePrint = () => {
+      applyPrintAutoFit();
+    };
+    const handleAfterPrint = () => {
+      resetPrintAutoFit();
+    };
+    window.addEventListener('beforeprint', handleBeforePrint);
+    window.addEventListener('afterprint', handleAfterPrint);
+    return () => {
+      window.removeEventListener('beforeprint', handleBeforePrint);
+      window.removeEventListener('afterprint', handleAfterPrint);
+    };
+  }, [applyPrintAutoFit, resetPrintAutoFit]);
+
   const handlePrint = () => {
+    applyPrintAutoFit();
     window.print();
   };
 
@@ -2516,6 +2625,42 @@ function PlannerContent() {
                       apiWeeks.length > 0
                         ? apiWeeks.find((w) => w.week_number === resolved.week_num)
                         : undefined;
+                    const syllabusStartDay =
+                      apiWeeks.length > 0
+                        ? getApiSyllabusWeekStartDay(activeSyllabus?.api_auto_populate)
+                        : 'monday';
+                    const spansTwoSyllabusWeeks =
+                      apiWeeks.length > 0 && syllabusStartDay !== 'monday';
+                    const previousWeekdaysBeforeStart = spansTwoSyllabusWeeks
+                      ? getPreviousWeekdaysBeforeStartDay(
+                          syllabusStartDay,
+                          activeSyllabus?.api_auto_populate
+                        )
+                      : [];
+                    const prevSyllabusWeekNum = Math.max(1, resolved.week_num - 1);
+                    const prevApiWeek = spansTwoSyllabusWeeks
+                      ? apiWeeks.find((w) => w.week_number === prevSyllabusWeekNum)
+                      : undefined;
+                    const formatApiSourceShortLabel = (src?: string): string => {
+                      switch (src) {
+                        case 'day_1':
+                          return 'Day 1';
+                        case 'day_2':
+                          return 'Day 2';
+                        case 'day_3':
+                          return 'Day 3';
+                        case 'day_4':
+                          return 'Day 4';
+                        case 'day_5':
+                          return 'Day 5';
+                        case 'day_4_and_5':
+                          return 'Days 4 & 5';
+                        case 'full_week':
+                          return 'Full Week';
+                        default:
+                          return src || '';
+                      }
+                    };
                     const classSyllabusDays =
                       cfg.mode === 'template' &&
                       activeSyllabus &&
@@ -2561,7 +2706,13 @@ function PlannerContent() {
                       allTemplates.includes('{lesson}') || allTemplates.includes('{prev_lesson}');
 
                     return (
-                      <Grid item xs={12} sm={6} md={hasClassSyllabus ? 6 : 3} key={sub.id}>
+                      <Grid
+                        item
+                        xs={12}
+                        sm={6}
+                        md={hasClassSyllabus || spansTwoSyllabusWeeks ? 6 : 3}
+                        key={sub.id}
+                      >
                         <Paper
                           variant="outlined"
                           sx={{
@@ -2619,6 +2770,15 @@ function PlannerContent() {
                                 sx={{ fontWeight: 700, fontSize: '0.75rem', borderRadius: 1 }}
                               />
                             )}
+                            {spansTwoSyllabusWeeks && (
+                              <Chip
+                                size="small"
+                                label={`Starts ${DAY_LABELS[syllabusStartDay]} · Spans 2 Wks`}
+                                color="warning"
+                                variant="outlined"
+                                sx={{ fontWeight: 700, fontSize: '0.72rem', borderRadius: 1 }}
+                              />
+                            )}
                           </Stack>
 
                           <Stack spacing={1.25}>
@@ -2645,7 +2805,11 @@ function PlannerContent() {
                                 <TextField
                                   select
                                   size="small"
-                                  label="API Syllabus Week #"
+                                  label={
+                                    spansTwoSyllabusWeeks
+                                      ? `Syllabus Week # (Starts ${DAY_LABELS[syllabusStartDay]}; earlier days from prev week)`
+                                      : 'API Syllabus Week #'
+                                  }
                                   value={resolved.week_num}
                                   onChange={(e) => {
                                     const nextWeekNum = Math.max(
@@ -2664,30 +2828,137 @@ function PlannerContent() {
                                   fullWidth
                                   SelectProps={{ native: true }}
                                 >
-                                  {apiWeeks.map((wk) => (
-                                    <option key={wk.week_number} value={wk.week_number}>
-                                      Week {wk.week_number}
-                                      {wk.section_title && wk.section_title !== `Week ${wk.week_number}`
-                                        ? ` (${wk.section_title})`
-                                        : ''}
-                                      {wk.linked_assessments.length > 0
-                                        ? ` • ${wk.linked_assessments[0].name}`
-                                        : ''}
-                                    </option>
-                                  ))}
+                                  {apiWeeks.map((wk) => {
+                                    const prevWk = Math.max(1, wk.week_number - 1);
+                                    const spanSuffix = spansTwoSyllabusWeeks
+                                      ? wk.week_number > 1
+                                        ? ` — Starts ${DAY_LABELS[syllabusStartDay]} (Prev days from Week ${prevWk})`
+                                        : ` — Starts ${DAY_LABELS[syllabusStartDay]}`
+                                      : '';
+                                    return (
+                                      <option key={wk.week_number} value={wk.week_number}>
+                                        Week {wk.week_number}
+                                        {spanSuffix}
+                                        {wk.section_title && wk.section_title !== `Week ${wk.week_number}`
+                                          ? ` (${wk.section_title})`
+                                          : ''}
+                                        {wk.linked_assessments.length > 0
+                                          ? ` • ${wk.linked_assessments[0].name}`
+                                          : ''}
+                                      </option>
+                                    );
+                                  })}
                                 </TextField>
-                                {selectedApiWeek && selectedApiWeek.linked_assessments.length > 0 && (
-                                  <Typography
-                                    variant="caption"
-                                    color="secondary.main"
-                                    fontWeight={700}
-                                    display="block"
-                                    mt={0.5}
-                                    sx={{ fontSize: '0.75rem' }}
+                                {spansTwoSyllabusWeeks && (
+                                  <Box
+                                    sx={{
+                                      mt: 1,
+                                      p: 1,
+                                      borderRadius: 0.75,
+                                      bgcolor: alpha(theme.palette.warning.main, 0.08),
+                                      border: `1px solid ${alpha(theme.palette.warning.main, 0.3)}`,
+                                    }}
                                   >
-                                    Quiz/Assn: {selectedApiWeek.linked_assessments.map((a) => a.name).join(', ')}
-                                  </Typography>
+                                    <Typography
+                                      variant="caption"
+                                      fontWeight={700}
+                                      color="text.primary"
+                                      display="block"
+                                      sx={{ fontSize: '0.73rem', lineHeight: 1.35 }}
+                                    >
+                                      Syllabus week starts on {DAY_LABELS[syllabusStartDay]}:
+                                    </Typography>
+                                    <Typography
+                                      variant="caption"
+                                      color="text.secondary"
+                                      display="block"
+                                      sx={{ fontSize: '0.72rem', lineHeight: 1.35, mt: 0.25 }}
+                                    >
+                                      Selecting <strong>Week {resolved.week_num}</strong> starts{' '}
+                                      <strong>Week {resolved.week_num} (Day 1)</strong> on{' '}
+                                      <strong>{DAY_LABELS[syllabusStartDay]}</strong>, while the previous days (
+                                      <strong>
+                                        {previousWeekdaysBeforeStart
+                                          .map((dk) => DAY_LABELS[dk])
+                                          .join(', ')}
+                                      </strong>
+                                      ) come from the previous week in the syllabus (
+                                      <strong>Week {prevSyllabusWeekNum}</strong>).
+                                    </Typography>
+                                    <Stack
+                                      direction="row"
+                                      spacing={0.5}
+                                      flexWrap="wrap"
+                                      useFlexGap
+                                      sx={{ mt: 0.75 }}
+                                    >
+                                      {DAY_KEYS.map((dk) => {
+                                        const rule =
+                                          activeSyllabus?.api_auto_populate?.weekday_rules?.[dk];
+                                        if (!rule || !rule.enabled || rule.api_source === 'none') {
+                                          return null;
+                                        }
+                                        const resolvedDay = resolveApiSyllabusWeekForWeekday(
+                                          apiWeeks,
+                                          resolved.week_num,
+                                          dk,
+                                          activeSyllabus?.api_auto_populate
+                                        );
+                                        return (
+                                          <Chip
+                                            key={dk}
+                                            size="small"
+                                            label={`${DAY_LABELS[dk].slice(0, 3)}: Wk ${resolvedDay.weekNumber} (${formatApiSourceShortLabel(rule.api_source)})`}
+                                            color={
+                                              resolvedDay.isFromPreviousWeek ? 'default' : 'primary'
+                                            }
+                                            variant={
+                                              resolvedDay.isFromPreviousWeek ? 'outlined' : 'filled'
+                                            }
+                                            sx={{
+                                              height: 20,
+                                              fontSize: '0.68rem',
+                                              fontWeight: 700,
+                                              borderRadius: 0.75,
+                                            }}
+                                          />
+                                        );
+                                      })}
+                                    </Stack>
+                                  </Box>
                                 )}
+                                {spansTwoSyllabusWeeks &&
+                                  prevApiWeek &&
+                                  prevApiWeek.linked_assessments.length > 0 && (
+                                    <Typography
+                                      variant="caption"
+                                      color="secondary.main"
+                                      fontWeight={700}
+                                      display="block"
+                                      mt={0.5}
+                                      sx={{ fontSize: '0.75rem' }}
+                                    >
+                                      Completing Wk {prevSyllabusWeekNum} Quiz/Assn:{' '}
+                                      {prevApiWeek.linked_assessments.map((a) => a.name).join(', ')}
+                                    </Typography>
+                                  )}
+                                {!spansTwoSyllabusWeeks &&
+                                  selectedApiWeek &&
+                                  selectedApiWeek.linked_assessments.length > 0 && (
+                                    <Typography
+                                      variant="caption"
+                                      color="secondary.main"
+                                      fontWeight={700}
+                                      display="block"
+                                      mt={0.5}
+                                      sx={{ fontSize: '0.75rem' }}
+                                    >
+                                      Quiz/Assn:{' '}
+                                      {selectedApiWeek.linked_assessments
+                                        .map((a) => a.name)
+                                        .join(', ')}
+                                    </Typography>
+                                  )}
                               </Box>
                             ) : hasClassSyllabus ? (
                               <Box>
@@ -2884,6 +3155,7 @@ function PlannerContent() {
 
       {/* PRINTABLE 2-PAGE BINDER PLANNER WRAPPER (Always used by @media print) */}
       <Box
+        ref={printRootRef}
         className={`planner-print-root ${screenViewMode === 'binder_spread' ? 'spread-mode' : ''} ${
           screenViewMode === 'five_day' ? 'screen-hidden-print-only' : ''
         }`}
@@ -2892,6 +3164,7 @@ function PlannerContent() {
         {/* PAGE 1: MONDAY, TUESDAY, WEDNESDAY (3 COLUMNS x 8 SUBJECT ROWS)          */}
         {/* ========================================================================= */}
         <Box ref={page1Ref} className="print-page page-break">
+          <div ref={page1InnerRef} className="print-page-inner">
           {/* Header Bar: WEEKLY Assignments in Raleway & Sacramento Fonts */}
           <Box className="planner-header">
             <Typography
@@ -3097,12 +3370,14 @@ function PlannerContent() {
               })}
             </tbody>
           </table>
+          </div>
         </Box>
 
         {/* ========================================================================= */}
         {/* PAGE 2: THURSDAY, FRIDAY + RIGHT SIDEBAR (TO-DO, PRIORITIES, HABITS, NOTES) */}
         {/* ========================================================================= */}
         <Box ref={page2Ref} className="print-page">
+          <div ref={page2InnerRef} className="print-page-inner">
           {/* Header Bar */}
           <Box className="planner-header">
             <Typography variant="body1" fontWeight={700} className="week-header-text">
@@ -3369,7 +3644,7 @@ function PlannerContent() {
               </Box>
 
               {/* FOR NEXT MONTH Section */}
-              <Box className="sidebar-section">
+              <Box className="sidebar-section sidebar-section-grow">
                 <div className="sidebar-header-badge">FOR NEXT MONTH</div>
                 <textarea
                   className="sidebar-textarea sidebar-textarea-next-month"
@@ -3384,10 +3659,11 @@ function PlannerContent() {
               </Box>
 
               {/* NOTES Section (shows Activity Supplies Needed above the Notes text box) */}
-              <Box className="sidebar-section">
+              <Box className="sidebar-section sidebar-section-grow">
                 <div className="sidebar-header-badge">NOTES</div>
                 {weekActivitySupplies.length > 0 && (
                   <Box
+                    className="activity-supplies-box"
                     sx={{
                       px: 0.75,
                       py: 0.6,
@@ -3400,6 +3676,7 @@ function PlannerContent() {
                     }}
                   >
                     <div
+                      className="activity-supplies-title"
                       style={{
                         fontWeight: 800,
                         fontSize: '0.64rem',
@@ -3412,7 +3689,7 @@ function PlannerContent() {
                       Activity Supplies Needed
                     </div>
                     {weekActivitySupplies.map((supEntry) => (
-                      <div key={supEntry.id} style={{ marginBottom: 4 }}>
+                      <div key={supEntry.id} className="activity-supplies-item" style={{ marginBottom: 4 }}>
                         <div style={{ fontWeight: 700 }}>
                           • {supEntry.weekdayLabel.slice(0, 3)}
                           {supEntry.classNumber ? ` (Class ${supEntry.classNumber})` : ''} —{' '}
@@ -3438,6 +3715,7 @@ function PlannerContent() {
               </Box>
             </Box>
           </Box>
+          </div>
         </Box>
       </Box>
 
@@ -4048,6 +4326,157 @@ function PlannerContent() {
 
           {/* Drawer Body Content */}
           <Box sx={{ flex: 1, overflowY: 'auto', p: 3 }}>
+            {/* Quick API Syllabus Week Selector (with 2-Week Span notice when Day 1 starts mid-week) */}
+            {selectedSubject &&
+              (() => {
+                const subCfg = parseRecurringConfig(
+                  selectedSubject.recurring_config,
+                  selectedSubject.name
+                );
+                const activeSyl = getActiveCourseSyllabus(subCfg);
+                const apiWeeks =
+                  activeSyl?.source_type === 'api_sync' && Array.isArray(activeSyl?.weeks)
+                    ? activeSyl.weeks
+                    : [];
+                if (apiWeeks.length === 0) return null;
+
+                const subOverride = plannerSettings.subject_overrides[selectedSubject.id];
+                const subResolved = resolveSubjectCountersForWeek(
+                  subCfg,
+                  weekStartDate,
+                  subOverride
+                );
+                const syllabusStartDay = getApiSyllabusWeekStartDay(activeSyl?.api_auto_populate);
+                const spansTwoWeeks = syllabusStartDay !== 'monday';
+                const prevWeekdays = spansTwoWeeks
+                  ? getPreviousWeekdaysBeforeStartDay(
+                      syllabusStartDay,
+                      activeSyl?.api_auto_populate
+                    )
+                  : [];
+                const cellDayKey =
+                  weekDates.find((wd) => wd.dateStr === selectedDate)?.dayKey || 'monday';
+                const resolvedForCell = resolveApiSyllabusWeekForWeekday(
+                  apiWeeks,
+                  subResolved.week_num,
+                  cellDayKey,
+                  activeSyl?.api_auto_populate
+                );
+
+                return (
+                  <Paper
+                    variant="outlined"
+                    sx={{
+                      p: 2,
+                      mb: 2.5,
+                      borderRadius: 1,
+                      bgcolor: 'action.hover',
+                    }}
+                  >
+                    <Stack
+                      direction="row"
+                      justifyContent="space-between"
+                      alignItems="center"
+                      mb={1.25}
+                      flexWrap="wrap"
+                      gap={1}
+                    >
+                      <Stack direction="row" spacing={1} alignItems="center">
+                        <Box
+                          sx={{
+                            width: 8,
+                            height: 8,
+                            borderRadius: '50%',
+                            bgcolor: selectedSubject.color || 'primary.main',
+                            flexShrink: 0,
+                          }}
+                        />
+                        <Typography variant="subtitle2" fontWeight={700}>
+                          {selectedSubject.name} — Syllabus Week Selector
+                        </Typography>
+                      </Stack>
+                      <Chip
+                        size="small"
+                        color={resolvedForCell.isFromPreviousWeek ? 'warning' : 'primary'}
+                        variant="outlined"
+                        label={
+                          spansTwoWeeks
+                            ? `${DAY_LABELS[cellDayKey]} pulls from Week ${resolvedForCell.weekNumber}${
+                                resolvedForCell.isFromPreviousWeek ? ' (Prev Wk)' : ' (New Wk Day 1)'
+                              }`
+                            : `Week ${resolvedForCell.weekNumber}`
+                        }
+                        sx={{ fontWeight: 700, fontSize: '0.72rem', borderRadius: 1 }}
+                      />
+                    </Stack>
+
+                    <TextField
+                      select
+                      size="small"
+                      label={
+                        spansTwoWeeks
+                          ? `Selected Binder Syllabus Week (Starts ${DAY_LABELS[syllabusStartDay]})`
+                          : 'Selected Binder Syllabus Week'
+                      }
+                      value={subResolved.week_num}
+                      onChange={(e) => {
+                        const nextWeekNum = Math.max(1, parseInt(e.target.value, 10) || 1);
+                        handleUpdateSubjectOverride(
+                          selectedSubject.id,
+                          {
+                            week_num: nextWeekNum,
+                            lesson_num: nextWeekNum,
+                          },
+                          true
+                        );
+                      }}
+                      fullWidth
+                      SelectProps={{ native: true }}
+                      sx={{ bgcolor: 'background.paper' }}
+                    >
+                      {apiWeeks.map((wk) => {
+                        const prevWk = Math.max(1, wk.week_number - 1);
+                        const spanLabel = spansTwoWeeks
+                          ? wk.week_number > 1
+                            ? ` — Starts ${DAY_LABELS[syllabusStartDay]} (Prev days from Week ${prevWk})`
+                            : ` — Starts ${DAY_LABELS[syllabusStartDay]}`
+                          : '';
+                        return (
+                          <option key={wk.week_number} value={wk.week_number}>
+                            Week {wk.week_number}
+                            {spanLabel}
+                            {wk.section_title && wk.section_title !== `Week ${wk.week_number}`
+                              ? ` (${wk.section_title})`
+                              : ''}
+                          </option>
+                        );
+                      })}
+                    </TextField>
+
+                    {spansTwoWeeks && (
+                      <Typography
+                        variant="caption"
+                        color="text.secondary"
+                        display="block"
+                        sx={{ mt: 1, fontSize: '0.74rem', lineHeight: 1.4 }}
+                      >
+                        <strong>Note:</strong> This class starts its syllabus week on{' '}
+                        <strong>{DAY_LABELS[syllabusStartDay]} (Day 1)</strong>. When{' '}
+                        <strong>Week {subResolved.week_num}</strong> is selected for this binder
+                        week,{' '}
+                        <strong>
+                          {prevWeekdays.map((dk) => DAY_LABELS[dk]).join(', ')}
+                        </strong>{' '}
+                        automatically pull from{' '}
+                        <strong>Week {Math.max(1, subResolved.week_num - 1)}</strong> (the previous
+                        week in the syllabus), and <strong>{DAY_LABELS[syllabusStartDay]}</strong>{' '}
+                        starts <strong>Week {subResolved.week_num}</strong>.
+                      </Typography>
+                    )}
+                  </Paper>
+                );
+              })()}
+
             {/* Quick Syllabus Day / Class Selector for Class-Based Syllabi (Scoped to This Day by default) */}
             {selectedSubject &&
               (() => {
@@ -5567,6 +5996,15 @@ function PlannerContent() {
           box-sizing: border-box;
         }
 
+        .print-page-inner {
+          display: flex;
+          flex-direction: column;
+          flex: 1;
+          width: 100%;
+          min-height: 0;
+          box-sizing: border-box;
+        }
+
         .planner-header {
           height: 52px !important;
           min-height: 52px !important;
@@ -5875,11 +6313,371 @@ function PlannerContent() {
           margin: 0 auto;
         }
 
+        /* PRE-PRINT MEASUREMENT STATE (Matches @media print width & typography to measure natural height) */
+        .planner-print-root.print-measuring {
+          display: block !important;
+          width: 762px !important;
+          padding: 0 !important;
+          margin: 0 !important;
+        }
+
+        .planner-print-root.print-measuring .print-page {
+          border: none !important;
+          box-shadow: none !important;
+          padding: 0 !important;
+          margin: 0 !important;
+          width: 762px !important;
+          min-height: 0 !important;
+          height: auto !important;
+          max-height: none !important;
+          overflow: visible !important;
+        }
+
+        .planner-print-root.print-measuring .print-page-inner {
+          height: auto !important;
+          max-height: none !important;
+          min-height: 0 !important;
+          display: flex !important;
+          flex-direction: column !important;
+        }
+
+        .planner-print-root.print-measuring .no-print {
+          display: none !important;
+        }
+
+        .planner-print-root.print-measuring .planner-header {
+          height: 28px !important;
+          min-height: 28px !important;
+          max-height: 28px !important;
+          margin-bottom: 4px !important;
+          padding: 0 6px !important;
+          flex: 0 0 28px !important;
+        }
+
+        .planner-print-root.print-measuring .planner-header span:first-of-type {
+          font-size: 16px !important;
+        }
+
+        .planner-print-root.print-measuring .planner-header span:last-of-type {
+          font-size: 28px !important;
+        }
+
+        .planner-print-root.print-measuring .week-header-text {
+          font-size: 11.5px !important;
+        }
+
+        .planner-print-root.print-measuring .planner-table {
+          flex: 1 1 auto !important;
+          height: auto !important;
+          min-height: 0 !important;
+        }
+
+        .planner-print-root.print-measuring .planner-table tbody tr {
+          height: auto !important;
+        }
+
+        .planner-print-root.print-measuring .planner-table th,
+        .planner-print-root.print-measuring .planner-table td {
+          padding: 2px 3.5px !important;
+        }
+
+        .planner-print-root.print-measuring .subject-header-col,
+        .planner-print-root.print-measuring .subject-name-cell,
+        .planner-print-root.print-measuring .all-day-label-cell {
+          width: 108px !important;
+          min-width: 108px !important;
+          max-width: 108px !important;
+        }
+
+        .planner-print-root.print-measuring .day-header-col,
+        .planner-print-root.print-measuring .subject-header-col {
+          padding: 2.5px 4px !important;
+          font-size: 9.5px !important;
+          line-height: 1.15 !important;
+        }
+
+        .planner-print-root.print-measuring .subject-name-cell {
+          font-size: 10px !important;
+          padding: 2px 3.5px !important;
+          line-height: 1.15 !important;
+        }
+
+        .planner-print-root.print-measuring .subject-name-cell p {
+          font-size: 10px !important;
+          line-height: 1.15 !important;
+        }
+
+        .planner-print-root.print-measuring .subject-name-cell span {
+          font-size: 8px !important;
+          line-height: 1.1 !important;
+          margin-top: 1px !important;
+        }
+
+        .planner-print-root.print-measuring .assignment-cell {
+          min-height: 22px !important;
+          height: auto !important;
+          padding: 2px 3.5px !important;
+          font-size: 9.5px !important;
+          line-height: 1.18 !important;
+        }
+
+        .planner-print-root.print-measuring .all-day-events-row,
+        .planner-print-root.print-measuring .all-day-events-cell,
+        .planner-print-root.print-measuring .all-day-items-wrapper {
+          height: auto !important;
+          min-height: 13px !important;
+        }
+
+        .planner-print-root.print-measuring .parent-note-item,
+        .planner-print-root.print-measuring .formatted-parent-note-block,
+        .planner-print-root.print-measuring .formatted-parent-note-block .note-header-title,
+        .planner-print-root.print-measuring .formatted-parent-note-block .note-checkbox-icon,
+        .planner-print-root.print-measuring .school-assignment-item {
+          font-size: 9.5px !important;
+          line-height: 1.18 !important;
+          margin-bottom: 1px !important;
+          padding-bottom: 0 !important;
+        }
+
+        .planner-print-root.print-measuring .formatted-parent-note-block > div {
+          margin-top: 0.5px !important;
+          margin-bottom: 0.5px !important;
+          line-height: 1.18 !important;
+        }
+
+        .planner-print-root.print-measuring .page2-container {
+          flex: 1 1 auto !important;
+          height: auto !important;
+          min-height: 0 !important;
+          display: flex !important;
+          align-items: stretch !important;
+        }
+
+        .planner-print-root.print-measuring .page2-table-wrapper {
+          width: calc(108px + ((100% - 108px) * (2 / 3))) !important;
+          padding-right: 6px !important;
+          height: auto !important;
+          min-height: 0 !important;
+        }
+
+        .planner-print-root.print-measuring .sidebar-column {
+          width: calc((100% - 108px) * (1 / 3)) !important;
+          padding-left: 6px !important;
+          height: auto !important;
+          min-height: 0 !important;
+          justify-content: flex-start !important;
+        }
+
+        .planner-print-root.print-measuring .sidebar-section {
+          margin-bottom: 3px !important;
+          flex-shrink: 0 !important;
+        }
+
+        .planner-print-root.print-measuring .sidebar-section.sidebar-section-grow {
+          display: flex !important;
+          flex-direction: column !important;
+          flex: 1 1 0% !important;
+          min-height: 0 !important;
+        }
+
+        .planner-print-root.print-measuring .sidebar-header-badge {
+          font-size: 9px !important;
+          padding: 1px 3px !important;
+          margin-bottom: 2px !important;
+        }
+
+        .planner-print-root.print-measuring .todo-list {
+          gap: 1.5px !important;
+        }
+
+        .planner-print-root.print-measuring .todo-item {
+          gap: 4px !important;
+          min-height: 12px !important;
+        }
+
+        .planner-print-root.print-measuring .checkbox-square {
+          width: 9px !important;
+          height: 9px !important;
+        }
+
+        .planner-print-root.print-measuring .sidebar-input {
+          font-size: 9.5px !important;
+          height: 13px !important;
+          line-height: 13px !important;
+          padding: 0 1px !important;
+        }
+
+        .planner-print-root.print-measuring .sidebar-textarea-next-month {
+          flex: 1 1 0% !important;
+          height: auto !important;
+          min-height: 36px !important;
+          font-size: 9.5px !important;
+          padding: 3px !important;
+        }
+
+        .planner-print-root.print-measuring .sidebar-textarea-notes {
+          flex: 1 1 0% !important;
+          height: auto !important;
+          min-height: 42px !important;
+          font-size: 9.5px !important;
+          padding: 3px !important;
+        }
+
+        .planner-print-root.print-measuring .activity-supplies-box {
+          padding: 2px 4px !important;
+          margin-bottom: 2px !important;
+          font-size: 8.5px !important;
+          line-height: 1.15 !important;
+        }
+
+        .planner-print-root.print-measuring .activity-supplies-title {
+          font-size: 8px !important;
+          margin-bottom: 1px !important;
+        }
+
+        .planner-print-root.print-measuring .activity-supplies-item {
+          margin-bottom: 1.5px !important;
+        }
+
+        .planner-print-root.print-measuring .habits-table {
+          font-size: 9px !important;
+        }
+
+        .planner-print-root.print-measuring .habits-table th,
+        .planner-print-root.print-measuring .habits-table td {
+          padding: 1px 0 !important;
+          line-height: 1.1 !important;
+        }
+
+        .planner-print-root.print-measuring .habit-title-cell {
+          font-size: 9px !important;
+        }
+
+        .planner-print-root.print-measuring .bubble-circle {
+          width: 7.5px !important;
+          height: 7.5px !important;
+        }
+
+        /* PROGRESSIVE PRINT DENSITY TIERS FOR DENSE WEEKS */
+        .print-page.print-density-compact .planner-header {
+          height: 24px !important;
+          min-height: 24px !important;
+          max-height: 24px !important;
+          margin-bottom: 3px !important;
+          flex: 0 0 24px !important;
+        }
+        .print-page.print-density-compact .planner-table th,
+        .print-page.print-density-compact .planner-table td {
+          padding: 1.5px 3px !important;
+        }
+        .print-page.print-density-compact .assignment-cell,
+        .print-page.print-density-compact .parent-note-item,
+        .print-page.print-density-compact .formatted-parent-note-block,
+        .print-page.print-density-compact .formatted-parent-note-block .note-header-title,
+        .print-page.print-density-compact .formatted-parent-note-block .note-checkbox-icon,
+        .print-page.print-density-compact .school-assignment-item {
+          font-size: 8.8px !important;
+          line-height: 1.13 !important;
+        }
+        .print-page.print-density-compact .formatted-parent-note-block > div {
+          line-height: 1.13 !important;
+          margin-top: 0 !important;
+          margin-bottom: 0.5px !important;
+        }
+
+        .print-page.print-density-tight .planner-header {
+          height: 22px !important;
+          min-height: 22px !important;
+          max-height: 22px !important;
+          margin-bottom: 2px !important;
+          flex: 0 0 22px !important;
+        }
+        .print-page.print-density-tight .planner-table th,
+        .print-page.print-density-tight .planner-table td {
+          padding: 1px 2.5px !important;
+        }
+        .print-page.print-density-tight .subject-name-cell,
+        .print-page.print-density-tight .subject-name-cell p {
+          font-size: 9px !important;
+          line-height: 1.1 !important;
+        }
+        .print-page.print-density-tight .assignment-cell,
+        .print-page.print-density-tight .parent-note-item,
+        .print-page.print-density-tight .formatted-parent-note-block,
+        .print-page.print-density-tight .formatted-parent-note-block .note-header-title,
+        .print-page.print-density-tight .formatted-parent-note-block .note-checkbox-icon,
+        .print-page.print-density-tight .school-assignment-item {
+          font-size: 8.2px !important;
+          line-height: 1.09 !important;
+        }
+        .print-page.print-density-tight .formatted-parent-note-block > div {
+          line-height: 1.09 !important;
+          margin-top: 0 !important;
+          margin-bottom: 0 !important;
+        }
+        .print-page.print-density-tight .todo-list {
+          gap: 1px !important;
+        }
+        .print-page.print-density-tight .sidebar-input {
+          height: 11.5px !important;
+          line-height: 11.5px !important;
+          font-size: 8.8px !important;
+        }
+        .print-page.print-density-tight .activity-supplies-box {
+          font-size: 8px !important;
+          line-height: 1.1 !important;
+          padding: 1.5px 3px !important;
+        }
+
+        .print-page.print-density-ultra .planner-header {
+          height: 20px !important;
+          min-height: 20px !important;
+          max-height: 20px !important;
+          margin-bottom: 2px !important;
+          flex: 0 0 20px !important;
+        }
+        .print-page.print-density-ultra .planner-table th,
+        .print-page.print-density-ultra .planner-table td {
+          padding: 1px 2px !important;
+        }
+        .print-page.print-density-ultra .subject-name-cell,
+        .print-page.print-density-ultra .subject-name-cell p {
+          font-size: 8.5px !important;
+          line-height: 1.05 !important;
+        }
+        .print-page.print-density-ultra .assignment-cell,
+        .print-page.print-density-ultra .parent-note-item,
+        .print-page.print-density-ultra .formatted-parent-note-block,
+        .print-page.print-density-ultra .formatted-parent-note-block .note-header-title,
+        .print-page.print-density-ultra .formatted-parent-note-block .note-checkbox-icon,
+        .print-page.print-density-ultra .school-assignment-item {
+          font-size: 7.6px !important;
+          line-height: 1.05 !important;
+        }
+        .print-page.print-density-ultra .formatted-parent-note-block > div {
+          line-height: 1.05 !important;
+          margin-top: 0 !important;
+          margin-bottom: 0 !important;
+        }
+        .print-page.print-density-ultra .todo-list {
+          gap: 0.5px !important;
+        }
+        .print-page.print-density-ultra .sidebar-input {
+          height: 10.5px !important;
+          line-height: 10.5px !important;
+          font-size: 8.2px !important;
+        }
+        .print-page.print-density-ultra .activity-supplies-box {
+          font-size: 7.5px !important;
+          line-height: 1.05 !important;
+          padding: 1px 2px !important;
+        }
+
         /* PRINT STYLING FOR 2-PAGE PORTRAIT BINDER PDF */
         @media print {
           @page {
             size: letter portrait;
-            margin: 0.22in 0.28in;
+            margin: 0.25in 0.28in;
           }
 
           html, body, div, main, section, article, .planner-print-root {
@@ -5895,10 +6693,11 @@ function PlannerContent() {
           body {
             background: #ffffff !important;
             color: #000000 !important;
-            font-size: 10px !important;
+            font-size: 9.5px !important;
           }
 
           .planner-print-root {
+            display: block !important;
             width: 100% !important;
             padding: 0 !important;
             margin: 0 !important;
@@ -5910,8 +6709,9 @@ function PlannerContent() {
             padding: 0 !important;
             margin: 0 !important;
             width: 100% !important;
-            height: 10.45in !important;
-            max-height: 10.45in !important;
+            min-height: 0 !important;
+            height: 9.8in !important;
+            max-height: 9.8in !important;
             display: flex !important;
             flex-direction: column !important;
             break-after: page !important;
@@ -5930,77 +6730,115 @@ function PlannerContent() {
             page-break-after: avoid !important;
           }
 
+          .print-page-inner {
+            display: flex !important;
+            flex-direction: column !important;
+            flex: 1 1 0% !important;
+            width: 100%;
+            height: 100%;
+            min-height: 0 !important;
+            box-sizing: border-box !important;
+          }
+
           .planner-header {
-            height: 32px !important;
-            min-height: 32px !important;
-            max-height: 32px !important;
-            margin-bottom: 6px !important;
+            height: 28px !important;
+            min-height: 28px !important;
+            max-height: 28px !important;
+            margin-bottom: 4px !important;
             padding: 0 6px !important;
-            flex-shrink: 0 !important;
+            flex: 0 0 28px !important;
           }
 
           .planner-header span:first-of-type {
-            font-size: 18px !important;
+            font-size: 16px !important;
           }
 
           .planner-header span:last-of-type {
-            font-size: 32px !important;
+            font-size: 28px !important;
           }
 
           .week-header-text {
-            font-size: 12px !important;
+            font-size: 11.5px !important;
           }
 
           .planner-table {
-            flex: 1 !important;
-            height: 100% !important;
+            flex: 1 1 0% !important;
+            height: auto !important;
+            min-height: 0 !important;
+            width: 100% !important;
           }
 
           .planner-table tbody tr {
-            height: 1% !important;
+            height: auto !important;
           }
 
           .planner-table th,
           .planner-table td {
-            padding: 2px 4px !important;
+            padding: 2px 3.5px !important;
+          }
+
+          .subject-header-col,
+          .subject-name-cell,
+          .all-day-label-cell {
+            width: 108px !important;
+            min-width: 108px !important;
+            max-width: 108px !important;
           }
 
           .day-header-col {
-            padding: 3px 4px !important;
-            font-size: 10px !important;
+            padding: 2.5px 4px !important;
+            font-size: 9.5px !important;
+            line-height: 1.15 !important;
           }
 
           .subject-header-col {
-            padding: 3px 4px !important;
-            font-size: 10px !important;
+            padding: 2.5px 4px !important;
+            font-size: 9.5px !important;
+            line-height: 1.15 !important;
           }
 
           .subject-name-cell {
-            font-size: 11px !important;
-            padding: 2px 4px !important;
+            font-size: 10px !important;
+            padding: 2px 3.5px !important;
+            line-height: 1.15 !important;
+          }
+
+          .subject-name-cell p {
+            font-size: 10px !important;
+            line-height: 1.15 !important;
+          }
+
+          .subject-name-cell span {
+            font-size: 8px !important;
+            line-height: 1.1 !important;
+            margin-top: 1px !important;
           }
 
           .assignment-cell {
-            min-height: 28px !important;
+            min-height: 22px !important;
             height: auto !important;
-            padding: 2px 4px !important;
-            font-size: 10.5px !important;
-            line-height: 1.25 !important;
+            padding: 2px 3.5px !important;
+            font-size: 9.5px !important;
+            line-height: 1.18 !important;
           }
 
           .all-day-events-row {
             background-color: #f7f9fc !important;
+            height: auto !important;
+            min-height: 13px !important;
           }
 
           .all-day-label-cell {
-            font-size: 8px !important;
-            padding: 1px 3px !important;
+            font-size: 7.5px !important;
+            padding: 1px 2px !important;
             vertical-align: middle !important;
+            height: auto !important;
           }
 
           .all-day-events-cell {
             padding: 1px 3px !important;
             vertical-align: middle !important;
+            height: auto !important;
           }
 
           .all-day-items-wrapper {
@@ -6009,6 +6847,8 @@ function PlannerContent() {
             gap: 1px 3px !important;
             align-items: center !important;
             width: 100% !important;
+            height: auto !important;
+            min-height: 12px !important;
           }
 
           .holiday-banner-top {
@@ -6016,10 +6856,10 @@ function PlannerContent() {
             color: #000000 !important;
             border: 1.5px solid #000000 !important;
             font-weight: 800 !important;
-            font-size: 8px !important;
-            padding: 1px 3px !important;
+            font-size: 7.5px !important;
+            padding: 0.5px 3px !important;
             margin-bottom: 0 !important;
-            line-height: 1.15 !important;
+            line-height: 1.1 !important;
             display: inline-flex !important;
             align-items: center !important;
             white-space: nowrap !important;
@@ -6032,10 +6872,10 @@ function PlannerContent() {
             color: #000000 !important;
             border: 1px solid #333333 !important;
             font-weight: 700 !important;
-            font-size: 8px !important;
-            padding: 1px 3px !important;
+            font-size: 7.5px !important;
+            padding: 0.5px 3px !important;
             margin-bottom: 0 !important;
-            line-height: 1.15 !important;
+            line-height: 1.1 !important;
             display: inline-flex !important;
             align-items: center !important;
             white-space: nowrap !important;
@@ -6045,7 +6885,7 @@ function PlannerContent() {
 
           .all-day-empty {
             color: #777777 !important;
-            font-size: 8px !important;
+            font-size: 7.5px !important;
             text-align: center !important;
             width: 100% !important;
             line-height: 1 !important;
@@ -6058,117 +6898,172 @@ function PlannerContent() {
           }
 
           .page2-container {
-            flex: 1 !important;
-            height: 100% !important;
+            flex: 1 1 0% !important;
+            height: auto !important;
+            min-height: 0 !important;
             display: flex !important;
+            align-items: stretch !important;
           }
 
           .page2-table-wrapper {
+            width: calc(108px + ((100% - 108px) * (2 / 3))) !important;
+            padding-right: 6px !important;
             display: flex !important;
             flex-direction: column !important;
-            height: 100% !important;
+            height: auto !important;
+            min-height: 0 !important;
           }
 
           .sidebar-column {
+            width: calc((100% - 108px) * (1 / 3)) !important;
+            padding-left: 6px !important;
             display: flex !important;
             flex-direction: column !important;
-            justify-content: space-between !important;
-            height: 100% !important;
+            justify-content: flex-start !important;
+            height: auto !important;
+            min-height: 0 !important;
           }
 
           .parent-note-item {
             margin-bottom: 1px !important;
-            font-size: 10.5px !important;
-            line-height: 1.25 !important;
+            font-size: 9.5px !important;
+            line-height: 1.18 !important;
           }
 
           .formatted-parent-note-block {
-            font-size: 10.5px !important;
+            font-size: 9.5px !important;
+            line-height: 1.18 !important;
             margin-bottom: 1px !important;
             padding-bottom: 0 !important;
           }
 
           .formatted-parent-note-block .note-header-title {
-            font-size: 10.5px !important;
+            font-size: 9.5px !important;
+            line-height: 1.15 !important;
           }
 
           .formatted-parent-note-block .note-checkbox-icon {
-            font-size: 10.5px !important;
+            font-size: 9.5px !important;
+            line-height: 1.1 !important;
             padding-top: 0 !important;
           }
 
           .formatted-parent-note-block > div {
-            margin-top: 1px !important;
-            margin-bottom: 1px !important;
-            line-height: 1.25 !important;
+            margin-top: 0.5px !important;
+            margin-bottom: 0.5px !important;
+            line-height: 1.18 !important;
           }
 
           .school-assignment-item {
             margin-bottom: 1px !important;
-            font-size: 10.5px !important;
-            line-height: 1.25 !important;
+            font-size: 9.5px !important;
+            line-height: 1.18 !important;
             color: #000000 !important;
             font-weight: 700 !important;
           }
 
           .sidebar-section {
-            margin-bottom: 4px !important;
+            margin-bottom: 3px !important;
+            flex-shrink: 0 !important;
+          }
+
+          .sidebar-section.sidebar-section-grow {
+            display: flex !important;
+            flex-direction: column !important;
+            flex: 1 1 0% !important;
+            min-height: 0 !important;
+            margin-bottom: 3px !important;
+          }
+
+          .sidebar-section.sidebar-section-grow:last-child {
+            margin-bottom: 0 !important;
+            flex: 1.2 1 0% !important;
           }
 
           .sidebar-header-badge {
-            font-size: 10px !important;
+            font-size: 9px !important;
             padding: 1px 3px !important;
             margin-bottom: 2px !important;
+            flex-shrink: 0 !important;
           }
 
           .sidebar-textarea-next-month {
-            flex: 1 !important;
-            min-height: 60px !important;
-            font-size: 10px !important;
+            flex: 1 1 0% !important;
+            height: auto !important;
+            min-height: 36px !important;
+            font-size: 9.5px !important;
           }
 
           .sidebar-textarea-notes {
-            flex: 1.2 !important;
-            min-height: 75px !important;
-            font-size: 10px !important;
+            flex: 1 1 0% !important;
+            height: auto !important;
+            min-height: 42px !important;
+            font-size: 9.5px !important;
+          }
+
+          .activity-supplies-box {
+            padding: 2px 4px !important;
+            margin-bottom: 2px !important;
+            font-size: 8.5px !important;
+            line-height: 1.15 !important;
+            flex-shrink: 0 !important;
+          }
+
+          .activity-supplies-title {
+            font-size: 8px !important;
+            margin-bottom: 1px !important;
+          }
+
+          .activity-supplies-item {
+            margin-bottom: 1.5px !important;
           }
 
           .todo-list {
-            gap: 2px !important;
+            gap: 1.5px !important;
           }
 
           .todo-item {
             gap: 4px !important;
+            min-height: 12px !important;
           }
 
           .checkbox-square {
-            width: 10px !important;
-            height: 10px !important;
+            width: 9px !important;
+            height: 9px !important;
           }
 
           .sidebar-input {
-            font-size: 10px !important;
+            font-size: 9.5px !important;
+            height: 13px !important;
+            line-height: 13px !important;
+            padding: 0 1px !important;
             border-bottom: 1px solid #999999 !important;
           }
 
           .sidebar-textarea {
-            font-size: 10px !important;
+            font-size: 9.5px !important;
+            line-height: 1.2 !important;
             border: 1px solid #999999 !important;
             padding: 3px !important;
           }
 
           .habits-table {
-            font-size: 9.5px !important;
+            font-size: 9px !important;
           }
 
           .habits-table th,
           .habits-table td {
             padding: 1px 0 !important;
+            line-height: 1.1 !important;
+          }
+
+          .habit-title-cell {
+            font-size: 9px !important;
           }
 
           .bubble-circle {
-            width: 8px !important;
-            height: 8px !important;
+            width: 7.5px !important;
+            height: 7.5px !important;
           }
         }
       `}</style>

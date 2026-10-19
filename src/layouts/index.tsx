@@ -119,7 +119,18 @@ export const Layout: FC<LayoutProps> = ({ children }) => {
   }
 
   return (
-    <Box sx={{ display: 'flex', minHeight: '100vh', width: '100%' }}>
+    <Box
+      sx={{
+        display: 'flex',
+        minHeight: '100vh',
+        width: '100%',
+        '@media print': {
+          display: 'block !important',
+          minHeight: '0 !important',
+          height: 'auto !important',
+        },
+      }}
+    >
       <Sidebar
         openMobile={mobileNavOpen}
         onCloseMobile={() => setMobileNavOpen(false)}
@@ -137,8 +148,11 @@ export const Layout: FC<LayoutProps> = ({ children }) => {
           minHeight: '100vh',
           backgroundColor: 'background.default',
           '@media print': {
+            display: 'block !important',
             ml: '0 !important',
             width: '100% !important',
+            minHeight: '0 !important',
+            height: 'auto !important',
             pt: '0 !important',
             pb: '0 !important',
             px: '0 !important',

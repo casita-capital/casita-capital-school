@@ -78,9 +78,12 @@ import {
   formatApiWeekBlockForWeekday,
   generateSubjectWeekNotesStructured,
   getActiveCourseSyllabus,
+  getApiSyllabusWeekStartDay,
   getOfficialCourseSubtitle,
+  getPreviousWeekdaysBeforeStartDay,
   getSubjectCourseSyllabi,
   parseRecurringConfig,
+  resolveApiSyllabusWeekForWeekday,
   resolveSubjectCountersForWeek,
   resolveSyllabusDaySupplies,
 } from 'src/utils/recurring-planner';
@@ -2027,6 +2030,37 @@ function AutomationsContent() {
                               <Stack direction="row" spacing={2} alignItems="center" flexWrap="wrap">
                                 <Stack direction="row" spacing={1} alignItems="center">
                                   <Typography variant="caption" fontWeight={700} color="text.secondary">
+                                    Syllabus Week Starts On (Day 1):
+                                  </Typography>
+                                  <TextField
+                                    select
+                                    SelectProps={{ native: true }}
+                                    size="small"
+                                    value={getApiSyllabusWeekStartDay(apiAutoPop)}
+                                    onChange={(e) => {
+                                      const nextStartDay = e.target.value as DayKey;
+                                      const nextAuto: ApiSyllabusAutoPopulateConfig = {
+                                        ...apiAutoPop,
+                                        week_start_day: nextStartDay,
+                                      };
+                                      void handleUpdateSubjectApiAutoPopulate(
+                                        selectedSub,
+                                        nextAuto,
+                                        `Syllabus week start day set to ${DAY_LABELS[nextStartDay]} for ${selectedSub.name}`
+                                      );
+                                    }}
+                                    sx={{ minWidth: 120 }}
+                                  >
+                                    {DAY_KEYS.map((dk) => (
+                                      <option key={dk} value={dk}>
+                                        {DAY_LABELS[dk]}
+                                      </option>
+                                    ))}
+                                  </TextField>
+                                </Stack>
+
+                                <Stack direction="row" spacing={1} alignItems="center">
+                                  <Typography variant="caption" fontWeight={700} color="text.secondary">
                                     Place Weekly Quiz/Assignment On:
                                   </Typography>
                                   <TextField
@@ -2078,11 +2112,42 @@ function AutomationsContent() {
                               </Stack>
                             </Stack>
 
+                            {(() => {
+                              const startDay = getApiSyllabusWeekStartDay(apiAutoPop);
+                              if (startDay === 'monday') return null;
+                              const prevDays = getPreviousWeekdaysBeforeStartDay(startDay, apiAutoPop);
+                              return (
+                                <Box
+                                  sx={{
+                                    mb: 2,
+                                    p: 1.25,
+                                    borderRadius: 1,
+                                    bgcolor: alpha(theme.palette.warning.main, 0.08),
+                                    border: `1px solid ${alpha(theme.palette.warning.main, 0.35)}`,
+                                  }}
+                                >
+                                  <Typography variant="caption" color="text.primary" sx={{ fontSize: '0.76rem' }}>
+                                    <strong>2-Week Syllabus Span Active:</strong> Because Day 1 of this class starts on{' '}
+                                    <strong>{DAY_LABELS[startDay]}</strong>, selecting <strong>Week N</strong> in the
+                                    Weekly Binder will pull{' '}
+                                    <strong>{prevDays.map((d) => DAY_LABELS[d]).join(', ')}</strong> from the previous
+                                    syllabus week (<strong>Week N &minus; 1</strong>) and start{' '}
+                                    <strong>Week N (Day 1)</strong> on <strong>{DAY_LABELS[startDay]}</strong>.
+                                  </Typography>
+                                </Box>
+                              );
+                            })()}
+
                             {/* 5-Day Weekday Split Configuration Grid */}
                             <Grid container spacing={1.5} sx={{ mb: 2.5 }}>
                               {DAY_KEYS.map((dk) => {
                                 const rule = apiAutoPop.weekday_rules[dk];
                                 const isQuizDay = apiAutoPop.quiz_assignment_target_day === dk;
+                                const startDay = getApiSyllabusWeekStartDay(apiAutoPop);
+                                const isSpanning = startDay !== 'monday';
+                                const isBeforeStartDay =
+                                  isSpanning && DAY_KEYS.indexOf(dk) < DAY_KEYS.indexOf(startDay);
+                                const isStartDay = isSpanning && dk === startDay;
                                 return (
                                   <Grid item xs={12} sm={6} md={2.4} key={dk}>
                                     <Paper
@@ -2105,18 +2170,39 @@ function AutomationsContent() {
                                         justifyContent="space-between"
                                         alignItems="center"
                                         mb={1}
+                                        flexWrap="wrap"
+                                        gap={0.5}
                                       >
                                         <Typography variant="caption" fontWeight={800} sx={{ textTransform: 'uppercase' }}>
                                           {DAY_LABELS[dk]}
                                         </Typography>
-                                        {isQuizDay && (
-                                          <Chip
-                                            label="Quiz Day"
-                                            size="small"
-                                            color="secondary"
-                                            sx={{ height: 20, fontSize: '0.75rem', fontWeight: 800 }}
-                                          />
-                                        )}
+                                        <Stack direction="row" spacing={0.5} alignItems="center">
+                                          {isBeforeStartDay && rule.api_source !== 'none' && (
+                                            <Chip
+                                              label="Prev Wk (N-1)"
+                                              size="small"
+                                              color="warning"
+                                              variant="outlined"
+                                              sx={{ height: 18, fontSize: '0.65rem', fontWeight: 800 }}
+                                            />
+                                          )}
+                                          {isStartDay && (
+                                            <Chip
+                                              label="Starts Wk N"
+                                              size="small"
+                                              color="primary"
+                                              sx={{ height: 18, fontSize: '0.65rem', fontWeight: 800 }}
+                                            />
+                                          )}
+                                          {isQuizDay && (
+                                            <Chip
+                                              label="Quiz Day"
+                                              size="small"
+                                              color="secondary"
+                                              sx={{ height: 20, fontSize: '0.75rem', fontWeight: 800 }}
+                                            />
+                                          )}
+                                        </Stack>
                                       </Stack>
 
                                       <Stack spacing={1}>
@@ -2141,6 +2227,7 @@ function AutomationsContent() {
                                               const nextSrc = e.target.value as ApiWeekdaySplitSource;
                                               const nextAuto: ApiSyllabusAutoPopulateConfig = {
                                                 ...apiAutoPop,
+                                                ...(nextSrc === 'day_1' ? { week_start_day: dk } : {}),
                                                 weekday_rules: {
                                                   ...apiAutoPop.weekday_rules,
                                                   [dk]: {
@@ -2289,11 +2376,21 @@ function AutomationsContent() {
                                       onChange={(e) => setPreviewSyllabusWeekNum(Number(e.target.value))}
                                       sx={{ minWidth: 160 }}
                                     >
-                                      {apiWeeks.map((w) => (
-                                        <option key={w.week_number} value={w.week_number}>
-                                          {w.section_title}
-                                        </option>
-                                      ))}
+                                      {apiWeeks.map((w) => {
+                                        const startDay = getApiSyllabusWeekStartDay(apiAutoPop);
+                                        const spanInfo =
+                                          startDay !== 'monday'
+                                            ? w.week_number > 1
+                                              ? ` (Starts ${DAY_LABELS[startDay]} • Prev days Wk ${w.week_number - 1})`
+                                              : ` (Starts ${DAY_LABELS[startDay]})`
+                                            : '';
+                                        return (
+                                          <option key={w.week_number} value={w.week_number}>
+                                            {w.section_title}
+                                            {spanInfo}
+                                          </option>
+                                        );
+                                      })}
                                     </TextField>
                                   </Stack>
 
@@ -2318,14 +2415,22 @@ function AutomationsContent() {
 
                                 <Grid container spacing={1.25}>
                                   {DAY_KEYS.map((dk) => {
+                                    const resolvedPreviewDay = resolveApiSyllabusWeekForWeekday(
+                                      apiWeeks,
+                                      selectedPreviewWeekObj.week_number,
+                                      dk,
+                                      apiAutoPop
+                                    );
+                                    const targetWeekForDay =
+                                      resolvedPreviewDay.weekObj || selectedPreviewWeekObj;
                                     const previewBlock = formatApiWeekBlockForWeekday(
-                                      selectedPreviewWeekObj,
+                                      targetWeekForDay,
                                       apiAutoPop.weekday_rules[dk],
                                       {
-                                        week: selectedPreviewWeekObj.week_number,
-                                        class_num: selectedPreviewWeekObj.week_number,
-                                        lesson: selectedPreviewWeekObj.week_number,
-                                        prev_lesson: Math.max(1, selectedPreviewWeekObj.week_number - 1),
+                                        week: targetWeekForDay.week_number,
+                                        class_num: targetWeekForDay.week_number,
+                                        lesson: targetWeekForDay.week_number,
+                                        prev_lesson: Math.max(1, targetWeekForDay.week_number - 1),
                                       }
                                     );
                                     const previewText = [previewBlock.title, previewBlock.description]
@@ -2333,7 +2438,7 @@ function AutomationsContent() {
                                       .join('\n');
                                     const isTargetQuizDay =
                                       apiAutoPop.quiz_assignment_target_day === dk &&
-                                      selectedPreviewWeekObj.linked_assessments.length > 0;
+                                      targetWeekForDay.linked_assessments.length > 0;
                                     return (
                                       <Grid item xs={12} sm={6} md={2.4} key={dk}>
                                         <Box
@@ -2350,16 +2455,38 @@ function AutomationsContent() {
                                             minHeight: 96,
                                           }}
                                         >
-                                          <Typography
-                                            variant="caption"
-                                            fontWeight={800}
-                                            color="text.secondary"
-                                            display="block"
+                                          <Stack
+                                            direction="row"
+                                            justifyContent="space-between"
+                                            alignItems="center"
                                             mb={0.5}
-                                            sx={{ fontSize: '0.75rem', textTransform: 'uppercase' }}
                                           >
-                                            {DAY_LABELS[dk]}
-                                          </Typography>
+                                            <Typography
+                                              variant="caption"
+                                              fontWeight={800}
+                                              color="text.secondary"
+                                              sx={{ fontSize: '0.75rem', textTransform: 'uppercase' }}
+                                            >
+                                              {DAY_LABELS[dk]}
+                                            </Typography>
+                                            {previewText && (
+                                              <Chip
+                                                size="small"
+                                                label={`Wk ${targetWeekForDay.week_number}`}
+                                                color={
+                                                  resolvedPreviewDay.isFromPreviousWeek
+                                                    ? 'warning'
+                                                    : 'primary'
+                                                }
+                                                variant="outlined"
+                                                sx={{
+                                                  height: 18,
+                                                  fontSize: '0.65rem',
+                                                  fontWeight: 700,
+                                                }}
+                                              />
+                                            )}
+                                          </Stack>
                                           {previewText ? (
                                             <Typography
                                               variant="caption"
@@ -2381,7 +2508,7 @@ function AutomationsContent() {
                                           )}
                                           {isTargetQuizDay && (
                                             <Stack spacing={0.5} mt={1}>
-                                              {selectedPreviewWeekObj.linked_assessments.map((la) => (
+                                              {targetWeekForDay.linked_assessments.map((la) => (
                                                 <Chip
                                                   key={la.cmid}
                                                   label={`Quiz/Assn: ${la.name}`}
