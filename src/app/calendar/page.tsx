@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Box,
@@ -123,6 +123,57 @@ export default function MasterCalendarPage() {
   const monthKey = `${year}-${String(month + 1).padStart(2, '0')}`;
 
   const [monthlyNotes, setMonthlyNotes] = useState('');
+  const printContainerRef = useRef<HTMLDivElement | null>(null);
+  const printInnerRef = useRef<HTMLDivElement | null>(null);
+
+  const resetMonthlyPrintAutoFit = useCallback(() => {
+    const containerEl = printContainerRef.current;
+    const innerEl = printInnerRef.current;
+    if (containerEl) {
+      containerEl.classList.remove('print-measuring');
+    }
+    if (innerEl) {
+      innerEl.style.transform = '';
+      innerEl.style.transformOrigin = '';
+      innerEl.style.width = '';
+      innerEl.style.height = '';
+    }
+  }, []);
+
+  const applyMonthlyPrintAutoFit = useCallback(() => {
+    const containerEl = printContainerRef.current;
+    const innerEl = printInnerRef.current;
+    if (!containerEl || !innerEl) return;
+
+    resetMonthlyPrintAutoFit();
+
+    // Printable US Letter Landscape height at 96dpi (8.5in - 0.5in margins = 8.0in -> 760px safe target)
+    const TARGET_LANDSCAPE_HEIGHT_PX = 756;
+    containerEl.classList.add('print-measuring');
+
+    const contentHeight = innerEl.scrollHeight;
+    if (contentHeight > TARGET_LANDSCAPE_HEIGHT_PX) {
+      const rawScale = TARGET_LANDSCAPE_HEIGHT_PX / contentHeight;
+      const scale = Math.max(0.55, Math.floor(rawScale * 1000) / 1000);
+      innerEl.style.width = `${(100 / scale).toFixed(3)}%`;
+      innerEl.style.transform = `scale(${scale})`;
+      innerEl.style.transformOrigin = 'top left';
+      innerEl.style.height = `${Math.floor(TARGET_LANDSCAPE_HEIGHT_PX / scale)}px`;
+    }
+
+    containerEl.classList.remove('print-measuring');
+  }, [resetMonthlyPrintAutoFit]);
+
+  useEffect(() => {
+    const onBeforePrint = () => applyMonthlyPrintAutoFit();
+    const onAfterPrint = () => resetMonthlyPrintAutoFit();
+    window.addEventListener('beforeprint', onBeforePrint);
+    window.addEventListener('afterprint', onAfterPrint);
+    return () => {
+      window.removeEventListener('beforeprint', onBeforePrint);
+      window.removeEventListener('afterprint', onAfterPrint);
+    };
+  }, [applyMonthlyPrintAutoFit, resetMonthlyPrintAutoFit]);
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -268,6 +319,7 @@ export default function MasterCalendarPage() {
   };
 
   const handlePrint = () => {
+    applyMonthlyPrintAutoFit();
     window.print();
   };
 
@@ -539,6 +591,7 @@ export default function MasterCalendarPage() {
 
       {/* PRINTABLE MONTHLY CALENDAR CONTAINER */}
       <Box
+        ref={printContainerRef}
         className="monthly-print-container"
         sx={{
           bgcolor: 'background.paper',
@@ -549,8 +602,10 @@ export default function MasterCalendarPage() {
           boxShadow: 4,
         }}
       >
+        <div ref={printInnerRef} className="monthly-print-inner">
         {/* Printable Title Banner */}
         <Box
+          className="monthly-print-header"
           display="flex"
           alignItems="center"
           justifyContent="space-between"
@@ -560,22 +615,41 @@ export default function MasterCalendarPage() {
           borderColor="divider"
         >
           <Box>
-            <Typography variant="h3" fontWeight={800} color="primary.main" letterSpacing={0.5}>
+            <Typography
+              variant="h3"
+              fontWeight={800}
+              color="primary.main"
+              letterSpacing={0.5}
+              className="monthly-print-title"
+            >
               {monthNames[month].toUpperCase()} {year}
             </Typography>
-            <Typography variant="subtitle2" fontWeight={700} color="text.secondary">
+            <Typography
+              variant="subtitle2"
+              fontWeight={700}
+              color="text.secondary"
+              className="monthly-print-subtitle"
+            >
               {schoolName} — Master School &amp; Family Calendar
             </Typography>
           </Box>
-          <Typography variant="caption" fontWeight={600} color="text.secondary">
+          <Typography
+            variant="caption"
+            fontWeight={600}
+            color="text.secondary"
+            className="monthly-print-page-label"
+          >
             Page 1 of 1 (Monthly View)
           </Typography>
         </Box>
 
         {/* Month Grid Table */}
-        <Box sx={{ borderTop: '1px solid', borderLeft: '1px solid', borderColor: 'divider' }}>
+        <Box
+          className="monthly-grid-wrapper"
+          sx={{ borderTop: '1px solid', borderLeft: '1px solid', borderColor: 'divider' }}
+        >
           {/* Header Row: Column for Edit Week + 7 Days */}
-          <Grid container sx={{ bgcolor: 'action.hover' }}>
+          <Grid container className="monthly-grid-header-row" sx={{ bgcolor: 'action.hover' }}>
             <Grid
               item
               xs={1.4}
@@ -599,6 +673,7 @@ export default function MasterCalendarPage() {
                 item
                 xs={(12 - 1.4) / 7}
                 key={dayName}
+                className="day-col-head"
                 sx={{
                   p: 1,
                   borderRight: '1px solid',
@@ -622,7 +697,7 @@ export default function MasterCalendarPage() {
             const representativeDate = firstValidDate || new Date(year, month, 1);
 
             return (
-              <Grid container key={`week-row-${wIndex}`}>
+              <Grid container key={`week-row-${wIndex}`} className="monthly-week-row">
                 {/* Single Edit Week Button Column on Left (hidden during print) */}
                 <Grid
                   item
@@ -848,14 +923,26 @@ export default function MasterCalendarPage() {
         </Box>
 
         {/* Bottom Monthly Notes & Print Signature Section */}
-        <Box mt={3} pt={2} borderTop="1px solid" borderColor="divider">
-          <Typography variant="subtitle2" fontWeight={800} mb={1}>
+        <Box
+          className="monthly-notes-section"
+          mt={3}
+          pt={2}
+          borderTop="1px solid"
+          borderColor="divider"
+        >
+          <Typography
+            variant="subtitle2"
+            fontWeight={800}
+            mb={1}
+            className="monthly-notes-heading"
+          >
             Monthly Parent &amp; Teacher Notes (Prints at Bottom of Calendar Page):
           </Typography>
           <TextField
             fullWidth
             multiline
-            rows={3}
+            rows={2}
+            className="monthly-notes-input no-print"
             placeholder="Type monthly curriculum goals, field trip reminders, or home study focus notes here..."
             value={monthlyNotes}
             onChange={(e) => handleUpdateMonthlyNotes(e.target.value)}
@@ -867,19 +954,120 @@ export default function MasterCalendarPage() {
               },
             }}
           />
+          {/* Clean Print-Only Notes Box (never overflows onto a 2nd page) */}
+          <div className="monthly-notes-print-box">
+            {monthlyNotes.trim() ? monthlyNotes : ''}
+          </div>
         </Box>
+        </div>
       </Box>
 
-      {/* PRINT MEDIA STYLES FOR 1-PAGE PORTRAIT MONTHLY CALENDAR */}
+      {/* PRINT MEDIA STYLES FOR 1-PAGE LANDSCAPE MONTHLY CALENDAR */}
       <style jsx global>{`
+        .monthly-notes-print-box {
+          display: none;
+        }
+
+        /* Pre-print measurement mode (matches US Letter Landscape printable dimensions) */
+        .monthly-print-container.print-measuring {
+          width: 1002px !important;
+          padding: 0 !important;
+          margin: 0 !important;
+          border: none !important;
+          box-shadow: none !important;
+        }
+        .monthly-print-container.print-measuring .monthly-print-inner {
+          display: flex !important;
+          flex-direction: column !important;
+          width: 1002px !important;
+          min-height: 756px !important;
+          height: auto !important;
+        }
+        .monthly-print-container.print-measuring .no-print,
+        .monthly-print-container.print-measuring .week-col,
+        .monthly-print-container.print-measuring .week-col-head {
+          display: none !important;
+        }
+        .monthly-print-container.print-measuring .monthly-print-header {
+          margin-bottom: 5px !important;
+          padding-bottom: 4px !important;
+          flex: 0 0 auto !important;
+        }
+        .monthly-print-container.print-measuring .monthly-print-title {
+          font-size: 18px !important;
+          line-height: 1.1 !important;
+        }
+        .monthly-print-container.print-measuring .monthly-print-subtitle,
+        .monthly-print-container.print-measuring .monthly-print-page-label {
+          font-size: 10px !important;
+          line-height: 1.15 !important;
+        }
+        .monthly-print-container.print-measuring .monthly-grid-wrapper {
+          flex: 1 1 0% !important;
+          display: flex !important;
+          flex-direction: column !important;
+          min-height: 0 !important;
+        }
+        .monthly-print-container.print-measuring .monthly-grid-header-row {
+          flex: 0 0 auto !important;
+        }
+        .monthly-print-container.print-measuring .monthly-week-row {
+          flex: 1 1 0% !important;
+          min-height: 0 !important;
+        }
+        .monthly-print-container.print-measuring .day-col-head,
+        .monthly-print-container.print-measuring .day-col {
+          flex-basis: calc(100% / 7) !important;
+          max-width: calc(100% / 7) !important;
+        }
+        .monthly-print-container.print-measuring .day-col-head {
+          padding: 3px 4px !important;
+          font-size: 10px !important;
+        }
+        .monthly-print-container.print-measuring .day-col {
+          min-height: 0 !important;
+          padding: 3px 5px !important;
+        }
+        .monthly-print-container.print-measuring .monthly-notes-section {
+          margin-top: 6px !important;
+          padding-top: 4px !important;
+          flex: 0 0 auto !important;
+        }
+        .monthly-print-container.print-measuring .monthly-notes-heading {
+          font-size: 10px !important;
+          margin-bottom: 2px !important;
+        }
+        .monthly-print-container.print-measuring .monthly-notes-print-box {
+          display: block !important;
+          min-height: 34px !important;
+          max-height: 48px !important;
+          border: 1px solid #999999 !important;
+          border-radius: 4px !important;
+          padding: 4px 8px !important;
+          font-size: 10px !important;
+          line-height: 1.25 !important;
+          white-space: pre-wrap !important;
+          overflow: hidden !important;
+        }
+
         @media print {
-          .no-print, header, nav, aside {
-            display: none !important;
+          @page {
+            size: letter landscape;
+            margin: 0.22in 0.28in;
           }
 
-          body {
+          html, body, main {
             background-color: #ffffff !important;
             color: #000000 !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            height: auto !important;
+            min-height: 0 !important;
+            overflow: visible !important;
+          }
+
+          .no-print, header, nav, aside, .MuiDrawer-root, .MuiBackdrop-root, .MuiModal-root {
+            display: none !important;
           }
 
           .monthly-print-container {
@@ -888,30 +1076,135 @@ export default function MasterCalendarPage() {
             padding: 0 !important;
             margin: 0 !important;
             width: 100% !important;
+            height: 7.9in !important;
+            max-height: 7.9in !important;
             background-color: #ffffff !important;
+            display: flex !important;
+            flex-direction: column !important;
+            box-sizing: border-box !important;
+            overflow: hidden !important;
+            page-break-after: avoid !important;
+            break-after: avoid !important;
+            page-break-inside: avoid !important;
+            break-inside: avoid !important;
+          }
+
+          .monthly-print-inner {
+            display: flex !important;
+            flex-direction: column !important;
+            flex: 1 1 0% !important;
+            width: 100%;
+            height: 100%;
+            min-height: 0 !important;
+            box-sizing: border-box !important;
+          }
+
+          .monthly-print-header {
+            margin-bottom: 5px !important;
+            padding-bottom: 4px !important;
+            border-bottom: 1.5px solid #666666 !important;
+            flex: 0 0 auto !important;
+          }
+
+          .monthly-print-title {
+            font-size: 18px !important;
+            line-height: 1.1 !important;
+            color: #000000 !important;
+          }
+
+          .monthly-print-subtitle,
+          .monthly-print-page-label {
+            font-size: 10px !important;
+            line-height: 1.15 !important;
+            color: #333333 !important;
+          }
+
+          .monthly-grid-wrapper {
+            flex: 1 1 0% !important;
+            display: flex !important;
+            flex-direction: column !important;
+            min-height: 0 !important;
+            border-color: #999999 !important;
+          }
+
+          .monthly-grid-header-row {
+            flex: 0 0 auto !important;
+          }
+
+          .monthly-week-row {
+            flex: 1 1 0% !important;
+            min-height: 0 !important;
           }
 
           .week-col, .week-col-head {
             display: none !important;
           }
 
+          .day-col-head,
           .day-col {
-            min-height: 110px !important;
+            flex-basis: calc(100% / 7) !important;
+            max-width: calc(100% / 7) !important;
             border-color: #999999 !important;
+          }
+
+          .day-col-head {
+            padding: 3px 4px !important;
+            font-size: 10px !important;
+            background-color: #f2f2f2 !important;
+            color: #000000 !important;
+          }
+
+          .day-col {
+            min-height: 0 !important;
+            padding: 3px 5px !important;
             background-color: #ffffff !important;
+            overflow: hidden !important;
           }
 
           .empty-cell {
-            background-color: #f5f5f5 !important;
+            background-color: #f7f7f7 !important;
           }
 
           .date-number {
             color: #000000 !important;
+            width: 18px !important;
+            height: 18px !important;
+            font-size: 10.5px !important;
           }
 
           .holiday-chip {
             background-color: #333333 !important;
             color: #ffffff !important;
+            height: 15px !important;
+            font-size: 9px !important;
+          }
+
+          .monthly-notes-section {
+            margin-top: 6px !important;
+            padding-top: 4px !important;
+            border-top: 1px solid #999999 !important;
+            flex: 0 0 auto !important;
+          }
+
+          .monthly-notes-heading {
+            font-size: 10px !important;
+            margin-bottom: 2px !important;
+            color: #000000 !important;
+          }
+
+          .monthly-notes-print-box {
+            display: block !important;
+            min-height: 34px !important;
+            max-height: 48px !important;
+            border: 1px solid #999999 !important;
+            border-radius: 4px !important;
+            padding: 4px 8px !important;
+            font-size: 10px !important;
+            line-height: 1.25 !important;
+            color: #000000 !important;
+            background-color: #ffffff !important;
+            white-space: pre-wrap !important;
+            overflow: hidden !important;
           }
         }
       `}</style>

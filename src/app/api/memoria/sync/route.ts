@@ -77,6 +77,8 @@ interface MoodleGradeItemRaw {
   weightformatted?: string;
   feedback?: string;
   status?: string;
+  gradedatesubmitted?: number | null;
+  gradedategraded?: number | null;
 }
 
 interface MoodleTableCell {
@@ -729,6 +731,14 @@ export async function POST(req: NextRequest) {
                   ? stripHtmlInline(gi.feedback)
                   : undefined,
               status: typeof gi.status === 'string' ? gi.status : undefined,
+              gradedatesubmitted:
+                typeof gi.gradedatesubmitted === 'number' && gi.gradedatesubmitted > 0
+                  ? gi.gradedatesubmitted
+                  : null,
+              gradedategraded:
+                typeof gi.gradedategraded === 'number' && gi.gradedategraded > 0
+                  ? gi.gradedategraded
+                  : null,
             };
             if (typeof parsedGi.cmid === 'number') {
               gradeItemsByCmid.set(parsedGi.cmid, parsedGi);
@@ -1072,10 +1082,14 @@ export async function POST(req: NextRequest) {
               ? Number(gi.graderaw.toFixed(2))
               : tm ? parseNumericFromFormatted(tm.grade_formatted) : null;
           const gradeMax = gi && typeof gi.grademax === 'number' ? gi.grademax : 100;
+          const hasSubmittedTimestamp =
+            Boolean(gi && typeof gi.gradedatesubmitted === 'number' && gi.gradedatesubmitted > 0);
 
           const statusLabel: 'graded' | 'submitted' | 'upcoming' | 'open' =
             gradeRaw !== null
               ? 'graded'
+              : hasSubmittedTimestamp
+              ? 'submitted'
               : openDateStr && openDateStr <= nowIso.split('T')[0]
               ? 'open'
               : 'upcoming';
@@ -1191,6 +1205,10 @@ export async function POST(req: NextRequest) {
           is_ungraded_bucket: tm?.is_ungraded_bucket || false,
           open_date: itemOpenDate,
           due_date: itemDueDate,
+          submitted_at:
+            typeof gi.gradedatesubmitted === 'number' && gi.gradedatesubmitted > 0
+              ? new Date(gi.gradedatesubmitted * 1000).toISOString()
+              : null,
         });
       }
 
@@ -1358,6 +1376,7 @@ export async function POST(req: NextRequest) {
 
         const cleanTitle = item.item_name
           .replace(/--DUE[\s\S]*$/i, '')
+          .replace(/^LC 4th Edition\s+/i, '')
           .trim();
 
         const isFinalDraft =
@@ -1390,6 +1409,13 @@ export async function POST(req: NextRequest) {
             : null;
         const isManualOverride =
           existingRawMeta !== null && existingRawMeta.manual_override === true;
+        const isSubmittedInApi = Boolean(item.submitted_at);
+        const wasAlreadyCompletedOrSubmitted = Boolean(
+          existingMatch &&
+            (existingMatch.status === 'completed' ||
+              existingMatch.workflow_status === 'completed' ||
+              existingMatch.workflow_status === 'submitted')
+        );
 
         const moodleMeta: MoodleAssignmentMetadata = {
           moodle_cmid: item.cmid ?? undefined,
@@ -1407,6 +1433,11 @@ export async function POST(req: NextRequest) {
           api_percentage_score: pct,
           api_letter_grade: letter,
           api_feedback: item.feedback,
+          api_submitted_at:
+            item.submitted_at ??
+            (typeof existingRawMeta?.api_submitted_at === 'string'
+              ? existingRawMeta.api_submitted_at
+              : null),
           manual_override: isManualOverride,
           manual_override_at:
             isManualOverride && typeof existingRawMeta?.manual_override_at === 'string'
@@ -1417,8 +1448,35 @@ export async function POST(req: NextRequest) {
         };
 
         const matchedWeekObj = apiWeeks.find((w) => w.week_number === item.week_number);
-        const dueDate = item.due_date || '2026-10-16';
-        const openDate = item.open_date || dueDate;
+        const weekRange = matchedWeekObj
+          ? parseSectionDateRange(matchedWeekObj.section_title)
+          : null;
+        let resolvedDueDate = item.due_date || weekRange?.fridayCloseDate || '2026-10-16';
+        if (weekRange && item.due_date) {
+          const monMs = Date.parse(`${weekRange.mondayStartDate}T00:00:00Z`);
+          const dueMs = Date.parse(`${item.due_date}T00:00:00Z`);
+          const daysAfterMon = Math.round((dueMs - monMs) / (1000 * 60 * 60 * 24));
+          // If Moodle has a blanket quarter-end close date (> 10 days after week start),
+          // preserve an already-scheduled due_date or place on the week's completion Thursday (+10 days for Tue-start courses)
+          if (daysAfterMon > 10) {
+            if (existingMatch?.due_date && existingMatch.due_date !== item.due_date) {
+              resolvedDueDate = existingMatch.due_date;
+            } else {
+              const targetDate = new Date(monMs);
+              const offsetDays =
+                autoPopulateCfg.week_start_day && autoPopulateCfg.week_start_day !== 'monday'
+                  ? 10
+                  : 3;
+              targetDate.setUTCDate(targetDate.getUTCDate() + offsetDays);
+              const ty = targetDate.getUTCFullYear();
+              const tm = String(targetDate.getUTCMonth() + 1).padStart(2, '0');
+              const td = String(targetDate.getUTCDate()).padStart(2, '0');
+              resolvedDueDate = `${ty}-${tm}-${td}`;
+            }
+          }
+        }
+        const dueDate = resolvedDueDate;
+        const openDate = item.open_date || weekRange?.mondayStartDate || dueDate;
 
         const dateRangeSummary =
           item.open_date && item.due_date
@@ -1464,14 +1522,22 @@ export async function POST(req: NextRequest) {
             : null,
           status: isManualOverride
             ? existingMatch?.status || ('completed' as const)
-            : hasGrade
+            : hasGrade || isSubmittedInApi || wasAlreadyCompletedOrSubmitted
             ? ('completed' as const)
             : ('pending' as const),
           workflow_status: isManualOverride
             ? existingMatch?.workflow_status || ('completed' as const)
             : hasGrade
             ? ('completed' as const)
+            : isSubmittedInApi
+            ? ('submitted' as const)
+            : wasAlreadyCompletedOrSubmitted
+            ? (existingMatch?.workflow_status || ('completed' as const))
             : ('not_started' as const),
+          completed_at:
+            hasGrade || isSubmittedInApi || wasAlreadyCompletedOrSubmitted
+              ? item.submitted_at || existingMatch?.completed_at || nowIso
+              : null,
           is_graded: true,
           source_type: 'syllabus_staged' as const,
           syllabus_day_number: item.week_number,

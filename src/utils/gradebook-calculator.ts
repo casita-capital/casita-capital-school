@@ -784,6 +784,7 @@ export interface MoodleGradeItemSummary {
   is_ungraded_bucket: boolean;
   open_date?: string | null;
   due_date: string | null;
+  submitted_at?: string | null;
 }
 
 export interface MoodleCourseGradeReport {
@@ -819,6 +820,7 @@ export interface MoodleAssignmentMetadata {
   api_percentage_score?: number | null;
   api_letter_grade?: string | null;
   api_feedback?: string | null;
+  api_submitted_at?: string | null;
   manual_override?: boolean;
   manual_override_at?: string | null;
 }
@@ -875,6 +877,8 @@ export function parseAssignmentMoodleMeta(
       typeof raw.api_percentage_score === 'number' ? raw.api_percentage_score : null,
     api_letter_grade: typeof raw.api_letter_grade === 'string' ? raw.api_letter_grade : null,
     api_feedback: typeof raw.api_feedback === 'string' ? raw.api_feedback : null,
+    api_submitted_at:
+      typeof raw.api_submitted_at === 'string' ? raw.api_submitted_at : null,
     manual_override: typeof raw.manual_override === 'boolean' ? raw.manual_override : false,
     manual_override_at:
       typeof raw.manual_override_at === 'string' ? raw.manual_override_at : null,
@@ -924,8 +928,32 @@ export function isAssignmentScored(a: GradebookAssignment): boolean {
 }
 
 /**
+ * Returns true if the student has completed or submitted the assignment, quiz, test, or activity
+ * (either scored, marked completed on the Assignments/Dashboard page, workflow_status === 'submitted',
+ * or submitted in the external portal).
+ */
+export function isAssignmentCompletedOrSubmitted(
+  a: GradebookAssignment,
+  moodleMeta?: MoodleAssignmentMetadata | null
+): boolean {
+  if (isAssignmentScored(a)) return true;
+  if (
+    a.status === 'completed' ||
+    a.workflow_status === 'completed' ||
+    a.workflow_status === 'submitted' ||
+    Boolean(a.completed_at)
+  ) {
+    return true;
+  }
+  const mm =
+    moodleMeta !== undefined ? moodleMeta : parseAssignmentMoodleMeta(a.state_standards);
+  if (mm?.api_submitted_at) return true;
+  return false;
+}
+
+/**
  * Returns true if an assignment is Upcoming:
- * - Not staged, ignored, exempt, completed, or already scored
+ * - Not staged, ignored, exempt, completed, submitted, or already scored
  * - Not explicitly flagged as needs_grading
  * - Due date is in the future (due_date > todayStr)
  * - Open / assigned date (if present) has not already passed (assigned_date > todayStr)
@@ -939,11 +967,12 @@ export function isAssignmentUpcoming(
   if (
     a.status === 'completed' ||
     a.workflow_status === 'completed' ||
+    a.workflow_status === 'submitted' ||
     a.workflow_status === 'needs_grading'
   ) {
     return false;
   }
-  if (isAssignmentScored(a)) return false;
+  if (isAssignmentCompletedOrSubmitted(a)) return false;
   if (!a.due_date || a.due_date <= todayStr) return false;
   if (a.assigned_date && a.assigned_date <= todayStr) return false;
   return true;
@@ -1451,6 +1480,7 @@ export function generateWeekAssignmentsFromTemplatesAndPolicy(params: {
         weekDates[3] ||
         weekDates[weekDates.length - 1];
       const targetDueDate = targetDayInfo?.dateStr || mondayDate;
+      const fridayDate = weekDates[weekDates.length - 1]?.dateStr || targetDueDate;
 
       for (const assessment of matchedWeek.linked_assessments) {
         const cleanTitle = assessment.name
@@ -1470,6 +1500,16 @@ export function generateWeekAssignmentsFromTemplatesAndPolicy(params: {
             ? Number(((assessment.grade_raw / assessment.grade_max) * 100).toFixed(2))
             : null;
         const letter = pct !== null ? percentageToLetterGrade(pct, policy.grading_scale) : null;
+
+        // If the portal due_date falls within this Mon-Fri week, use that exact day (e.g. Thursday or Friday);
+        // if it is a blanket future quarter-end close date (e.g. 2026-11-06), place it on this week's targetDueDate.
+        const isPortalDueWithinWeek =
+          typeof assessment.due_date === 'string' &&
+          assessment.due_date >= mondayDate &&
+          assessment.due_date <= fridayDate;
+        const resolvedDueDate = isPortalDueWithinWeek
+          ? assessment.due_date!
+          : targetDueDate;
 
         const moodleMeta: MoodleAssignmentMetadata = {
           moodle_cmid: assessment.cmid,
@@ -1494,7 +1534,7 @@ export function generateWeekAssignmentsFromTemplatesAndPolicy(params: {
           title: cleanTitle,
           description: `${courseSyl.official_course_name || subject.name} • Week ${matchedWeek.week_number} (${matchedWeek.section_title})`,
           instructions: matchedWeek.raw_summary,
-          due_date: assessment.due_date || targetDueDate,
+          due_date: resolvedDueDate,
           assigned_date: assessment.open_date || mondayDate || targetDueDate,
           category: categorySlug,
           grading_mode: 'points',
@@ -1663,10 +1703,14 @@ export function generateWeekAssignmentsFromTemplatesAndPolicy(params: {
 
   const formatTokens = (
     text: string,
-    dayKey: DayKey
+    dayKey: DayKey,
+    tplDaysOfWeek?: DayKey[],
+    isTitle?: boolean
   ): { formatted: string; sylDay: number | null; matchedSyl?: MathSyllabusDay } => {
     let activeSyl: MathSyllabusDay | undefined;
     let activeDayNum: number | null = null;
+    const usesClassNum = text.includes('{class_num}');
+    const hasTopicToken = text.includes('{topic}');
 
     if (recurringConfig.mode === 'math_syllabus') {
       const mathCfg = recurringConfig.math_config;
@@ -1697,6 +1741,15 @@ export function generateWeekAssignmentsFromTemplatesAndPolicy(params: {
       const entry = classDayByWeekday.get(dayKey);
       activeDayNum = entry?.classNum ?? null;
       activeSyl = entry?.sylDay;
+    } else if (usesClassNum && tplDaysOfWeek && tplDaysOfWeek.length > 0) {
+      const orderedTplDays = DAY_KEYS.filter((dk) => tplDaysOfWeek.includes(dk));
+      const idxInWeek = orderedTplDays.indexOf(dayKey);
+      const computedClassNum =
+        counters.class_num + (idxInWeek >= 0 ? idxInWeek : 0);
+      activeDayNum = computedClassNum;
+      activeSyl =
+        activeCourseSyl?.days.find((d) => d.day_number === computedClassNum) ||
+        syllabusMap.get(computedClassNum);
     } else if (activeCourseSyl?.days?.length) {
       activeSyl = activeCourseSyl.days.find(
         (d) => d.day_number === counters.week_num || d.day_number === counters.lesson_num
@@ -1708,7 +1761,7 @@ export function generateWeekAssignmentsFromTemplatesAndPolicy(params: {
     const effectiveClassNum = activeDayNum ?? counters.class_num;
     const effectiveWeekNum = activeSyl?.week_number ?? counters.week_num;
 
-    const formatted = text
+    let formatted = text
       .replace(/\{week\}/g, String(effectiveWeekNum))
       .replace(/\{class_num\}/g, String(effectiveClassNum))
       .replace(/\{lesson\}/g, String(counters.lesson_num))
@@ -1720,7 +1773,13 @@ export function generateWeekAssignmentsFromTemplatesAndPolicy(params: {
       .replace(/\{activity\}/g, activeSyl?.activity || '')
       .replace(/\{supplies\}/g, suppliesList.join(', '))
       .replace(/\{materials\}/g, activeSyl?.materials || suppliesList.join(', '))
-      .replace(/\{fast_facts\}/g, activeSyl?.fast_facts || '');
+      .replace(/\{fast_facts\}/g, activeSyl?.fast_facts || '')
+      .trim();
+
+    // Mirror school note behavior: when {class_num} is used without {topic}, append ": {topic}"
+    if (isTitle && usesClassNum && activeSyl?.topic && !hasTopicToken) {
+      formatted = `${formatted}: ${activeSyl.topic}`;
+    }
 
     return { formatted: formatted.trim(), sylDay: activeDayNum, matchedSyl: activeSyl };
   };
@@ -1748,7 +1807,9 @@ export function generateWeekAssignmentsFromTemplatesAndPolicy(params: {
 
       const { formatted: title, sylDay, matchedSyl } = formatTokens(
         tpl.title_template,
-        dayInfo.dayKey
+        dayInfo.dayKey,
+        tpl.days_of_week,
+        true
       );
       if (
         (tpl.assignment_type_slug === 'activity' ||
@@ -1760,7 +1821,9 @@ export function generateWeekAssignmentsFromTemplatesAndPolicy(params: {
 
       const { formatted: instructions } = formatTokens(
         tpl.instructions_template || '',
-        dayInfo.dayKey
+        dayInfo.dayKey,
+        tpl.days_of_week,
+        false
       );
 
       if (!title) continue;

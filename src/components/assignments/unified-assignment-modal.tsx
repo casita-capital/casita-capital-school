@@ -47,7 +47,9 @@ import {
   DAY_LABELS,
   DayKey,
   getActiveCourseSyllabus,
+  MathSyllabusDay,
   parseRecurringConfig,
+  resolveSubjectCountersForWeek,
   resolveSyllabusDaySupplies,
 } from 'src/utils/recurring-planner';
 import {
@@ -57,6 +59,7 @@ import {
   computeAssignmentMetrics,
   DEFAULT_ASSIGNMENT_TYPES,
   formatClassGradeDisplay,
+  generateWeekAssignmentsFromTemplatesAndPolicy,
   GradebookAssignment,
   isAssignmentApiSynced,
   LinkedWeeklySource,
@@ -1875,6 +1878,10 @@ export function UnifiedAssignmentModal({
   ): Promise<number> => {
     if (savedTpl.auto_behavior === 'ignore' || !savedTpl.is_active) return 0;
 
+    const targetSubject =
+      subjects.find((s) => s.id === savedTpl.subject_id) || activeSubject;
+    if (!targetSubject) return 0;
+
     const nowIso = new Date().toISOString();
     const schoolWeeks: Array<{ week_number: number; monday: string }> = [];
     let cursorMonday = '2026-08-31';
@@ -1886,10 +1893,23 @@ export function UnifiedAssignmentModal({
       cursorMonday = addDaysUtc(cursorMonday, 7);
     }
 
-    const { data: existingData } = await supabase
-      .from('assignments')
-      .select('id, title, due_date, syllabus_day_number, recurring_template_id, points_earned, percentage_score')
-      .eq('subject_id', savedTpl.subject_id);
+    const [{ data: existingData }, { data: mathSylData }] = await Promise.all([
+      supabase
+        .from('assignments')
+        .select(
+          'id, title, due_date, syllabus_day_number, recurring_template_id, points_earned, percentage_score'
+        )
+        .eq('subject_id', savedTpl.subject_id),
+      supabase
+        .from('math_syllabus')
+        .select('*')
+        .order('day_number', { ascending: true }),
+    ]);
+
+    const syllabusMap = new Map<number, MathSyllabusDay>();
+    for (const row of (mathSylData || []) as MathSyllabusDay[]) {
+      syllabusMap.set(row.day_number, row);
+    }
 
     const existingList = (existingData || []) as Array<{
       id: string;
@@ -1902,72 +1922,106 @@ export function UnifiedAssignmentModal({
     }>;
 
     const toInsert: Array<Record<string, unknown>> = [];
-    const wfStatus: WorkflowStatus =
-      savedTpl.auto_behavior === 'queue_for_approval' ? 'staged' : 'not_started';
+    const toUpdate: Array<{ id: string; payload: Record<string, unknown> }> = [];
+
+    const recurringConfig = parseRecurringConfig(
+      targetSubject.recurring_config,
+      targetSubject.name
+    );
+
+    const dayLabels: Array<{ offset: number; dayKey: DayKey; dayName: string }> = [
+      { offset: 0, dayKey: 'monday', dayName: 'MONDAY' },
+      { offset: 1, dayKey: 'tuesday', dayName: 'TUESDAY' },
+      { offset: 2, dayKey: 'wednesday', dayName: 'WEDNESDAY' },
+      { offset: 3, dayKey: 'thursday', dayName: 'THURSDAY' },
+      { offset: 4, dayKey: 'friday', dayName: 'FRIDAY' },
+    ];
 
     for (const wk of schoolWeeks) {
-      for (const dayKey of savedTpl.days_of_week) {
-        const offset = DAY_KEY_OFFSETS[dayKey] ?? 3;
-        const targetDueDate = addDaysUtc(wk.monday, offset);
-        const formattedTitle = savedTpl.title_template
-          .replace(/\{week\}/g, String(wk.week_number))
-          .replace(/\{lesson\}/g, String(wk.week_number))
-          .replace(/\{day\}/g, String(wk.week_number))
-          .trim();
-        const formattedInstructions = (savedTpl.instructions_template || '')
-          .replace(/\{week\}/g, String(wk.week_number))
-          .replace(/\{lesson\}/g, String(wk.week_number))
-          .replace(/\{day\}/g, String(wk.week_number))
-          .trim();
+      const counters = resolveSubjectCountersForWeek(recurringConfig, wk.monday, {});
+      const weekDates = dayLabels.map((dl) => {
+        const dStr = addDaysUtc(wk.monday, dl.offset);
+        return {
+          dateStr: dStr,
+          dayKey: dl.dayKey,
+          dayName: dl.dayName,
+          formatted: dStr.slice(5).replace('-', '/'),
+        };
+      });
 
-        const alreadyExists = existingList.some(
+      const generatedCandidates = generateWeekAssignmentsFromTemplatesAndPolicy({
+        subject: targetSubject,
+        recurringConfig,
+        weekDates,
+        counters,
+        syllabusMap,
+        templates: [savedTpl],
+      });
+
+      const templateCandidates = generatedCandidates.filter(
+        (c) => c.recurring_template_id === savedTpl.id
+      );
+
+      for (const cand of templateCandidates) {
+        const matchedExistingByTemplate = existingList.find(
           (ex) =>
-            (ex.recurring_template_id === savedTpl.id &&
-              ex.syllabus_day_number === wk.week_number &&
-              ex.due_date === targetDueDate) ||
-            (ex.title.toLowerCase() === formattedTitle.toLowerCase() &&
-              ex.due_date === targetDueDate)
+            ex.recurring_template_id === savedTpl.id &&
+            ex.due_date === cand.due_date
         );
-        if (alreadyExists) continue;
+        if (matchedExistingByTemplate) {
+          if (
+            matchedExistingByTemplate.title !== cand.title ||
+            matchedExistingByTemplate.syllabus_day_number !== cand.syllabus_day_number
+          ) {
+            toUpdate.push({
+              id: matchedExistingByTemplate.id,
+              payload: {
+                title: cand.title,
+                description: cand.description,
+                instructions: cand.instructions || null,
+                syllabus_day_number: cand.syllabus_day_number,
+                state_standards: cand.state_standards ?? ([] as unknown as Json),
+                updated_at: nowIso,
+              },
+            });
+          }
+          continue;
+        }
+
+        const alreadyExistsByTitle = existingList.some(
+          (ex) =>
+            ex.title.toLowerCase() === cand.title.toLowerCase() &&
+            ex.due_date === cand.due_date
+        );
+        if (alreadyExistsByTitle) continue;
 
         toInsert.push({
           subject_id: savedTpl.subject_id,
-          title: formattedTitle,
-          description:
-            formattedInstructions ||
-            `Week ${wk.week_number} • Linked to recurring ${activeSubject?.name || ''} planner`,
-          instructions: formattedInstructions || null,
-          assigned_date: wk.monday,
-          due_date: targetDueDate,
-          category: savedTpl.assignment_type_slug,
+          title: cand.title,
+          description: cand.description,
+          instructions: cand.instructions || null,
+          assigned_date: cand.assigned_date,
+          due_date: cand.due_date,
+          category: cand.category,
           priority: 'medium',
-          status: 'pending',
-          workflow_status: wfStatus,
+          status: cand.status,
+          workflow_status: cand.workflow_status,
           is_graded: true,
-          grading_mode: savedTpl.grading_mode,
-          total_problems: savedTpl.total_problems_default,
+          grading_mode: cand.grading_mode,
+          total_problems: cand.total_problems,
           missed_problems: null,
-          points_possible: savedTpl.points_possible,
+          points_possible: cand.points_possible,
           points_earned: null,
           percentage_score: null,
           letter_grade: null,
           is_exempt: false,
           source_type: 'recurring_template',
           recurring_template_id: savedTpl.id,
-          syllabus_day_number: wk.week_number,
-          term_name: wk.week_number <= 17 ? 'Semester 1 (Fall)' : 'Semester 2 (Spring)',
+          syllabus_day_number: cand.syllabus_day_number,
+          term_name:
+            wk.week_number <= 17 ? 'Semester 1 (Fall)' : 'Semester 2 (Spring)',
           academic_year: '2026-2027',
-          state_standards: {
-            moodle_meta: {
-              moodle_category:
-                savedTpl.assignment_type_slug === 'spelling_test'
-                  ? 'Weekly Spelling Tests'
-                  : savedTpl.assignment_type_slug.replace(/_/g, ' '),
-              range_formatted: `0–${savedTpl.points_possible}`,
-              is_ungraded_bucket: false,
-              week_number: wk.week_number,
-            },
-          },
+          state_standards: cand.state_standards ?? ([] as unknown as Json),
           updated_at: nowIso,
         });
       }
@@ -1976,7 +2030,14 @@ export function UnifiedAssignmentModal({
     if (toInsert.length > 0) {
       await supabase.from('assignments').insert(toInsert);
     }
-    return toInsert.length;
+    if (toUpdate.length > 0) {
+      await Promise.all(
+        toUpdate.map((u) =>
+          supabase.from('assignments').update(u.payload).eq('id', u.id)
+        )
+      );
+    }
+    return toInsert.length + toUpdate.length;
   };
 
   const handleSave = async (e: React.FormEvent) => {
@@ -2859,8 +2920,10 @@ export function UnifiedAssignmentModal({
                         variant="caption"
                         fontWeight={800}
                         color={theme.palette.mode === 'dark' ? 'warning.light' : 'warning.dark'}
+                        sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75 }}
                       >
-                        ⚠️ Manual Override Mode Active — Saving will lock this grade against future API pulls.
+                        <AlertTriangle size={14} />
+                        Manual Override Mode Active — Saving will lock this grade against future API pulls.
                       </Typography>
                       {editingAssignment && (
                         <Stack direction="row" spacing={0.75}>

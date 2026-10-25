@@ -1,5 +1,19 @@
 import type { MenuItem } from './menuItem';
-import { LayoutDashboard, Calendar, CheckSquare, Settings, Printer, Sparkles, BookOpen, FileText, Clock, Repeat, GraduationCap, History } from 'lucide-react';
+import {
+  LayoutDashboard,
+  Calendar,
+  CheckSquare,
+  ClipboardCheck,
+  Settings,
+  Printer,
+  Sparkles,
+  BookOpen,
+  FileText,
+  Clock,
+  Repeat,
+  GraduationCap,
+  History,
+} from 'lucide-react';
 import { createElement } from 'react';
 
 export const getSchoolMenuItems = (): MenuItem[] => [
@@ -16,6 +30,13 @@ export const getSchoolMenuItems = (): MenuItem[] => [
     link: '/calendar/planner',
     section: 'daily',
     icon: createElement(Printer, { size: 18 }),
+  },
+  {
+    id: 'weekly-grading',
+    name: 'Weekly Grading Summary',
+    link: '/calendar/grading-summary',
+    section: 'daily',
+    icon: createElement(ClipboardCheck, { size: 18 }),
   },
   {
     id: 'gradebook',

@@ -1329,6 +1329,9 @@ export function formatApiWeekBlockForWeekday(
   }
 
   const rawLinesToFormat: string[] = [];
+  const hasCustomOverride = Boolean(
+    week.custom_override_text && week.custom_override_text.trim()
+  );
   const effectiveFullText = (week.custom_override_text ?? week.raw_summary).trim();
 
   switch (rule.api_source) {
@@ -1337,10 +1340,14 @@ export function formatApiWeekBlockForWeekday(
     case 'full_week': {
       const splitLines = effectiveFullText
         .split('\n')
-        .map((l) => l.trim())
-        .filter(Boolean);
+        .filter((l) => l.trim().length > 0);
       for (const line of splitLines) {
-        if (rule.strip_week_header && /^week\s+\d+\b/i.test(line) && line.length <= 24) {
+        const trimmedLine = line.trim();
+        if (
+          rule.strip_week_header &&
+          /^week\s+\d+\b/i.test(trimmedLine) &&
+          trimmedLine.length <= 24
+        ) {
           continue;
         }
         rawLinesToFormat.push(line);
@@ -1349,27 +1356,37 @@ export function formatApiWeekBlockForWeekday(
     }
     case 'day_1':
       if (week.days_breakdown.day_1) {
-        rawLinesToFormat.push(...week.days_breakdown.day_1.split('\n').map((l) => l.trim()).filter(Boolean));
+        rawLinesToFormat.push(
+          ...week.days_breakdown.day_1.split('\n').filter((l) => l.trim().length > 0)
+        );
       }
       break;
     case 'day_2':
       if (week.days_breakdown.day_2) {
-        rawLinesToFormat.push(...week.days_breakdown.day_2.split('\n').map((l) => l.trim()).filter(Boolean));
+        rawLinesToFormat.push(
+          ...week.days_breakdown.day_2.split('\n').filter((l) => l.trim().length > 0)
+        );
       }
       break;
     case 'day_3':
       if (week.days_breakdown.day_3) {
-        rawLinesToFormat.push(...week.days_breakdown.day_3.split('\n').map((l) => l.trim()).filter(Boolean));
+        rawLinesToFormat.push(
+          ...week.days_breakdown.day_3.split('\n').filter((l) => l.trim().length > 0)
+        );
       }
       break;
     case 'day_4':
       if (week.days_breakdown.day_4) {
-        rawLinesToFormat.push(...week.days_breakdown.day_4.split('\n').map((l) => l.trim()).filter(Boolean));
+        rawLinesToFormat.push(
+          ...week.days_breakdown.day_4.split('\n').filter((l) => l.trim().length > 0)
+        );
       }
       break;
     case 'day_5':
       if (week.days_breakdown.day_5) {
-        rawLinesToFormat.push(...week.days_breakdown.day_5.split('\n').map((l) => l.trim()).filter(Boolean));
+        rawLinesToFormat.push(
+          ...week.days_breakdown.day_5.split('\n').filter((l) => l.trim().length > 0)
+        );
       }
       break;
     case 'day_4_and_5': {
@@ -1398,8 +1415,45 @@ export function formatApiWeekBlockForWeekday(
       break;
   }
 
+  const linkedAssessmentNames = new Set(
+    week.linked_assessments.map((assessment) =>
+      assessment.name
+        .replace(/--DUE[\s\S]*$/i, '')
+        .replace(/^LC 4th Edition\s+/i, '')
+        .replace(/\.$/, '')
+        .trim()
+        .toLowerCase()
+    )
+  );
+  const hasLinkedAssessments = week.linked_assessments.length > 0;
+
   const formattedLines: string[] = [];
   for (const rawLine of rawLinesToFormat) {
+    // Preserve 2-space indented sub-lines (for grouped Memory Work / Novels / custom sub-items)
+    if (/^\s{2,}/.test(rawLine)) {
+      const subTrimmed = rawLine.trim();
+      if (subTrimmed) {
+        formattedLines.push(`  ${subTrimmed}`);
+      }
+      continue;
+    }
+
+    // Preserve explicit [WEEKLY:...] markers, ### headers, --- dividers, and user-overridden prefixes from custom_override_text
+    const trimmedRaw = rawLine.trim();
+    if (
+      /^\[WEEKLY(?::[^\]]*)?\]/i.test(trimmedRaw) ||
+      trimmedRaw.startsWith('### ') ||
+      /^---+/.test(trimmedRaw) ||
+      (hasCustomOverride &&
+        (trimmedRaw.startsWith('- [ ]') ||
+          trimmedRaw.startsWith('- [x]') ||
+          trimmedRaw.startsWith('- [X]') ||
+          trimmedRaw.startsWith('• ')))
+    ) {
+      formattedLines.push(trimmedRaw);
+      continue;
+    }
+
     const cleaned = rawLine.replace(/^[-*•]\s*/, '').trim();
     if (!cleaned) continue;
     // Strip leading "Day X:" prefix if a single day block is selected and line is "Day 1: Complete..."
@@ -1420,13 +1474,55 @@ export function formatApiWeekBlockForWeekday(
 
     if (!dayPrefixStripped) continue;
 
-    // Preserve standalone section headers (e.g. "Fable:", "Grammar:") without checkbox/bullet prefix
-    if (/^(fable|grammar|memory work|novels)\s*:$/i.test(dayPrefixStripped)) {
+    // When the week has API-synced assessments, omit duplicate quiz/test lines from School Work notes
+    // since those assessments already render as Graded Assignments in the planner cell.
+    if (hasLinkedAssessments) {
+      const normalizedLine = dayPrefixStripped
+        .replace(/^(- \[[ x]\]|☐)\s*/i, '')
+        .replace(/\.$/, '')
+        .trim()
+        .toLowerCase();
+      const isOnlineQuizPrompt =
+        linkedAssessmentNames.has(normalizedLine) ||
+        /^complete\s+(online\s+)?quiz\.?$/i.test(normalizedLine) ||
+        /^take\s+(the\s+)?online\s+quiz\b/i.test(normalizedLine) ||
+        /^take\s+the\s+.*\bquiz\s+online\.?$/i.test(normalizedLine) ||
+        /^complete\s+test\s+\d+\b/i.test(normalizedLine) ||
+        /^did\s+you\s+take\s+quiz\s+\d+\??$/i.test(normalizedLine);
+      if (isOnlineQuizPrompt) {
+        continue;
+      }
+    }
+
+    // Preserve standalone section headers (e.g. "Fable:", "Grammar:", "Complete the following:") without checkbox/bullet prefix
+    if (
+      /^(fable|grammar|complete the following)\s*:?$/i.test(dayPrefixStripped)
+    ) {
+      formattedLines.push(`### ${dayPrefixStripped.replace(/^###\s*/, '')}`);
+      continue;
+    }
+    if (/^(memory work|novels)\s*:$/i.test(dayPrefixStripped)) {
       formattedLines.push(dayPrefixStripped);
       continue;
     }
 
-    if (rule.format_as_checkboxes) {
+    // Informational attendance or materials lines should always be informational bullets, not parent-verified checkboxes
+    const isInformationalLine =
+      /^attend\s+class\b/i.test(dayPrefixStripped) ||
+      /^no\s+(live\s+)?class\b/i.test(dayPrefixStripped) ||
+      /^materials\s*:/i.test(dayPrefixStripped);
+
+    const isExplicitVerifyLine =
+      rule.api_source === 'memorize_only' ||
+      /^(memorize|memory\s+work|recite|practice|complete|review|study|read)\b/i.test(
+        dayPrefixStripped
+      );
+
+    if (isInformationalLine) {
+      formattedLines.push(
+        `• ${dayPrefixStripped.replace(/^(- \[[ xX]\]|\[[ xX]\]|[☐☑•*-])\s*/, '')}`
+      );
+    } else if (rule.format_as_checkboxes || isExplicitVerifyLine) {
       if (
         dayPrefixStripped.startsWith('- [ ]') ||
         dayPrefixStripped.startsWith('- [x]') ||
@@ -1444,27 +1540,6 @@ export function formatApiWeekBlockForWeekday(
   if (rule.custom_additional_lines && rule.custom_additional_lines.trim()) {
     const customReplaced = replaceTokens(rule.custom_additional_lines.trim(), tokens);
     formattedLines.push(customReplaced);
-  }
-
-  // Only append linked assessments when enabled and not on 'day_1' (since Day 1 starts a new week's live class,
-  // whereas assessments for a syllabus week are completed on Day 4/5 or full_week/complete_and_do).
-  if (
-    rule.include_linked_quiz_line &&
-    rule.api_source !== 'day_1' &&
-    week.linked_assessments.length > 0
-  ) {
-    const existingJoined = formattedLines.join('\n').toLowerCase();
-    for (const assessment of week.linked_assessments) {
-      const shortName = assessment.name
-        .replace(/--DUE[\s\S]*$/i, '')
-        .replace(/^LC 4th Edition\s+/i, '')
-        .trim();
-      if (!existingJoined.includes(shortName.toLowerCase())) {
-        formattedLines.push(
-          rule.format_as_checkboxes ? `- [ ] ${shortName}` : `• ${shortName}`
-        );
-      }
-    }
   }
 
   return {
@@ -1662,6 +1737,22 @@ export function generateSubjectWeekNotesStructured(
   // Standard 'template' mode (including class-based syllabi such as Science)
   let runningClassNum = counters.class_num;
 
+  // Detect if Memory Work or Novels appear on 2+ enabled days in config.days
+  const memoryWorkDays = DAY_KEYS.filter(
+    (dk) =>
+      config.days[dk]?.enabled &&
+      /(?:^|\n)\s*(?:\[WEEKLY[^\]]*\]\s*)?(?:-\s*\[[ xX]\]\s*|[☐☑•*-]\s*|###\s*)?memory\s+work\b/i.test(
+        config.days[dk].template
+      )
+  );
+  const novelsDays = DAY_KEYS.filter(
+    (dk) =>
+      config.days[dk]?.enabled &&
+      /(?:^|\n)\s*(?:\[WEEKLY[^\]]*\]\s*)?(?:-\s*\[[ xX]\]\s*|[☐☑•*-]\s*|###\s*)?novels\b/i.test(
+        config.days[dk].template
+      )
+  );
+
   for (const dayKey of DAY_KEYS) {
     const dayCfg = config.days[dayKey];
     if (!dayCfg.enabled) continue;
@@ -1717,7 +1808,7 @@ export function generateSubjectWeekNotesStructured(
       const templateHasTopicToken = rawTemplate.includes('{topic}');
       const templateHasActivityToken = rawTemplate.includes('{activity}');
 
-      let text = replaceTokens(rawTemplate, {
+      const tokenValues = {
         week: effectiveWeekNum,
         class_num: runningClassNum,
         lesson: counters.lesson_num,
@@ -1730,24 +1821,76 @@ export function generateSubjectWeekNotesStructured(
         fast_facts: matchedClassDay?.fast_facts || '',
         unit: matchedClassDay?.unit || '',
         activity: matchedClassDay?.activity || '',
-      });
+      };
 
-      // Automatically append topic and activity for class-based syllabi when not explicitly tokenized
-      if (usesClassNum && matchedClassDay) {
-        if (matchedClassDay.topic && !templateHasTopicToken) {
-          text = `${text}: ${matchedClassDay.topic}`;
+      const rawLines = rawTemplate.split('\n');
+      const processedLines: string[] = [];
+
+      for (const rawLine of rawLines) {
+        const lineHasClassNum = rawLine.includes('{class_num}');
+        let replacedLine = replaceTokens(rawLine, tokenValues);
+
+        // Normalize unprefixed section headers like "Complete the following:" to "### Complete the following:"
+        const trimmedLine = replacedLine.trim();
+        const hasExplicitRolePrefix =
+          trimmedLine.startsWith('### ') ||
+          trimmedLine.startsWith('- [') ||
+          trimmedLine.startsWith('[') ||
+          trimmedLine.startsWith('☐') ||
+          trimmedLine.startsWith('☑') ||
+          trimmedLine.startsWith('•');
+        if (
+          !hasExplicitRolePrefix &&
+          /^(complete the following|fable|grammar)\s*:?$/i.test(trimmedLine)
+        ) {
+          replacedLine = `### ${trimmedLine.replace(/^###\s*/, '')}`;
         }
-        const activityText =
-          matchedClassDay.activity ||
-          (matchedClassDay.notes && /^activity\s*:/i.test(matchedClassDay.notes.trim())
-            ? matchedClassDay.notes.trim().replace(/^activity\s*:\s*/i, '')
-            : '');
-        if (activityText && !templateHasActivityToken) {
-          text = `${text}\n- [ ] Activity: ${activityText}`;
+
+        // Auto-tag weekly-shared Memory Work or Novels blocks if not already tagged with [WEEKLY:...], preserving any explicit role prefix
+        if (!/^\s{2,}/.test(replacedLine) && !/^\[WEEKLY/i.test(replacedLine.trim())) {
+          const curTrimmed = replacedLine.trim();
+          const existingPrefix = curTrimmed.startsWith('### ')
+            ? '### '
+            : curTrimmed.startsWith('- [x]') || curTrimmed.startsWith('- [X]')
+            ? '- [x] '
+            : curTrimmed.startsWith('- [ ]') ||
+              curTrimmed.startsWith('[ ]') ||
+              curTrimmed.startsWith('☐')
+            ? '- [ ] '
+            : curTrimmed.startsWith('•')
+            ? '• '
+            : null;
+          const cleanCheck = curTrimmed
+            .replace(/^###\s*/, '')
+            .replace(/^-\s*\[[ xX]\]\s*/, '')
+            .replace(/^[☐☑•*-]\s*/, '')
+            .trim();
+          if (/^memory\s+work\b/i.test(cleanCheck) && memoryWorkDays.length >= 2) {
+            replacedLine = `[WEEKLY:${memoryWorkDays.join(',')}] ${existingPrefix || '- [ ] '}${cleanCheck}`;
+          } else if (/^novels\b/i.test(cleanCheck) && novelsDays.length >= 2) {
+            replacedLine = `[WEEKLY:${novelsDays.join(',')}] ${existingPrefix || '• '}${cleanCheck}`;
+          }
         }
+
+        // Automatically append topic and activity to the specific line containing {class_num}
+        if (lineHasClassNum && matchedClassDay) {
+          if (matchedClassDay.topic && !templateHasTopicToken) {
+            replacedLine = `${replacedLine}: ${matchedClassDay.topic}`;
+          }
+          const activityText =
+            matchedClassDay.activity ||
+            (matchedClassDay.notes && /^activity\s*:/i.test(matchedClassDay.notes.trim())
+              ? matchedClassDay.notes.trim().replace(/^activity\s*:\s*/i, '')
+              : '');
+          if (activityText && !templateHasActivityToken) {
+            replacedLine = `${replacedLine}\n- [ ] Activity: ${activityText}`;
+          }
+        }
+
+        processedLines.push(replacedLine);
       }
 
-      lines.push(text);
+      lines.push(processedLines.join('\n'));
       if (usesClassNum) {
         runningClassNum += 1;
       }

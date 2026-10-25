@@ -61,6 +61,23 @@ import { PageHeading } from 'src/components/base/page-heading';
 import { createClient } from 'src/services/supabase/client';
 import { Json } from 'src/services/supabase/types';
 import { FormattedParentNote } from 'src/components/base/formatted-parent-note';
+import { StructuredTemplateBlocksEditor } from 'src/components/automations/structured-template-blocks-editor';
+import {
+  AssignmentTypeConfig,
+  DEFAULT_ASSIGNMENT_TYPES,
+  generateWeekAssignmentsFromTemplatesAndPolicy,
+  RecurringAssignmentTemplate,
+  SubjectWithGrading,
+} from 'src/utils/gradebook-calculator';
+import {
+  formatSubItemsForAssignmentInstructions,
+  getIsoDateForWeekdayInWeek,
+  normalizeWeeklyBlockKey,
+  parseRecurringTemplateDayToItems,
+  serializeItemsToRecurringTemplateText,
+  StructuredCellLineItem,
+  syncWeeklySharedBlocksAcrossTemplateDays,
+} from 'src/utils/weekly-grading-items';
 import {
   ApiSyllabusAutoPopulateConfig,
   ApiSyllabusWeek,
@@ -138,9 +155,20 @@ function AutomationsContent() {
   // Recurring Config Modal State
   const [recurringSubject, setRecurringSubject] = useState<Subject | null>(null);
   const [recurringDraft, setRecurringDraft] = useState<SubjectRecurringConfig | null>(null);
+  const [recurringDraftTemplates, setRecurringDraftTemplates] = useState<
+    RecurringAssignmentTemplate[]
+  >([]);
   const [activeRecurringDay, setActiveRecurringDay] = useState<DayKey>('monday');
   const [previewWeekDate, setPreviewWeekDate] = useState<string>('2026-10-12');
   const [savingRecurring, setSavingRecurring] = useState(false);
+
+  // Assignment Types & Recurring Assignment Templates State
+  const [assignmentTypes, setAssignmentTypes] = useState<AssignmentTypeConfig[]>(
+    DEFAULT_ASSIGNMENT_TYPES
+  );
+  const [recurringTemplates, setRecurringTemplates] = useState<
+    RecurringAssignmentTemplate[]
+  >([]);
 
   // Syllabus Filter & Edit State
   const [syllabusSemesterFilter, setSyllabusSemesterFilter] = useState<'all' | 1 | 2>('all');
@@ -200,6 +228,21 @@ function AutomationsContent() {
 
       if (sylData) {
         setSyllabusDays(sylData as MathSyllabusDay[]);
+      }
+
+      const [typesRes, tplRes] = await Promise.all([
+        supabase
+          .from('assignment_types')
+          .select('*')
+          .order('sort_order', { ascending: true }),
+        supabase.from('recurring_assignment_templates').select('*'),
+      ]);
+
+      if (typesRes.data && typesRes.data.length > 0) {
+        setAssignmentTypes(typesRes.data as AssignmentTypeConfig[]);
+      }
+      if (tplRes.data) {
+        setRecurringTemplates(tplRes.data as RecurringAssignmentTemplate[]);
       }
 
       // Also load saved API integration config
@@ -316,8 +359,130 @@ function AutomationsContent() {
     const parsed = parseRecurringConfig(sub.recurring_config, sub.name);
     setRecurringSubject(sub);
     setRecurringDraft(parsed);
+    const subTemplates = recurringTemplates.filter((t) => t.subject_id === sub.id);
+    setRecurringDraftTemplates(subTemplates);
     const firstActive = DAY_KEYS.find((dk) => parsed.days[dk].enabled) || 'monday';
     setActiveRecurringDay(firstActive);
+  };
+
+  const handleUpdateRecurringDayItems = (
+    dayKey: DayKey,
+    nextItems: StructuredCellLineItem[]
+  ) => {
+    if (!recurringSubject || !recurringDraft) return;
+
+    // 1. Sync weekly-shared blocks across all selected days in recurringDraft.days
+    const syncedDays = syncWeeklySharedBlocksAcrossTemplateDays({
+      subjectId: recurringSubject.id,
+      editedDayKey: dayKey,
+      editedItems: nextItems,
+      currentDays: recurringDraft.days,
+      recurringTemplates: recurringDraftTemplates,
+    });
+
+    setRecurringDraft({
+      ...recurringDraft,
+      days: syncedDays,
+    });
+
+    // 2. Sync any Graded blocks into recurringDraftTemplates
+    let updatedTpls = [...recurringDraftTemplates];
+    const gradedItems = nextItems.filter(
+      (it) => it.category === 'graded' && it.text.trim().length > 0
+    );
+    const seenTemplateIdsOnDay = new Set<string>();
+
+    for (const graded of gradedItems) {
+      const cleanTitle = graded.text
+        .trim()
+        .replace(/^\[WEEKLY[^\]]*\]\s*/i, '')
+        .replace(/^-\s*\[[ xX]\]\s*/, '')
+        .replace(/^[☐☑•*-]\s*/, '')
+        .trim();
+      const instructions = formatSubItemsForAssignmentInstructions(
+        graded.subItems || [],
+        graded.assignmentRecord?.instructions || null
+      );
+
+      // If repeatAcrossWeek is true, schedule the recurring graded assignment ONCE per week on the last selected repeat day
+      const targetDaysForTpl: DayKey[] = graded.repeatAcrossWeek
+        ? (() => {
+            const ordered = DAY_KEYS.filter((d) => graded.repeatDays.includes(d));
+            const lastDay = ordered[ordered.length - 1] || dayKey;
+            return [lastDay];
+          })()
+        : [dayKey];
+
+      const existingTplId = graded.assignmentRecord?.recurring_template_id;
+      const matchedIdx = updatedTpls.findIndex(
+        (t) =>
+          (existingTplId && t.id === existingTplId) ||
+          normalizeWeeklyBlockKey(t.title_template) ===
+            normalizeWeeklyBlockKey(cleanTitle)
+      );
+
+      if (matchedIdx >= 0) {
+        const existing = updatedTpls[matchedIdx];
+        seenTemplateIdsOnDay.add(existing.id);
+        const mergedDays = graded.repeatAcrossWeek
+          ? targetDaysForTpl
+          : DAY_KEYS.filter(
+              (d) => existing.days_of_week.includes(d) || d === dayKey
+            );
+        updatedTpls[matchedIdx] = {
+          ...existing,
+          title_template: cleanTitle,
+          instructions_template: instructions || existing.instructions_template || '',
+          assignment_type_slug: graded.assignmentCategory || 'homework',
+          grading_mode: graded.scoringMode || 'points',
+          points_possible: graded.pointsPossible || 100,
+          total_problems_default:
+            graded.scoringMode === 'problems_calculator'
+              ? graded.totalProblems || 20
+              : null,
+          days_of_week: mergedDays,
+          is_active: true,
+        };
+      } else {
+        const newId = `draft-tpl-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+        seenTemplateIdsOnDay.add(newId);
+        updatedTpls.push({
+          id: newId,
+          subject_id: recurringSubject.id,
+          title_template: cleanTitle,
+          instructions_template: instructions || '',
+          assignment_type_slug: graded.assignmentCategory || 'homework',
+          grading_mode: graded.scoringMode || 'points',
+          points_possible: graded.pointsPossible || 100,
+          total_problems_default:
+            graded.scoringMode === 'problems_calculator'
+              ? graded.totalProblems || 20
+              : null,
+          days_of_week: targetDaysForTpl,
+          linked_weekly_source: 'weekly_template',
+          auto_behavior: 'auto_create',
+          estimated_minutes: 30,
+          is_active: true,
+        });
+      }
+    }
+
+    // Remove dayKey from any template that was previously on dayKey but was deleted or switched to Info/Verified
+    updatedTpls = updatedTpls
+      .map((tpl) => {
+        if (tpl.linked_weekly_source === 'syllabus_row') return tpl;
+        if (seenTemplateIdsOnDay.has(tpl.id)) return tpl;
+        if (!tpl.days_of_week.includes(dayKey)) return tpl;
+        const remainingDays = tpl.days_of_week.filter((d) => d !== dayKey);
+        return {
+          ...tpl,
+          days_of_week: remainingDays,
+          is_active: remainingDays.length > 0,
+        };
+      })
+      .filter((tpl) => tpl.is_active || !tpl.id.startsWith('draft-tpl-'));
+
+    setRecurringDraftTemplates(updatedTpls);
   };
 
   const handleToggleSubjectAutomationQuick = async (sub: Subject, nextEnabled: boolean) => {
@@ -360,17 +525,78 @@ function AutomationsContent() {
 
       if (error) {
         toast.error(`Failed to save recurring rules: ${error.message}`);
-      } else {
-        setSubjects((prev) =>
-          prev.map((s) =>
-            s.id === recurringSubject.id
-              ? { ...s, recurring_config: recurringDraft as unknown as Json }
-              : s
-          )
-        );
-        toast.success(`Saved recurring automation rules for ${recurringSubject.name}!`);
-        setRecurringSubject(null);
+        return;
       }
+
+      // Sync recurring_assignment_templates for this subject
+      const persistedTemplates: RecurringAssignmentTemplate[] = [];
+      for (const tpl of recurringDraftTemplates) {
+        if (tpl.id.startsWith('draft-tpl-')) {
+          if (!tpl.is_active || tpl.days_of_week.length === 0) continue;
+          const { data: inserted } = await supabase
+            .from('recurring_assignment_templates')
+            .insert({
+              subject_id: recurringSubject.id,
+              title_template: tpl.title_template,
+              instructions_template: tpl.instructions_template,
+              assignment_type_slug: tpl.assignment_type_slug,
+              grading_mode: tpl.grading_mode,
+              points_possible: tpl.points_possible,
+              total_problems_default: tpl.total_problems_default,
+              days_of_week: tpl.days_of_week,
+              linked_weekly_source: tpl.linked_weekly_source,
+              auto_behavior: tpl.auto_behavior,
+              estimated_minutes: tpl.estimated_minutes,
+              is_active: true,
+            })
+            .select('*')
+            .single();
+          if (inserted) {
+            persistedTemplates.push(inserted as RecurringAssignmentTemplate);
+          }
+        } else if (!tpl.is_active || tpl.days_of_week.length === 0) {
+          await supabase
+            .from('recurring_assignment_templates')
+            .delete()
+            .eq('id', tpl.id);
+        } else {
+          const { data: updatedRow } = await supabase
+            .from('recurring_assignment_templates')
+            .update({
+              title_template: tpl.title_template,
+              instructions_template: tpl.instructions_template,
+              assignment_type_slug: tpl.assignment_type_slug,
+              grading_mode: tpl.grading_mode,
+              points_possible: tpl.points_possible,
+              total_problems_default: tpl.total_problems_default,
+              days_of_week: tpl.days_of_week,
+              is_active: tpl.is_active,
+            })
+            .eq('id', tpl.id)
+            .select('*')
+            .single();
+          if (updatedRow) {
+            persistedTemplates.push(updatedRow as RecurringAssignmentTemplate);
+          } else {
+            persistedTemplates.push(tpl);
+          }
+        }
+      }
+
+      setRecurringTemplates((prev) => [
+        ...prev.filter((t) => t.subject_id !== recurringSubject.id),
+        ...persistedTemplates,
+      ]);
+
+      setSubjects((prev) =>
+        prev.map((s) =>
+          s.id === recurringSubject.id
+            ? { ...s, recurring_config: recurringDraft as unknown as Json }
+            : s
+        )
+      );
+      toast.success(`Saved recurring automation rules for ${recurringSubject.name}!`);
+      setRecurringSubject(null);
     } catch {
       toast.error('Failed to save recurring rules');
     } finally {
@@ -994,6 +1220,44 @@ function AutomationsContent() {
     );
   }, [recurringDraft, livePreviewCounters, syllabusMap]);
 
+  const livePreviewAssignmentsByDay = useMemo(() => {
+    if (!recurringSubject || !recurringDraft || !livePreviewCounters) return null;
+    const weekDates = DAY_KEYS.map((dk) => ({
+      dateStr: getIsoDateForWeekdayInWeek(previewWeekDate, dk),
+      dayKey: dk,
+      dayName: DAY_LABELS[dk],
+    }));
+    const candidates = generateWeekAssignmentsFromTemplatesAndPolicy({
+      subject: recurringSubject as SubjectWithGrading,
+      recurringConfig: recurringDraft,
+      counters: livePreviewCounters,
+      weekDates,
+      syllabusMap,
+      templates: recurringDraftTemplates,
+    });
+    const byDay: Record<DayKey, typeof candidates> = {
+      monday: [],
+      tuesday: [],
+      wednesday: [],
+      thursday: [],
+      friday: [],
+    };
+    for (const c of candidates) {
+      const matchedDay = weekDates.find((w) => w.dateStr === c.due_date)?.dayKey;
+      if (matchedDay) {
+        byDay[matchedDay].push(c);
+      }
+    }
+    return byDay;
+  }, [
+    recurringSubject,
+    recurringDraft,
+    livePreviewCounters,
+    previewWeekDate,
+    syllabusMap,
+    recurringDraftTemplates,
+  ]);
+
   if (loading) {
     return (
       <Stack spacing={2.5}>
@@ -1099,9 +1363,8 @@ function AutomationsContent() {
             </Button>
             <Button
               variant="outlined"
-              color="secondary"
               size="small"
-              startIcon={<CloudDownload size={15} />}
+              startIcon={<CloudDownload size={15} color={theme.palette.primary.main} />}
               onClick={() => setApiModalOpen(true)}
               sx={{
                 fontWeight: 700,
@@ -1109,6 +1372,8 @@ function AutomationsContent() {
                 borderRadius: 1,
                 px: 1.75,
                 py: 0.75,
+                borderColor: 'divider',
+                color: 'text.primary',
               }}
             >
               API Integration (Memoria Academy)
@@ -1474,11 +1739,11 @@ function AutomationsContent() {
           {/* =============================================================== */}
           {activeTab === 'syllabus' && (
             <Box>
-              {/* Syllabus Sub-Tabs Bar */}
+              {/* Syllabus Selector Dropdown & Quick Sync Actions Bar */}
               <Box
                 sx={{
                   mb: 3,
-                  p: 1.25,
+                  p: 1.5,
                   borderRadius: 1,
                   bgcolor: alpha(theme.palette.primary.main, 0.03),
                   border: '1px solid',
@@ -1487,121 +1752,170 @@ function AutomationsContent() {
                   alignItems: 'center',
                   justifyContent: 'space-between',
                   flexWrap: 'wrap',
-                  gap: 1,
+                  gap: 1.5,
                 }}
               >
-                <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-                  <Button
-                    size="small"
-                    variant={activeSyllabusSubTab === 'math' ? 'contained' : 'outlined'}
-                    color="primary"
-                    startIcon={<Calculator size={15} />}
-                    onClick={() => setActiveSyllabusSubTab('math')}
-                    sx={{
-                      fontWeight: 700,
-                      textTransform: 'none',
-                      borderRadius: 1,
-                      px: 1.5,
-                      py: 0.65,
-                      boxShadow: 'none',
-                      bgcolor: activeSyllabusSubTab === 'math' ? 'primary.main' : 'background.paper',
-                    }}
-                  >
-                    <Stack direction="row" spacing={0.75} alignItems="center">
-                      <span>Math — Dimensions Math 5 ({syllabusDays.length} Days)</span>
-                      <Chip
-                        label="Manual Upload"
-                        size="small"
-                        sx={{
-                          height: 20,
-                          fontSize: '0.75rem',
-                          fontWeight: 800,
-                          bgcolor:
-                            activeSyllabusSubTab === 'math'
-                              ? 'rgba(255,255,255,0.22)'
-                              : alpha(theme.palette.warning.main, 0.14),
-                          color:
-                            activeSyllabusSubTab === 'math' ? '#FFFFFF' : theme.palette.warning.dark,
-                        }}
-                      />
-                    </Stack>
-                  </Button>
+                {(() => {
+                  const syllabusSubjects = subjects.filter((sub) => {
+                    const cfg = parseRecurringConfig(sub.recurring_config, sub.name);
+                    return cfg.mode !== 'math_syllabus' && Boolean(cfg.course_syllabus);
+                  });
+                  const selectedSub =
+                    activeSyllabusSubTab === 'math'
+                      ? null
+                      : syllabusSubjects.find((s) => s.id === activeSyllabusSubTab) || null;
+                  const selectedCfg = selectedSub
+                    ? parseRecurringConfig(selectedSub.recurring_config, selectedSub.name)
+                    : null;
+                  const selectedSyl = selectedCfg?.course_syllabus;
+                  const isSelectedApi = selectedSyl?.source_type === 'api_sync';
 
-                  {subjects
-                    .filter((sub) => {
-                      const cfg = parseRecurringConfig(sub.recurring_config, sub.name);
-                      return cfg.mode !== 'math_syllabus' && Boolean(cfg.course_syllabus);
-                    })
-                    .map((sub) => {
-                      const cfg = parseRecurringConfig(sub.recurring_config, sub.name);
-                      const syl = cfg.course_syllabus;
-                      const isSubSelected = activeSyllabusSubTab === sub.id;
-                      const isApi = syl?.source_type === 'api_sync';
-                      const countLabel =
-                        isApi && syl?.weeks?.length
-                          ? `${syl.weeks.length} Wks`
-                          : syl?.days?.length
-                          ? `${syl.days.length} Days`
-                          : '';
-                      return (
-                        <Button
-                          key={sub.id}
-                          size="small"
-                          variant={isSubSelected ? 'contained' : 'outlined'}
-                          color="primary"
-                          startIcon={
-                            <Box
-                              sx={{
-                                width: 8,
-                                height: 8,
-                                borderRadius: '50%',
-                                bgcolor: isSubSelected ? '#FFFFFF' : sub.color || '#1b5698',
-                              }}
-                            />
-                          }
-                          onClick={() => setActiveSyllabusSubTab(sub.id)}
-                          sx={{
+                  return (
+                    <Stack
+                      direction={{ xs: 'column', sm: 'row' }}
+                      spacing={1.25}
+                      alignItems={{ xs: 'stretch', sm: 'center' }}
+                      sx={{ flex: 1, minWidth: { xs: '100%', sm: 320 }, maxWidth: { sm: 560 } }}
+                    >
+                      <TextField
+                        select
+                        size="small"
+                        label="Select Course Syllabus"
+                        value={activeSyllabusSubTab}
+                        onChange={(e) => setActiveSyllabusSubTab(e.target.value)}
+                        fullWidth
+                        sx={{
+                          bgcolor: 'background.paper',
+                          borderRadius: 1,
+                          '& .MuiSelect-select': {
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 1,
                             fontWeight: 700,
-                            textTransform: 'none',
-                            borderRadius: 1,
-                            px: 1.5,
-                            py: 0.65,
-                            boxShadow: 'none',
-                            bgcolor: isSubSelected ? 'primary.main' : 'background.paper',
-                          }}
-                        >
-                          <Stack direction="row" spacing={0.75} alignItems="center">
-                            <span>
-                              {sub.name}
-                              {syl?.official_course_name ? ` — ${syl.official_course_name}` : ''}
-                              {countLabel ? ` (${countLabel})` : ''}
-                            </span>
+                            fontSize: '0.85rem',
+                          },
+                        }}
+                      >
+                        <MenuItem value="math" sx={{ fontWeight: 700, fontSize: '0.85rem' }}>
+                          <Stack
+                            direction="row"
+                            spacing={1}
+                            alignItems="center"
+                            justifyContent="space-between"
+                            sx={{ width: '100%' }}
+                          >
+                            <Stack direction="row" spacing={1} alignItems="center">
+                              <Calculator size={15} />
+                              <span>Math — Dimensions Math 5 ({syllabusDays.length} Days)</span>
+                            </Stack>
                             <Chip
-                              label={isApi ? "API Sync'd" : 'Manual Upload'}
+                              label="Manual Upload"
                               size="small"
                               sx={{
                                 height: 20,
-                                fontSize: '0.75rem',
+                                fontSize: '0.68rem',
                                 fontWeight: 800,
-                                bgcolor: isSubSelected
-                                  ? 'rgba(255,255,255,0.22)'
-                                  : isApi
-                                  ? alpha(theme.palette.info.main, 0.14)
-                                  : alpha(theme.palette.warning.main, 0.14),
-                                color: isSubSelected
-                                  ? '#FFFFFF'
-                                  : isApi
-                                  ? theme.palette.info.dark
-                                  : theme.palette.warning.dark,
+                                ml: 1,
+                                bgcolor: alpha(theme.palette.warning.main, 0.14),
+                                color: theme.palette.warning.dark,
                               }}
                             />
                           </Stack>
-                        </Button>
-                      );
-                    })}
-                </Stack>
+                        </MenuItem>
 
-                <Stack direction="row" spacing={1} alignItems="center">
+                        {syllabusSubjects.map((sub) => {
+                          const cfg = parseRecurringConfig(sub.recurring_config, sub.name);
+                          const syl = cfg.course_syllabus;
+                          const isApi = syl?.source_type === 'api_sync';
+                          const countLabel =
+                            isApi && syl?.weeks?.length
+                              ? `${syl.weeks.length} Wks`
+                              : syl?.days?.length
+                              ? `${syl.days.length} Days`
+                              : '';
+                          return (
+                            <MenuItem
+                              key={sub.id}
+                              value={sub.id}
+                              sx={{ fontWeight: 700, fontSize: '0.85rem' }}
+                            >
+                              <Stack
+                                direction="row"
+                                spacing={1}
+                                alignItems="center"
+                                justifyContent="space-between"
+                                sx={{ width: '100%' }}
+                              >
+                                <Stack direction="row" spacing={1} alignItems="center">
+                                  <Box
+                                    sx={{
+                                      width: 9,
+                                      height: 9,
+                                      borderRadius: '50%',
+                                      bgcolor: sub.color || '#1b5698',
+                                      flexShrink: 0,
+                                    }}
+                                  />
+                                  <span>
+                                    {sub.name}
+                                    {syl?.official_course_name
+                                      ? ` — ${syl.official_course_name}`
+                                      : ''}
+                                    {countLabel ? ` (${countLabel})` : ''}
+                                  </span>
+                                </Stack>
+                                <Chip
+                                  label={isApi ? "API Sync'd" : 'Manual Upload'}
+                                  size="small"
+                                  sx={{
+                                    height: 20,
+                                    fontSize: '0.68rem',
+                                    fontWeight: 800,
+                                    ml: 1,
+                                    bgcolor: isApi
+                                      ? alpha(theme.palette.info.main, 0.14)
+                                      : alpha(theme.palette.warning.main, 0.14),
+                                    color: isApi
+                                      ? theme.palette.info.dark
+                                      : theme.palette.warning.dark,
+                                  }}
+                                />
+                              </Stack>
+                            </MenuItem>
+                          );
+                        })}
+                      </TextField>
+
+                      <Chip
+                        label={
+                          activeSyllabusSubTab === 'math'
+                            ? 'Manual Upload'
+                            : isSelectedApi
+                            ? "API Sync'd"
+                            : 'Manual Upload'
+                        }
+                        size="small"
+                        sx={{
+                          height: 26,
+                          fontSize: '0.73rem',
+                          fontWeight: 800,
+                          flexShrink: 0,
+                          alignSelf: { xs: 'flex-start', sm: 'center' },
+                          bgcolor:
+                            activeSyllabusSubTab !== 'math' && isSelectedApi
+                              ? alpha(theme.palette.info.main, 0.14)
+                              : alpha(theme.palette.warning.main, 0.14),
+                          color:
+                            activeSyllabusSubTab !== 'math' && isSelectedApi
+                              ? theme.palette.info.dark
+                              : theme.palette.warning.dark,
+                        }}
+                      />
+                    </Stack>
+                  );
+                })()}
+
+                <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
                   <Button
                     size="small"
                     variant="outlined"
@@ -2488,19 +2802,13 @@ function AutomationsContent() {
                                             )}
                                           </Stack>
                                           {previewText ? (
-                                            <Typography
-                                              variant="caption"
-                                              component="pre"
-                                              sx={{
-                                                whiteSpace: 'pre-wrap',
-                                                fontFamily: 'inherit',
-                                                fontSize: '0.75rem',
-                                                lineHeight: 1.4,
-                                                m: 0,
-                                              }}
-                                            >
-                                              {previewText}
-                                            </Typography>
+                                            <FormattedParentNote
+                                              title={previewBlock.title}
+                                              description={previewBlock.description}
+                                              color={theme.palette.text.primary}
+                                              iconName="FileText"
+                                              interactive={false}
+                                            />
                                           ) : (
                                             <Typography variant="caption" color="text.disabled" sx={{ fontStyle: 'italic' }}>
                                               No schedule text
@@ -3581,15 +3889,15 @@ function AutomationsContent() {
                   </Stack>
                 )}
 
-                {/* 2B. DAY-BY-DAY TEMPLATE EDITOR */}
+                {/* 2B. DAY-BY-DAY STRUCTURED BLOCKS EDITOR */}
                 <Paper variant="outlined" sx={{ p: 2.5, borderRadius: 1 }}>
                   <Typography variant="subtitle1" fontWeight={800} mb={0.5}>
                     {recurringDraft.mode === 'math_syllabus'
-                      ? '4. Optional Custom Day Notes (Mon–Fri)'
-                      : 'Day-by-Day Recurring Templates & Labels (Mon–Fri)'}
+                      ? '4. Optional Custom Day Blocks (Mon–Fri)'
+                      : 'Day-by-Day Recurring Blocks & Assignments (Mon–Fri)'}
                   </Typography>
                   <Typography variant="caption" color="text.secondary" display="block" mb={2}>
-                    Select each day of the week to turn its recurring template on/off, toggle &ldquo;Attend Class&rdquo;, and edit the assignment lines.
+                    Configure structured Headers, Info bullets, Parent-Verified checks, Graded Assignments, multi-line grouped items (such as Memory Work or Novels), and weekly-shared blocks that repeat across selected weekdays.
                   </Typography>
 
                   {/* Day Tabs */}
@@ -3601,6 +3909,12 @@ function AutomationsContent() {
                   >
                     {DAY_KEYS.map((dk) => {
                       const dCfg = recurringDraft.days[dk];
+                      const hasGradedOnDay = recurringDraftTemplates.some(
+                        (t) =>
+                          t.is_active &&
+                          t.days_of_week.includes(dk) &&
+                          t.linked_weekly_source !== 'syllabus_row'
+                      );
                       const isSelected = activeRecurringDay === dk;
                       return (
                         <Button
@@ -3618,13 +3932,13 @@ function AutomationsContent() {
                             bgcolor: isSelected ? 'action.hover' : 'transparent',
                           }}
                         >
-                          <Stack direction="row" spacing={1} alignItems="center">
+                          <Stack direction="row" spacing={0.75} alignItems="center">
                             <span>{DAY_LABELS[dk]}</span>
                             <Chip
-                              label={dCfg.enabled ? 'ON' : 'OFF'}
+                              label={dCfg.enabled || hasGradedOnDay ? 'ON' : 'OFF'}
                               size="small"
-                              color={dCfg.enabled ? 'success' : 'default'}
-                              sx={{ height: 20, fontSize: '0.75rem', fontWeight: 800 }}
+                              color={dCfg.enabled || hasGradedOnDay ? 'success' : 'default'}
+                              sx={{ height: 20, fontSize: '0.72rem', fontWeight: 800 }}
                             />
                           </Stack>
                         </Button>
@@ -3642,6 +3956,22 @@ function AutomationsContent() {
                           [activeRecurringDay]: { ...dayCfg, ...patch },
                         },
                       });
+
+                    const allDaysTemplates: Record<DayKey, string> = {
+                      monday: recurringDraft.days.monday.template,
+                      tuesday: recurringDraft.days.tuesday.template,
+                      wednesday: recurringDraft.days.wednesday.template,
+                      thursday: recurringDraft.days.thursday.template,
+                      friday: recurringDraft.days.friday.template,
+                    };
+
+                    const currentDayItems = parseRecurringTemplateDayToItems({
+                      subjectId: recurringSubject.id,
+                      dayKey: activeRecurringDay,
+                      dayTemplate: dayCfg.template,
+                      allDaysTemplates,
+                      recurringTemplates: recurringDraftTemplates,
+                    });
 
                     return (
                       <Stack spacing={2}>
@@ -3668,7 +3998,7 @@ function AutomationsContent() {
                               }
                               label={
                                 <Typography variant="subtitle2" fontWeight={700}>
-                                  Enable Recurring Template on {DAY_LABELS[activeRecurringDay]}
+                                  Enable Recurring Schedule on {DAY_LABELS[activeRecurringDay]}
                                 </Typography>
                               }
                             />
@@ -3691,7 +4021,7 @@ function AutomationsContent() {
                                 }
                                 label={
                                   <Typography variant="body2" fontWeight={600}>
-                                    Include &ldquo;Attend Class&rdquo; label
+                                    Include &ldquo;Attend Class&rdquo; Header
                                   </Typography>
                                 }
                               />
@@ -3711,56 +4041,21 @@ function AutomationsContent() {
                         </Stack>
 
                         {dayCfg.enabled && (
-                          <Stack spacing={1.5}>
-                            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                              <Typography
-                                variant="caption"
-                                fontWeight={700}
-                                color="text.secondary"
-                                sx={{ alignSelf: 'center' }}
-                              >
-                                Insert Token:
-                              </Typography>
-                              {[
-                                { label: '+ {week}', token: '{week}' },
-                                { label: '+ {class_num}', token: '{class_num}' },
-                                { label: '+ {lesson}', token: '{lesson}' },
-                                { label: '+ {prev_lesson}', token: '{prev_lesson}' },
-                                { label: '+ Checkbox', token: '\n- [ ] ' },
-                                { label: '+ Bullet', token: '\n• ' },
-                              ].map((btn) => (
-                                <Chip
-                                  key={btn.label}
-                                  label={btn.label}
-                                  size="small"
-                                  variant="outlined"
-                                  onClick={() =>
-                                    updateDay({
-                                      template: `${dayCfg.template}${btn.token}`.replace(
-                                        /^\n/,
-                                        ''
-                                      ),
-                                    })
-                                  }
-                                  sx={{
-                                    cursor: 'pointer',
-                                    fontWeight: 700,
-                                    fontSize: '0.75rem',
-                                  }}
-                                />
-                              ))}
-                            </Stack>
-                            <TextField
-                              fullWidth
-                              multiline
-                              rows={4}
-                              size="small"
-                              label={`${DAY_LABELS[activeRecurringDay]} Assignment Lines (First line without bullet/checkbox is bold header)`}
-                              placeholder="Week {week}&#10;- [ ] Do 2 pages&#10;- [ ] Study vocabulary"
-                              value={dayCfg.template}
-                              onChange={(e) => updateDay({ template: e.target.value })}
-                            />
-                          </Stack>
+                          <StructuredTemplateBlocksEditor
+                            subjectId={recurringSubject.id}
+                            dayKey={activeRecurringDay}
+                            subjectColor={recurringSubject.color || theme.palette.primary.main}
+                            items={currentDayItems}
+                            onChangeItems={(nextItems) =>
+                              handleUpdateRecurringDayItems(activeRecurringDay, nextItems)
+                            }
+                            rawTextValue={dayCfg.template}
+                            onChangeRawText={(nextRaw) => updateDay({ template: nextRaw })}
+                            assignmentTypes={assignmentTypes}
+                            allowGradedBlocks={true}
+                            allowRepeatAcrossWeek={true}
+                            showVariableTokens={true}
+                          />
                         )}
                       </Stack>
                     );
@@ -3808,6 +4103,7 @@ function AutomationsContent() {
                     <Grid container spacing={1.5}>
                       {DAY_KEYS.map((dk) => {
                         const dayItem = livePreviewNotes[dk];
+                        const dayAssigns = livePreviewAssignmentsByDay?.[dk] || [];
                         const hasNoteContent = Boolean(
                           (dayItem.title && dayItem.title.trim()) ||
                             (dayItem.description && dayItem.description.trim())
@@ -3845,8 +4141,11 @@ function AutomationsContent() {
                                   color={theme.palette.text.primary}
                                   iconName="FileText"
                                   interactive={false}
+                                  excludeAssignmentTitles={dayAssigns.map(
+                                    (a) => a.title
+                                  )}
                                 />
-                              ) : (
+                              ) : dayAssigns.length === 0 ? (
                                 <Typography
                                   variant="caption"
                                   color="text.disabled"
@@ -3854,6 +4153,54 @@ function AutomationsContent() {
                                 >
                                   (Blank)
                                 </Typography>
+                              ) : null}
+
+                              {dayAssigns.length > 0 && (
+                                <Stack spacing={0.75} sx={{ mt: hasNoteContent ? 1 : 0 }}>
+                                  {dayAssigns.map((assign, aIdx) => (
+                                    <Box
+                                      key={`${assign.title}-${aIdx}`}
+                                      sx={{
+                                        p: 0.75,
+                                        borderRadius: 1,
+                                        bgcolor: alpha(theme.palette.warning.main, 0.08),
+                                        border: `1px solid ${alpha(
+                                          theme.palette.warning.main,
+                                          0.35
+                                        )}`,
+                                      }}
+                                    >
+                                      <Stack
+                                        direction="row"
+                                        justifyContent="space-between"
+                                        alignItems="center"
+                                        spacing={0.5}
+                                      >
+                                        <Typography
+                                          variant="caption"
+                                          fontWeight={700}
+                                          sx={{ fontSize: '0.73rem', lineHeight: 1.25 }}
+                                        >
+                                          {assign.title}
+                                        </Typography>
+                                        <Chip
+                                          size="small"
+                                          label={
+                                            assign.grading_mode === 'problems_calculator'
+                                              ? `${assign.total_problems || 20} probs`
+                                              : `${assign.points_possible} pts`
+                                          }
+                                          color="warning"
+                                          sx={{
+                                            height: 17,
+                                            fontSize: '0.62rem',
+                                            fontWeight: 800,
+                                          }}
+                                        />
+                                      </Stack>
+                                    </Box>
+                                  ))}
+                                </Stack>
                               )}
                             </Paper>
                           </Grid>
@@ -4932,8 +5279,11 @@ function AutomationsContent() {
             onClick={(e) => e.stopPropagation()}
             sx={{
               width: '100%',
-              maxWidth: 640,
+              maxWidth: 1080,
+              maxHeight: '90vh',
               borderRadius: 1,
+              display: 'flex',
+              flexDirection: 'column',
               overflow: 'hidden',
             }}
           >
@@ -4950,10 +5300,10 @@ function AutomationsContent() {
             >
               <Box>
                 <Typography variant="h6" fontWeight={800}>
-                  Customize {editingApiWeek.section_title} Schedule Text
+                  Customize {editingApiWeek.section_title} Schedule Blocks
                 </Typography>
                 <Typography variant="caption" color="text.secondary">
-                  Edits are preserved across future API syncs.
+                  Configure structured Headers, Info bullets, Verified checklist items, and grouped sub-lines. Edits are preserved across future API syncs.
                 </Typography>
               </Box>
               <IconButton size="small" aria-label="Close modal" onClick={() => setEditingApiWeek(null)}>
@@ -4961,29 +5311,95 @@ function AutomationsContent() {
               </IconButton>
             </Box>
 
-            <Box p={3}>
-              <Stack spacing={2}>
-                <TextField
-                  fullWidth
-                  multiline
-                  minRows={7}
-                  maxRows={14}
-                  label="Weekly Assignment Text"
-                  value={editingApiWeekText}
-                  onChange={(e) => setEditingApiWeekText(e.target.value)}
-                />
-                {editingApiWeek.raw_summary && editingApiWeekText !== editingApiWeek.raw_summary && (
-                  <Button
-                    size="small"
-                    variant="text"
-                    color="secondary"
-                    onClick={() => setEditingApiWeekText(editingApiWeek.raw_summary)}
-                    sx={{ alignSelf: 'flex-start', textTransform: 'none', fontWeight: 700 }}
+            <Box sx={{ p: 3, overflowY: 'auto', flex: 1 }}>
+              <Grid container spacing={2.5}>
+                <Grid item xs={12} md={7.5}>
+                  <Stack spacing={1.5}>
+                    {(() => {
+                      const activeSub = subjects.find((s) => s.id === activeSyllabusSubTab);
+                      const parsedWeekItems = parseRecurringTemplateDayToItems({
+                        subjectId: activeSub?.id || 'api-week',
+                        dayKey: 'monday',
+                        dayTemplate: editingApiWeekText,
+                      });
+                      return (
+                        <StructuredTemplateBlocksEditor
+                          subjectId={activeSub?.id || 'api-week'}
+                          dayKey="monday"
+                          subjectColor={activeSub?.color || theme.palette.primary.main}
+                          items={parsedWeekItems}
+                          onChangeItems={(nextItems) => {
+                            const serialized = serializeItemsToRecurringTemplateText(nextItems, {
+                              includeSingleDayGradedInText: true,
+                            });
+                            setEditingApiWeekText(serialized);
+                          }}
+                          rawTextValue={editingApiWeekText}
+                          onChangeRawText={(nextRaw) => setEditingApiWeekText(nextRaw)}
+                          assignmentTypes={assignmentTypes}
+                          allowGradedBlocks={false}
+                          allowRepeatAcrossWeek={true}
+                          showVariableTokens={false}
+                        />
+                      );
+                    })()}
+                    {editingApiWeek.raw_summary && editingApiWeekText !== editingApiWeek.raw_summary && (
+                      <Button
+                        size="small"
+                        variant="text"
+                        color="secondary"
+                        onClick={() => setEditingApiWeekText(editingApiWeek.raw_summary)}
+                        sx={{ alignSelf: 'flex-start', textTransform: 'none', fontWeight: 700 }}
+                      >
+                        Reset to Original API Text
+                      </Button>
+                    )}
+                  </Stack>
+                </Grid>
+
+                <Grid item xs={12} md={4.5}>
+                  <Paper
+                    variant="outlined"
+                    sx={{
+                      p: 2,
+                      borderRadius: 1,
+                      bgcolor: 'background.default',
+                      position: 'sticky',
+                      top: 0,
+                    }}
                   >
-                    Reset to Original API Text
-                  </Button>
-                )}
-              </Stack>
+                    <Typography
+                      variant="caption"
+                      fontWeight={800}
+                      color="primary.main"
+                      display="block"
+                      mb={1}
+                      sx={{
+                        textTransform: 'uppercase',
+                        letterSpacing: '0.05em',
+                        borderBottom: '1px solid',
+                        borderColor: 'divider',
+                        pb: 0.5,
+                      }}
+                    >
+                      Live Binder Preview — {editingApiWeek.section_title}
+                    </Typography>
+                    {editingApiWeekText.trim() ? (
+                      <FormattedParentNote
+                        title={null}
+                        description={editingApiWeekText}
+                        color={theme.palette.text.primary}
+                        iconName="FileText"
+                        interactive={false}
+                      />
+                    ) : (
+                      <Typography variant="caption" color="text.disabled" fontStyle="italic">
+                        No schedule blocks entered
+                      </Typography>
+                    )}
+                  </Paper>
+                </Grid>
+              </Grid>
             </Box>
 
             <Box
@@ -5013,7 +5429,7 @@ function AutomationsContent() {
                 }}
                 sx={{ fontWeight: 700 }}
               >
-                {savingApiWeekText ? 'Saving...' : 'Save Week Text'}
+                {savingApiWeekText ? 'Saving...' : 'Save Week Schedule'}
               </Button>
             </Box>
           </Paper>

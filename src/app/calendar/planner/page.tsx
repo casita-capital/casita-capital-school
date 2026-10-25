@@ -48,10 +48,13 @@ import {
   LayoutGrid,
   BookOpen,
   Check,
+  ClipboardCheck,
   History,
+  AlertTriangle,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { PageHeading } from 'src/components/base/page-heading';
+import { RouterLink } from 'src/components/base/router-link';
 import { createClient } from 'src/services/supabase/client';
 import { Json } from 'src/services/supabase/types';
 import { useSchoolSettings } from 'src/contexts/school-settings';
@@ -100,6 +103,11 @@ import {
   UnifiedAssignmentModal,
 } from 'src/components/assignments/unified-assignment-modal';
 import { AssignmentTypesManagerModal } from 'src/components/assignments/grading-policy-modals';
+import { UnifiedCellItemsEditor } from 'src/components/planner/unified-cell-items-editor';
+import {
+  extractAssignmentSubItems,
+  normalizeAssessmentTitleForDedup,
+} from 'src/utils/weekly-grading-items';
 
 interface Subject {
   id: string;
@@ -194,7 +202,8 @@ function getMondayForDateStr(dateStr: string): string {
     return getCurrentWeekMonday();
   }
   const day = parsed.getDay(); // 0 = Sun, 1 = Mon, ..., 6 = Sat
-  const diff = day === 0 ? 1 : 1 - day;
+  // Roll forward to the upcoming Monday starting on Saturday (day === 6 -> +2, day === 0 -> +1)
+  const diff = day === 6 ? 2 : day === 0 ? 1 : 1 - day;
   const monday = new Date(parsed);
   monday.setDate(parsed.getDate() + diff);
   return formatDateStr(monday);
@@ -203,7 +212,8 @@ function getMondayForDateStr(dateStr: string): string {
 function getCurrentWeekMonday(): string {
   const now = new Date();
   const day = now.getDay(); // 0 = Sun, 1 = Mon, ..., 6 = Sat
-  const diff = day === 0 ? 1 : 1 - day;
+  // Roll forward to the upcoming Monday starting on Saturday (day === 6 -> +2, day === 0 -> +1)
+  const diff = day === 6 ? 2 : day === 0 ? 1 : 1 - day;
   const monday = new Date(now);
   monday.setDate(now.getDate() + diff);
   return formatDateStr(monday);
@@ -256,7 +266,7 @@ function PlannerContent() {
   });
 
   // On-Screen View Mode & Page Jump / Date Picker Refs (never affects @media print)
-  const [screenViewMode, setScreenViewMode] = useState<ScreenViewMode>('binder_2page');
+  const [screenViewMode, setScreenViewMode] = useState<ScreenViewMode>('five_day');
   const datePickerInputRef = useRef<HTMLInputElement | null>(null);
   const printRootRef = useRef<HTMLDivElement | null>(null);
   const page1Ref = useRef<HTMLDivElement | null>(null);
@@ -290,6 +300,12 @@ function PlannerContent() {
 
   // Modal State for adding/editing School Work, Parent Notes, or School Assignment in a cell
   const [openCellModal, setOpenCellModal] = useState(false);
+  const [cellEditorMode, setCellEditorMode] = useState<'structured_rows' | 'classic_text'>('structured_rows');
+  const cellItemsSaveRef = useRef<(() => Promise<void>) | null>(null);
+  const [cellItemsSaving, setCellItemsSaving] = useState(false);
+  const [cellItemsDirty, setCellItemsDirty] = useState(false);
+  const [confirmUnsavedCloseOpen, setConfirmUnsavedCloseOpen] = useState(false);
+  const pendingUnsavedActionRef = useRef<(() => void) | null>(null);
   const [selectedSubject, setSelectedSubject] = useState<Subject | null>(null);
   const [selectedDate, setSelectedDate] = useState<string>('');
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
@@ -551,22 +567,78 @@ function PlannerContent() {
     loadPlannerData(weekStartDate);
   }, [weekStartDate]);
 
+  const isClassicTextDirty = useMemo(() => {
+    if (!openCellModal || cellEditorMode !== 'classic_text' || !isFormOpen) return false;
+    if (editingNoteId) {
+      const orig = parentNotes.find((n) => n.id === editingNoteId);
+      if (!orig) return Boolean(cellNoteHeader.trim() || cellNoteDesc.trim());
+      const origCat = getPlannerNoteCategory(orig.title, orig.description);
+      const origHeader = stripParentNoteMarker(orig.title);
+      const origDesc = stripParentNoteMarker(orig.description);
+      return (
+        cellNoteCategory !== origCat ||
+        cellNoteHeader !== origHeader ||
+        cellNoteDesc !== origDesc
+      );
+    }
+    return Boolean(cellNoteHeader.trim() || cellNoteDesc.trim());
+  }, [
+    openCellModal,
+    cellEditorMode,
+    isFormOpen,
+    editingNoteId,
+    parentNotes,
+    cellNoteCategory,
+    cellNoteHeader,
+    cellNoteDesc,
+  ]);
+
+  const isCellModalDirty =
+    openCellModal &&
+    (cellEditorMode === 'structured_rows' ? cellItemsDirty : isClassicTextDirty);
+
+  const handleRequestCloseCellModal = useCallback(
+    (customAction?: () => void) => {
+      const action =
+        customAction ||
+        (() => {
+          setCellItemsDirty(false);
+          setOpenCellModal(false);
+        });
+      if (isCellModalDirty) {
+        pendingUnsavedActionRef.current = action;
+        setConfirmUnsavedCloseOpen(true);
+      } else {
+        action();
+      }
+    },
+    [isCellModalDirty]
+  );
+
   // Close active drawer/modals on Escape key
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        if (confirmResetOpen) {
+        if (confirmUnsavedCloseOpen) {
+          setConfirmUnsavedCloseOpen(false);
+        } else if (confirmResetOpen) {
           setConfirmResetOpen(false);
         } else if (openPopulateModal) {
           setOpenPopulateModal(false);
         } else if (openCellModal) {
-          setOpenCellModal(false);
+          handleRequestCloseCellModal();
         }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [confirmResetOpen, openPopulateModal, openCellModal]);
+  }, [
+    confirmUnsavedCloseOpen,
+    confirmResetOpen,
+    openPopulateModal,
+    openCellModal,
+    handleRequestCloseCellModal,
+  ]);
 
   const persistSettingsToDb = useCallback(
     async (newSettings: WeeklySettings) => {
@@ -695,6 +767,9 @@ function PlannerContent() {
     setConfirmDeleteNoteId(null);
     setShowFullWeekSyllabusInCell(false);
     setShowQuickAddAssignment(false);
+    setCellItemsDirty(false);
+    setConfirmUnsavedCloseOpen(false);
+    pendingUnsavedActionRef.current = null;
 
     const squareNotes = parentNotes.filter(
       (n) => n.subject_id === subject.id && n.note_date === dateStr
@@ -727,7 +802,11 @@ function PlannerContent() {
     const curIdx = weekDates.findIndex((wd) => wd.dateStr === selectedDate);
     if (curIdx < 0) return;
     const nextIdx = (curIdx + delta + weekDates.length) % weekDates.length;
-    handleOpenCellEditor(selectedSubject, weekDates[nextIdx].dateStr);
+    const nextDateStr = weekDates[nextIdx].dateStr;
+    const currentSubject = selectedSubject;
+    handleRequestCloseCellModal(() => {
+      handleOpenCellEditor(currentSubject, nextDateStr);
+    });
   };
 
   const handleStepCellSubject = (delta: -1 | 1) => {
@@ -736,7 +815,11 @@ function PlannerContent() {
     const curIdx = activeSubList.findIndex((s) => s.id === selectedSubject.id);
     if (curIdx < 0) return;
     const nextIdx = (curIdx + delta + activeSubList.length) % activeSubList.length;
-    handleOpenCellEditor(activeSubList[nextIdx], selectedDate);
+    const nextSub = activeSubList[nextIdx];
+    const currentDateStr = selectedDate;
+    handleRequestCloseCellModal(() => {
+      handleOpenCellEditor(nextSub, currentDateStr);
+    });
   };
 
   const handleStartEditNote = (note: ParentNote) => {
@@ -828,6 +911,14 @@ function PlannerContent() {
       setCellNoteHeader('');
       setCellNoteDesc('');
       setIsFormOpen(false);
+      setConfirmUnsavedCloseOpen(false);
+      if (pendingUnsavedActionRef.current) {
+        const action = pendingUnsavedActionRef.current;
+        pendingUnsavedActionRef.current = null;
+        action();
+      } else {
+        setOpenCellModal(false);
+      }
     } catch {
       toast.error(`Error saving ${labelText.toLowerCase()}`);
     } finally {
@@ -1141,15 +1232,26 @@ function PlannerContent() {
       updated_at: string;
     }> = [];
 
+    const toDeleteIds: string[] = [];
+
     for (const dayInfo of weekDates) {
       const dayNote = generatedByDay[dayInfo.dayKey];
       const hasTitle = Boolean(dayNote.title && dayNote.title.trim());
       const hasDesc = Boolean(dayNote.description && dayNote.description.trim());
-      if (!hasTitle && !hasDesc) continue;
 
       const existingNotes = parentNotes.filter(
-        (n) => n.subject_id === subjectId && n.note_date === dayInfo.dateStr
+        (n) =>
+          n.subject_id === subjectId &&
+          n.note_date === dayInfo.dateStr &&
+          !n.title?.startsWith('[PARENT_NOTE]')
       );
+
+      if (!hasTitle && !hasDesc) {
+        for (const stale of existingNotes) {
+          toDeleteIds.push(stale.id);
+        }
+        continue;
+      }
 
       if (existingNotes.length === 0) {
         toInsert.push({
@@ -1170,6 +1272,11 @@ function PlannerContent() {
           updated_at: nowIso,
         });
       }
+    }
+
+    if (toDeleteIds.length > 0) {
+      await supabase.from('parent_notes').delete().in('id', toDeleteIds);
+      setParentNotes((prev) => prev.filter((n) => !toDeleteIds.includes(n.id)));
     }
 
     if (toInsert.length > 0) {
@@ -1305,15 +1412,68 @@ function PlannerContent() {
     });
 
     if (generatedForWeek.length > 0) {
+      const { data: allSubjectAssignData } = await supabase
+        .from('assignments')
+        .select('*')
+        .eq('subject_id', subjectId);
+      const allSubjectAssigns = (allSubjectAssignData || []) as SchoolAssignment[];
       const updatedSchoolAssignments = [...schoolAssignments];
+      const isApiSyllabusSubject = effectiveCfg.course_syllabus?.source_type === 'api_sync';
+
       for (const cand of generatedForWeek) {
+        const candMoodleMeta = parseAssignmentMoodleMeta(cand.state_standards);
+        const candCmid = candMoodleMeta?.moodle_cmid;
+        const isApiAssessmentCandidate =
+          candCmid !== undefined ||
+          (cand.source_type === 'syllabus_staged' && isApiSyllabusSubject);
+
+        if (isApiAssessmentCandidate) {
+          const existingApiMatch = allSubjectAssigns.find(
+            (a) =>
+              (candCmid !== undefined &&
+                parseAssignmentMoodleMeta(a.state_standards)?.moodle_cmid === candCmid) ||
+              normalizeAssessmentTitleForDedup(a.title) ===
+                normalizeAssessmentTitleForDedup(cand.title)
+          );
+
+          if (existingApiMatch) {
+            if (existingApiMatch.percentage_score === null) {
+              const { data: updatedRow } = await supabase
+                .from('assignments')
+                .update({
+                  title: cand.title,
+                  description: cand.description,
+                  instructions: cand.instructions,
+                  due_date: cand.due_date,
+                  syllabus_day_number: cand.syllabus_day_number,
+                  state_standards: cand.state_standards,
+                })
+                .eq('id', existingApiMatch.id)
+                .select('*')
+                .single();
+              if (updatedRow) {
+                const typedRow = updatedRow as SchoolAssignment;
+                const inWeekIdx = updatedSchoolAssignments.findIndex(
+                  (a) => a.id === existingApiMatch.id
+                );
+                if (inWeekIdx >= 0) {
+                  updatedSchoolAssignments[inWeekIdx] = typedRow;
+                } else {
+                  updatedSchoolAssignments.push(typedRow);
+                }
+              }
+            }
+            continue;
+          }
+        }
+
         const existingOnDateIdx = updatedSchoolAssignments.findIndex(
           (a) =>
             a.subject_id === subjectId &&
             a.due_date === cand.due_date &&
-            (a.category === cand.category ||
-              a.source_type === 'recurring_template' ||
-              a.recurring_template_id === cand.recurring_template_id)
+            ((cand.recurring_template_id !== null &&
+              a.recurring_template_id === cand.recurring_template_id) ||
+              (a.source_type === cand.source_type && a.category === cand.category))
         );
         if (existingOnDateIdx >= 0) {
           const existingItem = updatedSchoolAssignments[existingOnDateIdx];
@@ -1362,7 +1522,9 @@ function PlannerContent() {
             .select('*')
             .single();
           if (insertedRow) {
-            updatedSchoolAssignments.push(insertedRow as SchoolAssignment);
+            const typedInserted = insertedRow as SchoolAssignment;
+            updatedSchoolAssignments.push(typedInserted);
+            allSubjectAssigns.push(typedInserted);
           }
         }
       }
@@ -1584,25 +1746,35 @@ function PlannerContent() {
           templates: subjectTemplates,
         });
         for (const ga of generatedAssigns) {
+          const gaMoodleMeta = parseAssignmentMoodleMeta(ga.state_standards);
+          const gaCmid = gaMoodleMeta?.moodle_cmid;
+
           const alreadyExistsOnDate = allKnownAssignments.some(
             (existing) =>
               existing.subject_id === ga.subject_id &&
               existing.due_date === ga.due_date &&
-              existing.title.toLowerCase() === ga.title.toLowerCase()
+              (normalizeAssessmentTitleForDedup(existing.title) ===
+                normalizeAssessmentTitleForDedup(ga.title) ||
+                (gaCmid !== undefined &&
+                  parseAssignmentMoodleMeta(existing.state_standards)?.moodle_cmid === gaCmid))
           );
           if (alreadyExistsOnDate) continue;
 
-          // Check if an API-synced or syllabus-staged assessment with this exact title already exists
-          const existingByTitle =
-            ga.source_type === 'syllabus_staged'
+          // Check if an API-synced or syllabus-staged assessment with this moodle_cmid or exact title already exists
+          const existingByCmidOrTitle =
+            ga.source_type === 'syllabus_staged' || gaCmid !== undefined
               ? allKnownAssignments.find(
                   (existing) =>
                     existing.subject_id === ga.subject_id &&
-                    existing.title.toLowerCase() === ga.title.toLowerCase()
+                    ((gaCmid !== undefined &&
+                      parseAssignmentMoodleMeta(existing.state_standards)?.moodle_cmid ===
+                        gaCmid) ||
+                      normalizeAssessmentTitleForDedup(existing.title) ===
+                        normalizeAssessmentTitleForDedup(ga.title))
                 )
               : undefined;
 
-          if (!existingByTitle) {
+          if (!existingByCmidOrTitle) {
             assignmentsToInsert.push(ga);
           }
         }
@@ -1614,9 +1786,8 @@ function PlannerContent() {
             `Pulled forward previous week's sidebar sections (subject cells already had notes).`
           );
         } else {
-          toast(
-            'All recurring cells and graded assignments for this week are already populated.',
-            { icon: 'ℹ️' }
+          toast.success(
+            'All recurring cells and graded assignments for this week are already populated.'
           );
         }
         setOpenPopulateModal(false);
@@ -1973,20 +2144,20 @@ function PlannerContent() {
           }}
         >
           <Stack
-            direction={{ xs: 'column', md: 'row' }}
-            alignItems={{ xs: 'stretch', md: 'center' }}
+            direction="row"
+            alignItems="center"
             justifyContent="space-between"
+            flexWrap="wrap"
+            useFlexGap
             spacing={1.25}
-             sx={{ flexWrap: 'nowrap' }}
           >
             {/* Left: Title + Inline Week Stepper / Date Picker + Sequence Status Pill */}
             <Stack
               direction="row"
               alignItems="center"
               spacing={1}
-              flexWrap={{ xs: 'wrap', md: 'nowrap' }}
+              flexWrap="wrap"
               useFlexGap
-              sx={{ minWidth: 0 }}
             >
               <Typography
                 variant="h5"
@@ -2156,7 +2327,7 @@ function PlannerContent() {
               direction="row"
               spacing={0.75}
               alignItems="center"
-              flexWrap={{ xs: 'wrap', md: 'nowrap' }}
+              flexWrap="wrap"
               useFlexGap
               sx={{ flexShrink: 0 }}
             >
@@ -2262,6 +2433,28 @@ function PlannerContent() {
                   {populatingWeek ? 'Populating…' : 'Populate'}
                 </Button>
               )}
+
+              <Button
+                component={RouterLink}
+                href={`/calendar/grading-summary?week=${weekStartDate}`}
+                size="small"
+                variant="outlined"
+                color="primary"
+                startIcon={<ClipboardCheck size={15} />}
+                sx={{
+                  fontWeight: 700,
+                  fontSize: '0.8125rem',
+                  textTransform: 'none',
+                  borderRadius: 1,
+                  px: 1.25,
+                  py: 0.55,
+                  minWidth: 0,
+                  whiteSpace: 'nowrap',
+                  flexShrink: 0,
+                }}
+              >
+                Grading Summary
+              </Button>
 
               <Button
                 size="small"
@@ -3237,7 +3430,7 @@ function PlannerContent() {
                         {dayTasks.map((t) => (
                           <div key={t.id} className="task-banner-top" style={{ backgroundColor: branding.tasks.color }} title={t.title}>
                             <ItemIcon name={branding.tasks.icon} size={10} color="#ffffff" style={{ marginRight: 3, flexShrink: 0 }} />
-                            <span className="banner-text">{t.status === 'completed' ? '✓' : '☐'} {t.title}</span>
+                            <span className="banner-text">{t.status === 'completed' ? '[x]' : '[ ]'} {t.title}</span>
                           </div>
                         ))}
                         {!hasEvents && <div className="all-day-empty">—</div>}
@@ -3332,6 +3525,7 @@ function PlannerContent() {
                               (n) => n.subject_id === subject.id && n.note_date === d.dateStr
                             );
                             if (squareNotes.length === 0) return null;
+                            const cellAssignTitles = cellSchoolAssignments.map((a) => a.title);
                             return squareNotes.map((noteItem) => (
                               <Box key={noteItem.id} className="parent-note-item" sx={{ mb: 1 }}>
                                 <FormattedParentNote
@@ -3343,25 +3537,60 @@ function PlannerContent() {
                                   parentNoteColor={branding.parentNotes.color}
                                   parentNoteIconName={branding.parentNotes.icon}
                                   onToggleCheckbox={handleToggleParentNoteCheckbox}
+                                  excludeAssignmentTitles={cellAssignTitles}
                                 />
                               </Box>
                             ));
                           })()}
-                          {cellSchoolAssignments.map((a) => (
-                            <div
-                              key={a.id}
-                              className="school-assignment-item"
-                              style={{ color: branding.assignments.color, cursor: 'pointer' }}
-                              onClick={(e) => handleOpenAssignmentFromPlanner(a, e)}
-                              title="Click to grade or edit assignment"
-                            >
-                              <ItemIcon name={branding.assignments.icon} size={11} color={branding.assignments.color} style={{ marginRight: 4, display: 'inline' }} />
-                              [{a.category.toUpperCase()}] {a.title}
-                              {typeof a.percentage_score === 'number'
-                                ? ` • ${a.percentage_score.toFixed(0)}%`
-                                : ''}
-                            </div>
-                          ))}
+                          {cellSchoolAssignments.map((a) => {
+                            const subItems = extractAssignmentSubItems(a);
+                            return (
+                              <div
+                                key={a.id}
+                                className="school-assignment-item"
+                                style={{ color: branding.assignments.color, cursor: 'pointer' }}
+                                onClick={(e) => handleOpenAssignmentFromPlanner(a, e)}
+                                title="Click to grade or edit assignment"
+                              >
+                                <ItemIcon name={branding.assignments.icon} size={11} color={branding.assignments.color} style={{ marginRight: 4, display: 'inline' }} />
+                                [{a.category.toUpperCase()}] {a.title}
+                                {typeof a.percentage_score === 'number'
+                                  ? ` • ${a.percentage_score.toFixed(0)}%`
+                                  : ''}
+                                {subItems.length > 0 && (
+                                  <div style={{ paddingLeft: 12, marginTop: 2, fontWeight: 500, fontSize: '0.68rem', opacity: 0.9 }}>
+                                    {subItems.map((sl) => (
+                                      <div key={sl.id} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                                        {sl.isBullet ? (
+                                          <span>•</span>
+                                        ) : (
+                                          <span
+                                            style={{
+                                              display: 'inline-flex',
+                                              alignItems: 'center',
+                                              justifyContent: 'center',
+                                              width: 10,
+                                              height: 10,
+                                              border: '1.25px solid currentColor',
+                                              borderRadius: 2,
+                                              flexShrink: 0,
+                                            }}
+                                          >
+                                            {sl.checked ? (
+                                              <svg width="7" height="7" viewBox="0 0 10 10" fill="none">
+                                                <path d="M2 5L4.2 7.2L8 2.8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                                              </svg>
+                                            ) : null}
+                                          </span>
+                                        )}
+                                        <span>{sl.text}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
                         </td>
                       );
                     })}
@@ -3427,7 +3656,7 @@ function PlannerContent() {
                             {dayTasks.map((t) => (
                               <div key={t.id} className="task-banner-top" style={{ backgroundColor: branding.tasks.color }} title={t.title}>
                                 <ItemIcon name={branding.tasks.icon} size={10} color="#ffffff" style={{ marginRight: 3, flexShrink: 0 }} />
-                                <span className="banner-text">{t.status === 'completed' ? '✓' : '☐'} {t.title}</span>
+                                <span className="banner-text">{t.status === 'completed' ? '[x]' : '[ ]'} {t.title}</span>
                               </div>
                             ))}
                             {!hasEvents && <div className="all-day-empty">—</div>}
@@ -3522,6 +3751,7 @@ function PlannerContent() {
                                   (n) => n.subject_id === subject.id && n.note_date === d.dateStr
                                 );
                                 if (squareNotes.length === 0) return null;
+                                const cellAssignTitles = cellSchoolAssignments.map((a) => a.title);
                                 return squareNotes.map((noteItem) => (
                                   <Box key={noteItem.id} className="parent-note-item" sx={{ mb: 1 }}>
                                     <FormattedParentNote
@@ -3533,25 +3763,60 @@ function PlannerContent() {
                                       parentNoteColor={branding.parentNotes.color}
                                       parentNoteIconName={branding.parentNotes.icon}
                                       onToggleCheckbox={handleToggleParentNoteCheckbox}
+                                      excludeAssignmentTitles={cellAssignTitles}
                                     />
                                   </Box>
                                 ));
                               })()}
-                              {cellSchoolAssignments.map((a) => (
-                                <div
-                                  key={a.id}
-                                  className="school-assignment-item"
-                                  style={{ color: branding.assignments.color, cursor: 'pointer' }}
-                                  onClick={(e) => handleOpenAssignmentFromPlanner(a, e)}
-                                  title="Click to grade or edit assignment"
-                                >
-                                  <ItemIcon name={branding.assignments.icon} size={11} color={branding.assignments.color} style={{ marginRight: 4, display: 'inline' }} />
-                                  [{a.category.toUpperCase()}] {a.title}
-                                  {typeof a.percentage_score === 'number'
-                                    ? ` • ${a.percentage_score.toFixed(0)}%`
-                                    : ''}
-                                </div>
-                              ))}
+                              {cellSchoolAssignments.map((a) => {
+                                const subItems = extractAssignmentSubItems(a);
+                                return (
+                                  <div
+                                    key={a.id}
+                                    className="school-assignment-item"
+                                    style={{ color: branding.assignments.color, cursor: 'pointer' }}
+                                    onClick={(e) => handleOpenAssignmentFromPlanner(a, e)}
+                                    title="Click to grade or edit assignment"
+                                  >
+                                    <ItemIcon name={branding.assignments.icon} size={11} color={branding.assignments.color} style={{ marginRight: 4, display: 'inline' }} />
+                                    [{a.category.toUpperCase()}] {a.title}
+                                    {typeof a.percentage_score === 'number'
+                                      ? ` • ${a.percentage_score.toFixed(0)}%`
+                                      : ''}
+                                    {subItems.length > 0 && (
+                                      <div style={{ paddingLeft: 12, marginTop: 2, fontWeight: 500, fontSize: '0.68rem', opacity: 0.9 }}>
+                                        {subItems.map((sl) => (
+                                          <div key={sl.id} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                                            {sl.isBullet ? (
+                                              <span>•</span>
+                                            ) : (
+                                              <span
+                                                style={{
+                                                  display: 'inline-flex',
+                                                  alignItems: 'center',
+                                                  justifyContent: 'center',
+                                                  width: 10,
+                                                  height: 10,
+                                                  border: '1.25px solid currentColor',
+                                                  borderRadius: 2,
+                                                  flexShrink: 0,
+                                                }}
+                                              >
+                                                {sl.checked ? (
+                                                  <svg width="7" height="7" viewBox="0 0 10 10" fill="none">
+                                                    <path d="M2 5L4.2 7.2L8 2.8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                                                  </svg>
+                                                ) : null}
+                                              </span>
+                                            )}
+                                            <span>{sl.text}</span>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
                             </td>
                           );
                         })}
@@ -3723,7 +3988,7 @@ function PlannerContent() {
       {screenViewMode === 'five_day' && (
         <Box className="no-print planner-print-root">
           <Box className="print-page" sx={{ minHeight: 'auto', mb: 3 }}>
-            <Box className="planner-header" sx={{ justifyContent: 'space-between !important', px: '16px !important' }}>
+            <Box className="planner-header planner-header-five-day">
               <Box display="flex" alignItems="center">
                 <Typography
                   component="span"
@@ -3838,7 +4103,7 @@ function PlannerContent() {
                                   style={{ marginRight: 3, flexShrink: 0 }}
                                 />
                                 <span className="banner-text">
-                                  {t.status === 'completed' ? '✓' : '☐'} {t.title}
+                                  {t.status === 'completed' ? '[x]' : '[ ]'} {t.title}
                                 </span>
                               </div>
                             ))}
@@ -3937,6 +4202,7 @@ function PlannerContent() {
                                   (n) => n.subject_id === subject.id && n.note_date === d.dateStr
                                 );
                                 if (squareNotes.length === 0) return null;
+                                const cellAssignTitles = cellSchoolAssignments.map((a) => a.title);
                                 return squareNotes.map((noteItem) => (
                                   <Box key={noteItem.id} className="parent-note-item" sx={{ mb: 1 }}>
                                     <FormattedParentNote
@@ -3948,30 +4214,65 @@ function PlannerContent() {
                                       parentNoteColor={branding.parentNotes.color}
                                       parentNoteIconName={branding.parentNotes.icon}
                                       onToggleCheckbox={handleToggleParentNoteCheckbox}
+                                      excludeAssignmentTitles={cellAssignTitles}
                                     />
                                   </Box>
                                 ));
                               })()}
-                              {cellSchoolAssignments.map((a) => (
-                                <div
-                                  key={a.id}
-                                  className="school-assignment-item"
-                                  style={{ color: branding.assignments.color, cursor: 'pointer' }}
-                                  onClick={(e) => handleOpenAssignmentFromPlanner(a, e)}
-                                  title="Click to grade or edit assignment"
-                                >
-                                  <ItemIcon
-                                    name={branding.assignments.icon}
-                                    size={11}
-                                    color={branding.assignments.color}
-                                    style={{ marginRight: 4, display: 'inline' }}
-                                  />
-                                  [{a.category.toUpperCase()}] {a.title}
-                                  {typeof a.percentage_score === 'number'
-                                    ? ` • ${a.percentage_score.toFixed(0)}%`
-                                    : ''}
-                                </div>
-                              ))}
+                              {cellSchoolAssignments.map((a) => {
+                                const subItems = extractAssignmentSubItems(a);
+                                return (
+                                  <div
+                                    key={a.id}
+                                    className="school-assignment-item"
+                                    style={{ color: branding.assignments.color, cursor: 'pointer' }}
+                                    onClick={(e) => handleOpenAssignmentFromPlanner(a, e)}
+                                    title="Click to grade or edit assignment"
+                                  >
+                                    <ItemIcon
+                                      name={branding.assignments.icon}
+                                      size={11}
+                                      color={branding.assignments.color}
+                                      style={{ marginRight: 4, display: 'inline' }}
+                                    />
+                                    [{a.category.toUpperCase()}] {a.title}
+                                    {typeof a.percentage_score === 'number'
+                                      ? ` • ${a.percentage_score.toFixed(0)}%`
+                                      : ''}
+                                    {subItems.length > 0 && (
+                                      <div style={{ paddingLeft: 12, marginTop: 2, fontWeight: 500, fontSize: '0.68rem', opacity: 0.9 }}>
+                                        {subItems.map((sl) => (
+                                          <div key={sl.id} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                                            {sl.isBullet ? (
+                                              <span>•</span>
+                                            ) : (
+                                              <span
+                                                style={{
+                                                  display: 'inline-flex',
+                                                  alignItems: 'center',
+                                                  justifyContent: 'center',
+                                                  width: 10,
+                                                  height: 10,
+                                                  border: '1.25px solid currentColor',
+                                                  borderRadius: 2,
+                                                  flexShrink: 0,
+                                                }}
+                                              >
+                                                {sl.checked ? (
+                                                  <svg width="7" height="7" viewBox="0 0 10 10" fill="none">
+                                                    <path d="M2 5L4.2 7.2L8 2.8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                                                  </svg>
+                                                ) : null}
+                                              </span>
+                                            )}
+                                            <span>{sl.text}</span>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
                             </td>
                           );
                         })}
@@ -4132,32 +4433,45 @@ function PlannerContent() {
         </Box>
       )}
 
-      {/* CELL PARENT NOTES & ASSIGNMENT EDITOR SIDE PANEL (React 19 safe, no MUI Modal/Slide ref access) */}
+      {/* CELL PARENT NOTES & ASSIGNMENT EDITOR CENTERED MODAL (React 19 safe, no MUI Modal/Slide ref access) */}
       {openCellModal && (
         <Box
           className="no-print"
+          onClick={() => handleRequestCloseCellModal()}
           sx={{
             position: 'fixed',
-            top: 0,
-            right: 0,
-            bottom: 0,
-            width: { xs: '100%', sm: 460, md: 500 },
-            zIndex: 1300,
-            bgcolor: 'background.paper',
-            color: 'text.primary',
-            boxShadow: '-4px 0 24px rgba(0, 0, 0, 0.15)',
+            inset: 0,
+            zIndex: 1350,
+            bgcolor: 'rgba(0, 0, 0, 0.5)',
             display: 'flex',
-            flexDirection: 'column',
-            borderLeft: '1px solid',
-            borderColor: 'divider',
+            alignItems: 'center',
+            justifyContent: 'center',
+            p: { xs: 1.5, sm: 3 },
           }}
         >
-          {/* Drawer Header with Subject & Day Steppers */}
-          <Box
-            px={3}
-            py={1.75}
-            sx={{ borderBottom: 1, borderColor: 'divider', bgcolor: 'background.paper' }}
+          <Paper
+            elevation={16}
+            onClick={(e) => e.stopPropagation()}
+            sx={{
+              width: '100%',
+              maxWidth: 1080,
+              maxHeight: '90vh',
+              bgcolor: 'background.paper',
+              color: 'text.primary',
+              borderRadius: 1,
+              border: '1px solid',
+              borderColor: 'divider',
+              display: 'flex',
+              flexDirection: 'column',
+              overflow: 'hidden',
+            }}
           >
+            {/* Modal Header with Subject & Day Steppers */}
+            <Box
+              px={3}
+              py={1.75}
+              sx={{ borderBottom: 1, borderColor: 'divider', bgcolor: 'background.paper' }}
+            >
             <Box
               display="flex"
               alignItems="flex-start"
@@ -4245,7 +4559,7 @@ function PlannerContent() {
                 <IconButton
                   size="small"
                   aria-label="Close cell panel"
-                  onClick={() => setOpenCellModal(false)}
+                  onClick={() => handleRequestCloseCellModal()}
                 >
                   <X size={20} />
                 </IconButton>
@@ -4845,6 +5159,93 @@ function PlannerContent() {
                 );
               })()}
 
+            {/* Mode Toggle: Unified Item Rows (Info / Verified / Graded) vs Classic Text Editor */}
+            <Box
+              sx={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                mb: 2,
+                p: 0.75,
+                bgcolor: 'action.hover',
+                borderRadius: 1,
+                border: '1px solid',
+                borderColor: 'divider',
+              }}
+            >
+              <Typography variant="caption" fontWeight={700} color="text.secondary" sx={{ pl: 1 }}>
+                Editor Mode:
+              </Typography>
+              <Stack direction="row" spacing={0.5}>
+                <Button
+                  size="small"
+                  variant={cellEditorMode === 'structured_rows' ? 'contained' : 'text'}
+                  color={cellEditorMode === 'structured_rows' ? 'primary' : 'inherit'}
+                  onClick={() => setCellEditorMode('structured_rows')}
+                  sx={{
+                    textTransform: 'none',
+                    fontWeight: 700,
+                    fontSize: '0.75rem',
+                    py: 0.35,
+                    px: 1.25,
+                    borderRadius: 1,
+                  }}
+                >
+                  Item Rows (Info / Verified / Graded)
+                </Button>
+                <Button
+                  size="small"
+                  variant={cellEditorMode === 'classic_text' ? 'contained' : 'text'}
+                  color={cellEditorMode === 'classic_text' ? 'primary' : 'inherit'}
+                  onClick={() => setCellEditorMode('classic_text')}
+                  sx={{
+                    textTransform: 'none',
+                    fontWeight: 600,
+                    fontSize: '0.75rem',
+                    py: 0.35,
+                    px: 1.25,
+                    borderRadius: 1,
+                  }}
+                >
+                  Classic Text Box
+                </Button>
+              </Stack>
+            </Box>
+
+            {cellEditorMode === 'structured_rows' && selectedSubject && selectedDate ? (
+              <UnifiedCellItemsEditor
+                subject={selectedSubject}
+                dateStr={selectedDate}
+                notes={parentNotes}
+                assignments={schoolAssignments}
+                assignmentTypes={assignmentTypes}
+                branding={branding}
+                saveTriggerRef={cellItemsSaveRef}
+                onSavingChange={setCellItemsSaving}
+                onDirtyChange={setCellItemsDirty}
+                hideInlineSaveButton
+                onSaved={async () => {
+                  await loadPlannerData(weekStartDate);
+                  setCellItemsDirty(false);
+                  setConfirmUnsavedCloseOpen(false);
+                  if (pendingUnsavedActionRef.current) {
+                    const action = pendingUnsavedActionRef.current;
+                    pendingUnsavedActionRef.current = null;
+                    action();
+                  } else {
+                    setOpenCellModal(false);
+                  }
+                }}
+                onOpenFullAssignmentModal={(a) => handleOpenAssignmentFromPlanner(a)}
+                onOpenNewAssignmentModal={() => {
+                  setUnifiedEditAssignment(null);
+                  setUnifiedPromotedNote(null);
+                  setOpenUnifiedModal(true);
+                }}
+                onOpenTypesManager={() => setOpenTypesManagerModal(true)}
+              />
+            ) : (
+              <>
             {/* Section 1: School Work & Parent Notes List / Form */}
             <Box mb={3}>
               <Box
@@ -5473,14 +5874,149 @@ function PlannerContent() {
                 </Stack>
               )}
             </Box>
+              </>
+            )}
           </Box>
 
-          {/* Drawer Footer */}
-          <Box px={3} py={2} sx={{ borderTop: 1, borderColor: 'divider', bgcolor: 'action.hover', display: 'flex', justifyContent: 'flex-end' }}>
-            <Button onClick={() => setOpenCellModal(false)} variant="outlined" color="inherit" sx={{ fontWeight: 700, borderRadius: 1, textTransform: 'none' }}>
-              Close Panel
+          {/* Modal Footer */}
+          <Box
+            px={3}
+            py={2}
+            sx={{
+              borderTop: 1,
+              borderColor: 'divider',
+              bgcolor: 'action.hover',
+              display: 'flex',
+              justifyContent: 'flex-end',
+              alignItems: 'center',
+              gap: 1.25,
+            }}
+          >
+            <Button
+              onClick={() => handleRequestCloseCellModal()}
+              variant="outlined"
+              color="inherit"
+              sx={{ fontWeight: 700, borderRadius: 1, textTransform: 'none' }}
+            >
+              Cancel
             </Button>
+            {cellEditorMode === 'structured_rows' && selectedSubject && selectedDate && (
+              <Button
+                variant="contained"
+                color="primary"
+                startIcon={<Save size={16} />}
+                disabled={cellItemsSaving}
+                onClick={() => {
+                  pendingUnsavedActionRef.current = null;
+                  void cellItemsSaveRef.current?.();
+                }}
+                sx={{ fontWeight: 800, borderRadius: 1, textTransform: 'none', px: 2.5 }}
+              >
+                {cellItemsSaving ? 'Saving...' : 'Save Day Items'}
+              </Button>
+            )}
           </Box>
+          </Paper>
+        </Box>
+      )}
+
+      {/* UNSAVED CHANGES CONFIRMATION MODAL WHEN CLOSING WIDE BINDER CELL MODAL */}
+      {confirmUnsavedCloseOpen && (
+        <Box
+          className="no-print"
+          onClick={() => setConfirmUnsavedCloseOpen(false)}
+          sx={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 1450,
+            bgcolor: 'rgba(0, 0, 0, 0.55)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            p: 2,
+          }}
+        >
+          <Paper
+            elevation={16}
+            onClick={(e) => e.stopPropagation()}
+            sx={{
+              width: '100%',
+              maxWidth: 460,
+              p: 3,
+              borderRadius: 1,
+              border: '1px solid',
+              borderColor: 'divider',
+            }}
+          >
+            <Stack spacing={2}>
+              <Stack direction="row" spacing={1.25} alignItems="center">
+                <AlertTriangle size={22} color={theme.palette.warning.main} />
+                <Typography variant="h6" fontWeight={800}>
+                  Unsaved Changes
+                </Typography>
+              </Stack>
+              <Typography variant="body2" color="text.secondary">
+                You have unsaved changes for{' '}
+                <strong>{selectedSubject?.name || 'this subject'}</strong> on{' '}
+                <strong>{selectedDate}</strong>. Would you like to save your changes or abandon them?
+              </Typography>
+              <Stack
+                direction="row"
+                spacing={1}
+                justifyContent="flex-end"
+                alignItems="center"
+                flexWrap="wrap"
+                useFlexGap
+                pt={0.5}
+              >
+                <Button
+                  variant="text"
+                  color="inherit"
+                  onClick={() => {
+                    pendingUnsavedActionRef.current = null;
+                    setConfirmUnsavedCloseOpen(false);
+                  }}
+                  sx={{ fontWeight: 700, borderRadius: 1, textTransform: 'none' }}
+                >
+                  Keep Editing
+                </Button>
+                <Button
+                  variant="outlined"
+                  color="error"
+                  onClick={() => {
+                    setConfirmUnsavedCloseOpen(false);
+                    setCellItemsDirty(false);
+                    const action = pendingUnsavedActionRef.current;
+                    pendingUnsavedActionRef.current = null;
+                    if (action) {
+                      action();
+                    } else {
+                      setOpenCellModal(false);
+                    }
+                  }}
+                  sx={{ fontWeight: 700, borderRadius: 1, textTransform: 'none' }}
+                >
+                  Abandon Changes
+                </Button>
+                <Button
+                  variant="contained"
+                  color="primary"
+                  startIcon={<Save size={15} />}
+                  disabled={cellItemsSaving || savingNote}
+                  onClick={() => {
+                    if (cellEditorMode === 'structured_rows') {
+                      void cellItemsSaveRef.current?.();
+                    } else {
+                      void handleSaveCellNote();
+                    }
+                  }}
+                  sx={{ fontWeight: 800, borderRadius: 1, textTransform: 'none' }}
+                >
+                  {cellItemsSaving || savingNote ? 'Saving...' : 'Save Changes'}
+                </Button>
+              </Stack>
+            </Stack>
+          </Paper>
         </Box>
       )}
 
@@ -6017,6 +6553,12 @@ function PlannerContent() {
           justify-content: center !important;
           box-sizing: border-box !important;
           overflow: hidden !important;
+        }
+
+        .planner-header.planner-header-five-day {
+          justify-content: space-between !important;
+          padding: 0 16px !important;
+          gap: 16px;
         }
 
         .week-header-text {

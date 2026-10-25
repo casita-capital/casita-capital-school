@@ -64,6 +64,7 @@ import {
   parseRecurringConfig,
   resolveSubjectCountersForWeek,
 } from 'src/utils/recurring-planner';
+import { normalizeAssessmentTitleForDedup } from 'src/utils/weekly-grading-items';
 import {
   AssignmentTypeConfig,
   AutoBehaviorMode,
@@ -75,6 +76,7 @@ import {
   GradebookAssignment,
   isAssignmentApiSynced,
   isAssignmentAwaitingManualGrade,
+  isAssignmentCompletedOrSubmitted,
   isAssignmentPendingApiGrade,
   isAssignmentUpcoming,
   MoodleAssignmentMetadata,
@@ -551,7 +553,12 @@ function AssignmentsPageContent() {
   };
 
   const handleToggleStatus = async (a: GradebookAssignment) => {
-    const newStatus = a.status === 'completed' ? 'pending' : 'completed';
+    const meta = assignmentMetaMap.get(a.id);
+    const currentlyDone = isAssignmentCompletedOrSubmitted(
+      a,
+      meta?.moodleMeta ?? null
+    );
+    const newStatus = currentlyDone ? 'pending' : 'completed';
     const newWorkflow = newStatus === 'completed' ? 'completed' : 'not_started';
     try {
       const { error } = await supabase
@@ -960,13 +967,70 @@ function AssignmentsPageContent() {
         });
 
         for (const cand of candidates) {
-          const alreadyExists = assignments.some(
-            (existing) =>
-              existing.subject_id === cand.subject_id &&
+          const candMeta = parseAssignmentMoodleMeta(cand.state_standards);
+          const candCmid = candMeta?.moodle_cmid;
+          const existingMatch = assignments.find((existing) => {
+            if (existing.subject_id !== cand.subject_id) return false;
+            if (
               existing.due_date === cand.due_date &&
-              existing.title.toLowerCase() === cand.title.toLowerCase()
-          );
-          if (alreadyExists) continue;
+              normalizeAssessmentTitleForDedup(existing.title) ===
+                normalizeAssessmentTitleForDedup(cand.title)
+            ) {
+              return true;
+            }
+            if (cand.source_type === 'syllabus_staged' || typeof candCmid === 'number') {
+              const exMeta = parseAssignmentMoodleMeta(existing.state_standards);
+              if (
+                typeof candCmid === 'number' &&
+                typeof exMeta?.moodle_cmid === 'number' &&
+                exMeta.moodle_cmid === candCmid
+              ) {
+                return true;
+              }
+              if (
+                normalizeAssessmentTitleForDedup(existing.title) ===
+                normalizeAssessmentTitleForDedup(cand.title)
+              ) {
+                return true;
+              }
+            }
+            return false;
+          });
+
+          if (existingMatch) {
+            if (
+              existingMatch.due_date !== cand.due_date &&
+              existingMatch.percentage_score == null &&
+              existingMatch.status !== 'completed' &&
+              existingMatch.workflow_status !== 'completed'
+            ) {
+              const exMetaObj = parseAssignmentMoodleMeta(existingMatch.state_standards);
+              const mergedStandards: Json | null = candMeta
+                ? ({
+                    ...(exMetaObj ?? {}),
+                    ...candMeta,
+                  } as unknown as Json)
+                : (existingMatch.state_standards ?? null);
+              const { data: updatedRow } = await supabase
+                .from('assignments')
+                .update({
+                  due_date: cand.due_date,
+                  assigned_date: cand.assigned_date,
+                  syllabus_day_number: cand.syllabus_day_number,
+                  state_standards: mergedStandards,
+                })
+                .eq('id', existingMatch.id)
+                .select('*')
+                .single();
+              if (updatedRow) {
+                const updatedTyped = updatedRow as unknown as GradebookAssignment;
+                setAssignments((prev) =>
+                  prev.map((a) => (a.id === updatedTyped.id ? updatedTyped : a))
+                );
+              }
+            }
+            continue;
+          }
 
           const { data } = await supabase
             .from('assignments')
@@ -988,6 +1052,7 @@ function AssignmentsPageContent() {
               source_type: cand.source_type,
               recurring_template_id: cand.recurring_template_id,
               syllabus_day_number: cand.syllabus_day_number,
+              state_standards: cand.state_standards ?? null,
               term_name: 'Semester 1 (Fall)',
               academic_year: '2026-2027',
             })
@@ -1062,6 +1127,13 @@ function AssignmentsPageContent() {
     }
 
     if (isApiSynced) {
+      const isCompletedOrSubmitted = isAssignmentCompletedOrSubmitted(
+        a,
+        moodleMeta
+      );
+      const isSubmittedState =
+        a.workflow_status === 'submitted' ||
+        Boolean(moodleMeta?.api_submitted_at);
       const gradeBadge = isScored ? (
         <Typography
           variant="subtitle2"
@@ -1087,6 +1159,24 @@ function AssignmentsPageContent() {
             policy
           )}
         </Typography>
+      ) : isCompletedOrSubmitted ? (
+        <Chip
+          size="small"
+          color="success"
+          variant="outlined"
+          icon={<CheckCircle2 size={12} />}
+          label={
+            isSubmittedState
+              ? 'Submitted · Pending Grade'
+              : 'Completed · Pending Grade'
+          }
+          sx={{
+            fontWeight: 700,
+            fontSize: '0.75rem',
+            height: 22,
+            whiteSpace: 'nowrap',
+          }}
+        />
       ) : (
         <Chip
           size="small"
@@ -1501,11 +1591,20 @@ function AssignmentsPageContent() {
 
   const filteredAssignments = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
+    const seenCmidBySubject = new Set<string>();
     return assignments.filter((a) => {
       if (a.workflow_status === 'ignored' || a.workflow_status === 'staged') {
         return false;
       }
       const meta = assignmentMetaMap.get(a.id);
+      const cmid = meta?.moodleMeta?.moodle_cmid;
+      if (typeof cmid === 'number' && a.subject_id) {
+        const cmidKey = `${a.subject_id}:${cmid}`;
+        if (seenCmidBySubject.has(cmidKey)) {
+          return false;
+        }
+        seenCmidBySubject.add(cmidKey);
+      }
 
       if (statusTab === 'needs_grading' && !meta?.needsGrading) {
         return false;
@@ -1686,12 +1785,14 @@ function AssignmentsPageContent() {
     }
 
     return items.map((a) => {
-      const isCompleted =
-        a.status === 'completed' || a.workflow_status === 'completed';
       const sub = a.subject_id ? subjectMap.get(a.subject_id) : undefined;
       const typeInfo = typeMap.get(a.category);
       const meta = assignmentMetaMap.get(a.id);
       const moodleMeta = meta?.moodleMeta ?? null;
+      const isCompleted = isAssignmentCompletedOrSubmitted(a, moodleMeta);
+      const isSubmittedState =
+        a.workflow_status === 'submitted' ||
+        Boolean(moodleMeta?.api_submitted_at);
       const isOverridden = Boolean(meta?.isOverridden);
       const policy =
         (a.subject_id ? subjectPolicyMap.get(a.subject_id) : undefined) ||
@@ -1744,7 +1845,17 @@ function AssignmentsPageContent() {
                   >
                     {a.title}
                   </Typography>
-                  {moodleMeta?.syllabus_day_number && (
+                  {isCompleted && typeof a.percentage_score !== 'number' && (
+                    <Chip
+                      icon={<CheckCircle2 size={12} />}
+                      label={isSubmittedState ? 'Submitted' : 'Completed'}
+                      size="small"
+                      color="success"
+                      variant="outlined"
+                      sx={{ height: 20, fontSize: '0.75rem', fontWeight: 700 }}
+                    />
+                  )}
+                  {moodleMeta?.syllabus_day_number && !moodleMeta?.week_number && (
                     <Chip
                       label={`Day ${moodleMeta.syllabus_day_number}`}
                       size="small"

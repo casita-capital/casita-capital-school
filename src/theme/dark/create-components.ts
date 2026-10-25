@@ -235,7 +235,13 @@ export const createComponents = ({ palette }: ComponentsConfig): Components => {
           },
         },
         outlinedSecondary: {
-          color: neutral[400],
+          borderColor: alpha(neutral[300], 0.4),
+          color: neutral[200],
+        },
+        colorSecondary: {
+          backgroundColor: alpha(neutral[300], 0.14),
+          borderColor: alpha(neutral[300], 0.35),
+          color: neutral[100],
         },
         colorPrimary: {
           backgroundColor: alpha((palette.primary as PaletteColor).main, 0.08),

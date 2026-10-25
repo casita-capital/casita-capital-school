@@ -45,10 +45,10 @@ export const createPalette = (config: PaletteConfig): PaletteOptions => {
     neutral,
     primary: getPrimaryDark(colorPreset),
     secondary: {
-      dark: alpha(neutral[700], 0.3),
-      main: alpha(neutral[700], 0.2),
-      light: neutral[800],
-      contrastText: neutral[300],
+      dark: neutral[300],
+      main: neutral[200],
+      light: neutral[100],
+      contrastText: neutral[900],
     },
     text: {
       primary: neutral[50],
