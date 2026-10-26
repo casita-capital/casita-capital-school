@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState, Suspense } from 'react';
+import { flushSync } from 'react-dom';
 import { useSearchParams, useRouter } from 'next/navigation';
 import {
   alpha,
@@ -1930,6 +1931,7 @@ function PlannerContent() {
       'print-density-compact',
       'print-density-tight',
       'print-density-ultra',
+      'print-page-scaled',
     ];
     for (const pageEl of [page1Ref.current, page2Ref.current]) {
       if (!pageEl) continue;
@@ -1944,14 +1946,23 @@ function PlannerContent() {
     }
   }, []);
 
+  const ensureTwoPageViewForPrint = useCallback(() => {
+    const rootEl = printRootRef.current;
+    if (rootEl) {
+      rootEl.classList.remove('spread-mode', 'screen-hidden-print-only');
+    }
+    setScreenViewMode((prev) => (prev !== 'binder_2page' ? 'binder_2page' : prev));
+  }, []);
+
   const applyPrintAutoFit = useCallback(() => {
     const rootEl = printRootRef.current;
     if (!rootEl) return;
 
+    rootEl.classList.remove('spread-mode', 'screen-hidden-print-only');
     resetPrintAutoFit();
 
-    // Safe printable height in CSS pixels for US Letter portrait (9.75in = 936px at 96dpi)
-    const TARGET_PRINT_HEIGHT_PX = 936;
+    // Safe printable height in CSS pixels for US Letter portrait (9.56in = 918px at 96dpi)
+    const TARGET_PRINT_HEIGHT_PX = 918;
     const densityTiers = [
       'print-density-compact',
       'print-density-tight',
@@ -1985,6 +1996,7 @@ function PlannerContent() {
       }
 
       if (contentHeight > TARGET_PRINT_HEIGHT_PX) {
+        pageEl.classList.add('print-page-scaled');
         const rawScale = TARGET_PRINT_HEIGHT_PX / contentHeight;
         const scale = Math.max(0.5, Math.floor(rawScale * 1000) / 1000);
         innerEl.style.width = `${(100 / scale).toFixed(3)}%`;
@@ -2009,6 +2021,13 @@ function PlannerContent() {
 
   useEffect(() => {
     const handleBeforePrint = () => {
+      try {
+        flushSync(() => {
+          ensureTwoPageViewForPrint();
+        });
+      } catch {
+        ensureTwoPageViewForPrint();
+      }
       applyPrintAutoFit();
     };
     const handleAfterPrint = () => {
@@ -2020,9 +2039,15 @@ function PlannerContent() {
       window.removeEventListener('beforeprint', handleBeforePrint);
       window.removeEventListener('afterprint', handleAfterPrint);
     };
-  }, [applyPrintAutoFit, resetPrintAutoFit]);
+  }, [applyPrintAutoFit, ensureTwoPageViewForPrint, resetPrintAutoFit]);
 
   const handlePrint = () => {
+    if (screenViewMode !== 'binder_2page') {
+      flushSync(() => {
+        setScreenViewMode('binder_2page');
+      });
+    }
+    ensureTwoPageViewForPrint();
     applyPrintAutoFit();
     window.print();
   };
@@ -3356,7 +3381,7 @@ function PlannerContent() {
         {/* ========================================================================= */}
         {/* PAGE 1: MONDAY, TUESDAY, WEDNESDAY (3 COLUMNS x 8 SUBJECT ROWS)          */}
         {/* ========================================================================= */}
-        <Box ref={page1Ref} className="print-page page-break">
+        <Box ref={page1Ref} className="print-page print-page-1 page-break">
           <div ref={page1InnerRef} className="print-page-inner">
           {/* Header Bar: WEEKLY Assignments in Raleway & Sacramento Fonts */}
           <Box className="planner-header">
@@ -3605,7 +3630,7 @@ function PlannerContent() {
         {/* ========================================================================= */}
         {/* PAGE 2: THURSDAY, FRIDAY + RIGHT SIDEBAR (TO-DO, PRIORITIES, HABITS, NOTES) */}
         {/* ========================================================================= */}
-        <Box ref={page2Ref} className="print-page">
+        <Box ref={page2Ref} className="print-page print-page-2">
           <div ref={page2InnerRef} className="print-page-inner">
           {/* Header Bar */}
           <Box className="planner-header">
@@ -3986,8 +4011,8 @@ function PlannerContent() {
 
       {/* SCREEN-ONLY UNIFIED 5-DAY (MON-FRI) GRID VIEW (Hidden when printing) */}
       {screenViewMode === 'five_day' && (
-        <Box className="no-print planner-print-root">
-          <Box className="print-page" sx={{ minHeight: 'auto', mb: 3 }}>
+        <Box className="no-print planner-print-root five-day-screen-only">
+          <Box className="print-page five-day-page" sx={{ minHeight: 'auto', mb: 3 }}>
             <Box className="planner-header planner-header-five-day">
               <Box display="flex" alignItems="center">
                 <Typography
@@ -6494,7 +6519,7 @@ function PlannerContent() {
         }
 
         @media screen {
-          .planner-print-root.screen-hidden-print-only {
+          .planner-print-root.screen-hidden-print-only:not(.print-measuring) {
             display: none !important;
           }
 
@@ -6511,7 +6536,7 @@ function PlannerContent() {
         }
 
         @media screen and (min-width: 1200px) {
-          .planner-print-root.spread-mode {
+          .planner-print-root.spread-mode:not(.print-measuring) {
             display: grid;
             grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
             gap: 20px;
@@ -7222,27 +7247,44 @@ function PlannerContent() {
             margin: 0.25in 0.28in;
           }
 
-          html, body, div, main, section, article, .planner-print-root {
+          html, body, main {
+            background: #ffffff !important;
+            color: #000000 !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            height: auto !important;
+            min-height: 0 !important;
+            overflow: visible !important;
+            font-size: 9.5px !important;
+          }
+
+          div, section, article, .planner-print-root {
             padding-right: 0 !important;
             margin-right: 0 !important;
             overflow: visible !important;
           }
 
-          .no-print, header, nav, aside, .MuiDrawer-root, .MuiBackdrop-root, .MuiModal-root {
-            display: none !important;
-          }
-
-          body {
-            background: #ffffff !important;
-            color: #000000 !important;
-            font-size: 9.5px !important;
-          }
-
-          .planner-print-root {
+          .planner-print-root,
+          .planner-print-root.spread-mode,
+          .planner-print-root.screen-hidden-print-only {
             display: block !important;
             width: 100% !important;
             padding: 0 !important;
             margin: 0 !important;
+          }
+
+          .no-print,
+          .five-day-screen-only,
+          .planner-print-root.no-print,
+          .planner-print-root.five-day-screen-only,
+          .print-page.five-day-page,
+          header,
+          nav,
+          aside,
+          .MuiDrawer-root,
+          .MuiBackdrop-root,
+          .MuiModal-root {
+            display: none !important;
           }
 
           .print-page {
@@ -7252,22 +7294,24 @@ function PlannerContent() {
             margin: 0 !important;
             width: 100% !important;
             min-height: 0 !important;
-            height: 9.8in !important;
-            max-height: 9.8in !important;
+            height: 9.6in !important;
+            max-height: 9.6in !important;
             display: flex !important;
             flex-direction: column !important;
-            break-after: page !important;
-            page-break-after: always !important;
             break-inside: avoid !important;
             page-break-inside: avoid !important;
             box-sizing: border-box !important;
             overflow: hidden !important;
           }
 
+          .print-page.print-page-1 {
+            break-after: page !important;
+            page-break-after: always !important;
+          }
+
+          .print-page.print-page-2,
           .print-page:last-of-type,
           .print-page:last-child {
-            break-after: auto !important;
-            page-break-after: auto !important;
             break-after: avoid !important;
             page-break-after: avoid !important;
           }
@@ -7280,6 +7324,10 @@ function PlannerContent() {
             height: 100%;
             min-height: 0 !important;
             box-sizing: border-box !important;
+          }
+
+          .print-page.print-page-scaled .print-page-inner {
+            flex: 0 0 auto !important;
           }
 
           .planner-header {
