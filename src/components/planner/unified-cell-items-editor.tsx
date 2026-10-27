@@ -21,6 +21,7 @@ import {
 import {
   ArrowUpLeft,
   Award,
+  Calendar,
   CornerDownRight,
   Edit2,
   GripVertical,
@@ -132,6 +133,7 @@ function createEmptyItemRow(
     checked: false,
     subItems: initialSubItems,
     repeatAcrossWeek: false,
+    repeatCadence: 'daily',
     repeatDays: [dayKey],
     weeklyGroupKey: '',
     assignmentCategory: 'homework',
@@ -264,6 +266,7 @@ export function UnifiedCellItemsEditor({
       );
       handleUpdateRow(row.id, {
         repeatAcrossWeek: true,
+        repeatCadence: 'weekly_shared',
         repeatDays: DAY_KEYS.filter((d) => nextDays.includes(d)),
         weeklyGroupKey:
           row.weeklyGroupKey || normalizeWeeklyBlockKey(row.text || row.id),
@@ -271,7 +274,46 @@ export function UnifiedCellItemsEditor({
     } else {
       handleUpdateRow(row.id, {
         repeatAcrossWeek: false,
+        repeatCadence: 'daily',
         repeatDays: [currentDayKey],
+      });
+    }
+  };
+
+  const handleSetRepeatCadence = (
+    row: StructuredCellLineItem,
+    targetCadence: 'weekly_shared' | 'daily' | 'single_day'
+  ) => {
+    if (targetCadence === 'single_day') {
+      handleUpdateRow(row.id, {
+        repeatAcrossWeek: false,
+        repeatCadence: 'daily',
+        repeatDays: [currentDayKey],
+      });
+      return;
+    }
+
+    const currentMultiDays =
+      row.repeatDays && row.repeatDays.length > 1
+        ? row.repeatDays
+        : Array.from(new Set<DayKey>([...defaultSubjectRepeatDays, currentDayKey]));
+
+    if (targetCadence === 'weekly_shared') {
+      handleUpdateRow(row.id, {
+        repeatAcrossWeek: true,
+        repeatCadence: 'weekly_shared',
+        repeatDays: DAY_KEYS.filter((d) => currentMultiDays.includes(d)),
+        weeklyGroupKey:
+          row.weeklyGroupKey || normalizeWeeklyBlockKey(row.text || row.id),
+      });
+    } else {
+      // targetCadence === 'daily'
+      handleUpdateRow(row.id, {
+        repeatAcrossWeek: false,
+        repeatCadence: 'daily',
+        repeatDays: DAY_KEYS.filter((d) => currentMultiDays.includes(d)),
+        weeklyGroupKey:
+          row.weeklyGroupKey || normalizeWeeklyBlockKey(row.text || row.id),
       });
     }
   };
@@ -288,13 +330,15 @@ export function UnifiedCellItemsEditor({
     if (nextDays.length === 0) {
       handleUpdateRow(row.id, {
         repeatAcrossWeek: false,
+        repeatCadence: 'daily',
         repeatDays: [currentDayKey],
       });
       return;
     }
+    const filteredDays = DAY_KEYS.filter((d) => nextDays.includes(d));
     handleUpdateRow(row.id, {
-      repeatAcrossWeek: true,
-      repeatDays: DAY_KEYS.filter((d) => nextDays.includes(d)),
+      repeatAcrossWeek: row.repeatCadence === 'weekly_shared' && filteredDays.length > 1,
+      repeatDays: filteredDays,
     });
   };
 
@@ -664,28 +708,31 @@ export function UnifiedCellItemsEditor({
         if (insNotesErr) throw insNotesErr;
       }
 
-      // 4. Auto-propagate any `repeatAcrossWeek` blocks (or previously weekly-shared blocks) to the remaining days of this week!
-      const activeSharedRows = rows.filter(
-        (r) => r.repeatAcrossWeek && r.text.trim().length > 0
+      // 4. Auto-propagate any repeating blocks (weekly-shared OR multi-day daily) to the remaining days of this week!
+      const activeRepeatingRows = rows.filter(
+        (r) =>
+          r.text.trim().length > 0 &&
+          (r.repeatAcrossWeek ||
+            (r.repeatCadence === 'daily' && r.repeatDays && r.repeatDays.length > 1))
       );
       const hasWeeklySyncWork =
-        activeSharedRows.length > 0 || initialWeeklyKeys.length > 0;
+        activeRepeatingRows.length > 0 || initialWeeklyKeys.length > 0;
 
       let syncedDaysCount = 0;
       if (hasWeeklySyncWork) {
-        const currentSharedKeyMap = new Map<string, StructuredCellLineItem>();
-        for (const sr of activeSharedRows) {
+        const currentRepeatingKeyMap = new Map<string, StructuredCellLineItem>();
+        for (const sr of activeRepeatingRows) {
           const k = sr.weeklyGroupKey || normalizeWeeklyBlockKey(sr.text.trim());
-          currentSharedKeyMap.set(k, {
+          currentRepeatingKeyMap.set(k, {
             ...sr,
             weeklyGroupKey: k,
           });
         }
 
-        // Keys that were weekly-shared when the modal opened OR are now weekly-shared
+        // Keys that were repeating when the modal opened OR are now repeating
         const allTrackedKeys = new Set<string>([
           ...initialWeeklyKeys,
-          ...Array.from(currentSharedKeyMap.keys()),
+          ...Array.from(currentRepeatingKeyMap.keys()),
         ]);
 
         for (const otherDayKey of DAY_KEYS) {
@@ -711,7 +758,7 @@ export function UnifiedCellItemsEditor({
             allWeekAssignmentsForSubject: subjectWeekAssigns,
           });
 
-          // Keep only note-backed items (or weekly shared items) when rebuilding otherDateStr's parent_notes
+          // Keep only note-backed items (or repeating items) when rebuilding otherDateStr's parent_notes
           const nextOtherItems: StructuredCellLineItem[] = [];
           const handledKeysOnOtherDay = new Set<string>();
           let modifiedOtherDay = false;
@@ -731,28 +778,42 @@ export function UnifiedCellItemsEditor({
               normalizeWeeklyBlockKey(existingItem.text);
 
             if (allTrackedKeys.has(itemKey)) {
-              const updatedShared = currentSharedKeyMap.get(itemKey);
+              const updatedItem = currentRepeatingKeyMap.get(itemKey);
               if (
-                updatedShared &&
-                updatedShared.repeatAcrossWeek &&
-                updatedShared.repeatDays.includes(otherDayKey)
+                updatedItem &&
+                (updatedItem.repeatAcrossWeek ||
+                  (updatedItem.repeatCadence === 'daily' &&
+                    updatedItem.repeatDays &&
+                    updatedItem.repeatDays.length > 1)) &&
+                updatedItem.repeatDays.includes(otherDayKey)
               ) {
-                // Replace in-place with the updated block from the edited day!
+                // If it is weekly-shared, copy checked state as well.
+                // If it is daily verification, KEEP existingItem's checked state and verification info!
+                const isWeekly =
+                  updatedItem.repeatAcrossWeek && updatedItem.repeatCadence !== 'daily';
                 nextOtherItems.push({
                   ...existingItem,
-                  category: updatedShared.category,
-                  text: updatedShared.text,
-                  infoSubType: updatedShared.infoSubType,
-                  checked: updatedShared.checked,
-                  subItems: updatedShared.subItems.map((s) => ({ ...s })),
-                  repeatAcrossWeek: true,
-                  repeatDays: updatedShared.repeatDays,
+                  category: updatedItem.category,
+                  text: updatedItem.text,
+                  infoSubType: updatedItem.infoSubType,
+                  checked: isWeekly ? updatedItem.checked : existingItem.checked,
+                  verifiedBy: isWeekly ? updatedItem.verifiedBy : existingItem.verifiedBy,
+                  verifiedAt: isWeekly ? updatedItem.verifiedAt : existingItem.verifiedAt,
+                  subItems: updatedItem.subItems.map((s, idx) => ({
+                    ...s,
+                    checked: isWeekly
+                      ? s.checked
+                      : existingItem.subItems?.[idx]?.checked ?? false,
+                  })),
+                  repeatAcrossWeek: isWeekly,
+                  repeatCadence: updatedItem.repeatCadence,
+                  repeatDays: updatedItem.repeatDays,
                   weeklyGroupKey: itemKey,
                 });
                 handledKeysOnOtherDay.add(itemKey);
                 modifiedOtherDay = true;
               } else {
-                // This day was unchecked from repeatDays or the shared block was removed/switched to single-day
+                // This day was unchecked from repeatDays or switched to single-day
                 modifiedOtherDay = true;
               }
             } else {
@@ -760,19 +821,29 @@ export function UnifiedCellItemsEditor({
             }
           }
 
-          // Append any newly shared block that targets `otherDayKey` and wasn't already on `otherDateStr`
-          for (const [k, sharedRow] of currentSharedKeyMap.entries()) {
+          // Append any newly repeating block that targets otherDayKey and wasn't already on otherDateStr
+          for (const [k, sharedRow] of currentRepeatingKeyMap.entries()) {
             if (
               !handledKeysOnOtherDay.has(k) &&
               sharedRow.repeatDays.includes(otherDayKey)
             ) {
+              const isWeekly =
+                sharedRow.repeatAcrossWeek && sharedRow.repeatCadence !== 'daily';
               nextOtherItems.push({
                 ...sharedRow,
                 id: `synced-${otherDayKey}-${k}`,
                 dateStr: otherDateStr,
                 dayKey: otherDayKey,
                 weekdayLabel: DAY_LABELS[otherDayKey],
-                subItems: sharedRow.subItems.map((s) => ({ ...s })),
+                checked: isWeekly ? sharedRow.checked : false,
+                verifiedBy: isWeekly ? sharedRow.verifiedBy : null,
+                verifiedAt: isWeekly ? sharedRow.verifiedAt : null,
+                subItems: sharedRow.subItems.map((s) => ({
+                  ...s,
+                  checked: isWeekly ? s.checked : false,
+                })),
+                repeatAcrossWeek: isWeekly,
+                repeatCadence: sharedRow.repeatCadence,
               });
               modifiedOtherDay = true;
             }
@@ -1320,25 +1391,97 @@ export function UnifiedCellItemsEditor({
                             </Tooltip>
                           )}
 
-                          {/* 1-Click Toggle to Repeat Across Week (1 Weekly Grade/Check) */}
+                          {/* Frequency & Verification Cadence Toggles */}
                           <Tooltip
                             title={
-                              row.repeatAcrossWeek
-                                ? 'This block is shared across the selected days of this week and evaluated once on the Weekly Grading Summary. Click to make it for this day only.'
-                                : 'Show this block on each selected day of the week on the binder, sync edits across days, and grade/verify it only ONCE for the week'
+                              row.repeatAcrossWeek && row.repeatCadence !== 'daily'
+                                ? 'Shared across selected days and evaluated ONCE per week. Click to switch to single-day.'
+                                : 'Show on each selected day, sync edits across days, and grade/verify it only ONCE for the week'
                             }
                           >
                             <Chip
                               size="small"
                               icon={<Repeat size={11} />}
                               label={
-                                row.repeatAcrossWeek
-                                  ? `${formatRepeatDaysShortLabel(row.repeatDays)} • Graded/Verified Once`
-                                  : 'Repeat All Week (1 Weekly Check/Grade)'
+                                row.repeatAcrossWeek && row.repeatCadence !== 'daily'
+                                  ? `${formatRepeatDaysShortLabel(row.repeatDays)} • Verified Once`
+                                  : 'Repeat • Verified Once / Week'
                               }
-                              color={row.repeatAcrossWeek ? 'secondary' : 'default'}
-                              variant={row.repeatAcrossWeek ? 'filled' : 'outlined'}
-                              onClick={() => handleToggleRepeatAcrossWeek(row)}
+                              color={
+                                row.repeatAcrossWeek && row.repeatCadence !== 'daily'
+                                  ? 'secondary'
+                                  : 'default'
+                              }
+                              variant={
+                                row.repeatAcrossWeek && row.repeatCadence !== 'daily'
+                                  ? 'filled'
+                                  : 'outlined'
+                              }
+                              onClick={() =>
+                                handleSetRepeatCadence(
+                                  row,
+                                  row.repeatAcrossWeek && row.repeatCadence !== 'daily'
+                                    ? 'single_day'
+                                    : 'weekly_shared'
+                                )
+                              }
+                              sx={{
+                                height: 22,
+                                fontSize: '0.67rem',
+                                fontWeight: 700,
+                                cursor: 'pointer',
+                              }}
+                            />
+                          </Tooltip>
+
+                          <Tooltip
+                            title={
+                              !row.repeatAcrossWeek &&
+                              row.repeatCadence === 'daily' &&
+                              row.repeatDays &&
+                              row.repeatDays.length > 1
+                                ? 'Repeats on each selected day, but verified/checked independently EVERY DAY. Click to make it for this day only.'
+                                : 'Show on each selected day (e.g. Mon–Thu), with an independent check/verification required EVERY DAY.'
+                            }
+                          >
+                            <Chip
+                              size="small"
+                              icon={<Calendar size={11} />}
+                              label={
+                                !row.repeatAcrossWeek &&
+                                row.repeatCadence === 'daily' &&
+                                row.repeatDays &&
+                                row.repeatDays.length > 1
+                                  ? `${formatRepeatDaysShortLabel(row.repeatDays)} • Verified Daily`
+                                  : 'Repeat • Verified Daily'
+                              }
+                              color={
+                                !row.repeatAcrossWeek &&
+                                row.repeatCadence === 'daily' &&
+                                row.repeatDays &&
+                                row.repeatDays.length > 1
+                                  ? 'info'
+                                  : 'default'
+                              }
+                              variant={
+                                !row.repeatAcrossWeek &&
+                                row.repeatCadence === 'daily' &&
+                                row.repeatDays &&
+                                row.repeatDays.length > 1
+                                  ? 'filled'
+                                  : 'outlined'
+                              }
+                              onClick={() =>
+                                handleSetRepeatCadence(
+                                  row,
+                                  !row.repeatAcrossWeek &&
+                                    row.repeatCadence === 'daily' &&
+                                    row.repeatDays &&
+                                    row.repeatDays.length > 1
+                                    ? 'single_day'
+                                    : 'daily'
+                                )
+                              }
                               sx={{
                                 height: 22,
                                 fontSize: '0.67rem',
@@ -1402,17 +1545,31 @@ export function UnifiedCellItemsEditor({
                       )}
                     </Stack>
 
-                    {/* Weekly Repeat Day Selector Strip (shown when Repeat Across Week is ON) */}
-                    {row.repeatAcrossWeek && !isHeaderOrDivider && (
+                    {/* Repeat Day Selector Strip (shown when Weekly Shared OR Daily Repeating is ON) */}
+                    {(row.repeatAcrossWeek ||
+                      (row.repeatCadence === 'daily' &&
+                        row.repeatDays &&
+                        row.repeatDays.length > 1)) &&
+                      !isHeaderOrDivider && (
                       <Box
                         sx={{
                           ml: 4.5,
                           px: 1.25,
                           py: 0.6,
                           borderRadius: 1,
-                          bgcolor: alpha(theme.palette.secondary.main, 0.06),
+                          bgcolor: alpha(
+                            row.repeatAcrossWeek && row.repeatCadence !== 'daily'
+                              ? theme.palette.secondary.main
+                              : theme.palette.info.main,
+                            0.06
+                          ),
                           border: '1px solid',
-                          borderColor: alpha(theme.palette.secondary.main, 0.25),
+                          borderColor: alpha(
+                            row.repeatAcrossWeek && row.repeatCadence !== 'daily'
+                              ? theme.palette.secondary.main
+                              : theme.palette.info.main,
+                            0.25
+                          ),
                           display: 'flex',
                           alignItems: 'center',
                           justifyContent: 'space-between',
@@ -1424,10 +1581,16 @@ export function UnifiedCellItemsEditor({
                           <Typography
                             variant="caption"
                             fontWeight={700}
-                            color="secondary.main"
+                            color={
+                              row.repeatAcrossWeek && row.repeatCadence !== 'daily'
+                                ? 'secondary.main'
+                                : 'info.main'
+                            }
                             sx={{ fontSize: '0.7rem' }}
                           >
-                            Show on Days:
+                            {row.repeatAcrossWeek && row.repeatCadence !== 'daily'
+                              ? 'Show & Verify Once on Days:'
+                              : 'Show & Verify Daily on Days:'}
                           </Typography>
                           {SHORT_DAY_PILLS.map((dp) => {
                             const selected = (row.repeatDays || []).includes(dp.key);
@@ -1436,7 +1599,13 @@ export function UnifiedCellItemsEditor({
                                 key={dp.key}
                                 size="small"
                                 label={dp.label}
-                                color={selected ? 'secondary' : 'default'}
+                                color={
+                                  selected
+                                    ? row.repeatAcrossWeek && row.repeatCadence !== 'daily'
+                                      ? 'secondary'
+                                      : 'info'
+                                    : 'default'
+                                }
                                 variant={selected ? 'filled' : 'outlined'}
                                 onClick={() => handleToggleRepeatWeekday(row, dp.key)}
                                 sx={{
@@ -1455,7 +1624,9 @@ export function UnifiedCellItemsEditor({
                           color="text.secondary"
                           sx={{ fontSize: '0.68rem' }}
                         >
-                          Edits auto-sync to selected days • Shown once on Weekly Grading Summary
+                          {row.repeatAcrossWeek && row.repeatCadence !== 'daily'
+                            ? '↻ 1 Shared Check across week'
+                            : '☵ Independent Daily Check each day'}
                         </Typography>
                       </Box>
                     )}

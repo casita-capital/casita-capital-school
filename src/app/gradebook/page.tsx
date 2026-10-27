@@ -70,9 +70,12 @@ import {
 import {
   AssignmentTypeConfig,
   calculateSubjectGradeSummary,
+  compareGradebookAssignmentsChronological,
   computeAssignmentMetrics,
   DEFAULT_ASSIGNMENT_TYPES,
   formatClassGradeDisplay,
+  getAssignmentDayNumber,
+  getAssignmentWeekNumber,
   GradebookAssignment,
   isAssignmentApiSynced,
   parseAssignmentMoodleMeta,
@@ -2844,11 +2847,30 @@ function GradebookHubContent() {
                                               collapsedGradeCategories[catKey]
                                             );
                                             const catItems = sum.moodle_report
-                                              ? sum.moodle_report.items.filter(
-                                                  (it) =>
-                                                    it.category_name.toLowerCase() ===
-                                                    cat.category_name.toLowerCase()
-                                                )
+                                              ? [...sum.moodle_report.items]
+                                                  .filter(
+                                                    (it) =>
+                                                      it.category_name.toLowerCase() ===
+                                                      cat.category_name.toLowerCase()
+                                                  )
+                                                  .sort((a, b) => {
+                                                    const wa =
+                                                      typeof a.week_number === 'number'
+                                                        ? a.week_number
+                                                        : Number.MAX_SAFE_INTEGER;
+                                                    const wb =
+                                                      typeof b.week_number === 'number'
+                                                        ? b.week_number
+                                                        : Number.MAX_SAFE_INTEGER;
+                                                    if (wa !== wb) return wa - wb;
+                                                    const da = a.due_date || '9999-12-31';
+                                                    const db = b.due_date || '9999-12-31';
+                                                    if (da !== db) return da.localeCompare(db);
+                                                    return (
+                                                      (a.cmid ?? a.item_id ?? 0) -
+                                                      (b.cmid ?? b.item_id ?? 0)
+                                                    );
+                                                  })
                                               : [];
 
                                             return (
@@ -3346,29 +3368,9 @@ function GradebookHubContent() {
                                             ([catSlug, rawItems]) => {
                                               const isUngradedCat =
                                                 catSlug === '__ungraded_bucket__';
-                                              const items = [...rawItems].sort((a, b) => {
-                                                const ma = parseAssignmentMoodleMeta(
-                                                  a.state_standards
-                                                );
-                                                const mb = parseAssignmentMoodleMeta(
-                                                  b.state_standards
-                                                );
-                                                if (
-                                                  typeof ma?.syllabus_day_number === 'number' &&
-                                                  typeof mb?.syllabus_day_number === 'number'
-                                                ) {
-                                                  return (
-                                                    ma.syllabus_day_number - mb.syllabus_day_number
-                                                  );
-                                                }
-                                                if (
-                                                  typeof ma?.week_number === 'number' &&
-                                                  typeof mb?.week_number === 'number'
-                                                ) {
-                                                  return ma.week_number - mb.week_number;
-                                                }
-                                                return a.due_date.localeCompare(b.due_date);
-                                              });
+                                              const items = [...rawItems].sort(
+                                                compareGradebookAssignmentsChronological
+                                              );
 
                                               const typeInfo = typeMap.get(catSlug);
                                               const catTitle = isUngradedCat
@@ -3523,11 +3525,17 @@ function GradebookHubContent() {
                                                                   }}
                                                                 >
                                                                   {catTitle}
-                                                                  {mMeta?.syllabus_day_number
-                                                                    ? ` • DAY ${mMeta.syllabus_day_number}`
-                                                                    : mMeta?.week_number
-                                                                      ? ` • WEEK ${mMeta.week_number}`
-                                                                      : ''}
+                                                                  {(() => {
+                                                                    const dayNum = getAssignmentDayNumber(a);
+                                                                    if (dayNum !== null) {
+                                                                      return ` • DAY ${dayNum}`;
+                                                                    }
+                                                                    const weekNum = getAssignmentWeekNumber(a);
+                                                                    if (weekNum !== null) {
+                                                                      return ` • WEEK ${weekNum}`;
+                                                                    }
+                                                                    return '';
+                                                                  })()}
                                                                 </Typography>
                                                                 <Typography
                                                                   variant="body2"
@@ -4555,6 +4563,12 @@ function GradebookHubContent() {
                             a.workflow_status !== 'staged' &&
                             a.workflow_status !== 'ignored'
                         )
+                        .sort((a, b) => {
+                          if (a.subject_id === b.subject_id) {
+                            return compareGradebookAssignmentsChronological(a, b);
+                          }
+                          return a.due_date.localeCompare(b.due_date);
+                        })
                         .map((a) => {
                           const sub = a.subject_id ? subjectMap.get(a.subject_id) : undefined;
                           const pol = sub

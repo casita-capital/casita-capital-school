@@ -1,5 +1,6 @@
 import {
   encodePlannerNoteFields,
+  extractDailyMarkerFromLine,
   extractVerifiedMetaFromLine,
   extractWeeklySharedDaysFromLine,
   getPlannerNoteCategory,
@@ -66,7 +67,9 @@ export interface StructuredCellLineItem {
   subItems: StructuredSubItem[];
   /** Whether this block is shared across multiple days of the week (evaluated once per week & synced across days) */
   repeatAcrossWeek: boolean;
-  /** Which days of the week this block repeats on when repeatAcrossWeek === true */
+  /** Verification cadence when repeating across days: 'weekly_shared' (verified once) vs 'daily' (verified each day) */
+  repeatCadence?: 'weekly_shared' | 'daily';
+  /** Which days of the week this block repeats on when repeatAcrossWeek === true or repeatCadence === 'daily' */
   repeatDays: DayKey[];
   /** Canonical key identifying this block across days of the same week */
   weeklyGroupKey: string;
@@ -465,6 +468,11 @@ export function detectRepeatedBlockDaysAcrossWeek(
     const rawLines = note.description ? note.description.split('\n') : [];
     for (const rawLine of rawLines) {
       if (/^\s{2,}/.test(rawLine)) continue;
+      const dailyInfo = extractDailyMarkerFromLine(rawLine);
+      if (dailyInfo.isDaily) {
+        // Explicitly marked as daily verification: never treat as weekly shared
+        continue;
+      }
       const weeklyInfo = extractWeeklySharedDaysFromLine(rawLine);
       const trimmed = weeklyInfo.cleanText.trim();
       if (!trimmed) continue;
@@ -475,21 +483,16 @@ export function detectRepeatedBlockDaysAcrossWeek(
         .replace(/^[☐☑•*-]\s*/, '')
         .trim();
 
-      if (/^memory\s+work\s*:?$/i.test(stripped)) {
-        recordKeyOnDay('memory_work', dk);
-      } else if (/^novels\b/i.test(stripped)) {
-        recordKeyOnDay('novels', dk);
-      } else if (weeklyInfo.isWeeklyShared) {
+      if (weeklyInfo.isWeeklyShared) {
         const key = normalizeWeeklyBlockKey(stripped);
         const explicitDays = parseDaysCsvToDayKeys(weeklyInfo.daysCsv, [dk]);
         for (const ed of explicitDays) {
           recordKeyOnDay(key, ed);
         }
-      } else {
-        const inferred = inferWeeklyItemCategoryFromLine(trimmed);
-        if (inferred.infoSubType !== 'header' && inferred.infoSubType !== 'divider') {
-          recordKeyOnDay(normalizeWeeklyBlockKey(inferred.cleanText), dk);
-        }
+      } else if (/^memory\s+work\s*:?$/i.test(stripped)) {
+        recordKeyOnDay('memory_work', dk);
+      } else if (/^novels\b/i.test(stripped)) {
+        recordKeyOnDay('novels', dk);
       }
     }
   }
@@ -772,12 +775,17 @@ export function parseCellNotesAndAssignmentsToItems(params: {
           j++;
         }
 
+        const dailyExtracted = extractDailyMarkerFromLine(verifiedMeta.cleanText);
+        const isExplicitDaily = dailyExtracted.isDaily;
         const detectedDays = repeatedBlocksMap.get('memory_work');
         const isRepeated =
-          weeklyExtracted.isWeeklyShared ||
-          (detectedDays !== undefined && detectedDays.length >= 2);
+          !isExplicitDaily &&
+          (weeklyExtracted.isWeeklyShared ||
+            (detectedDays !== undefined && detectedDays.length >= 2));
         const effectiveRepeatDays = weeklyExtracted.isWeeklyShared
           ? parseDaysCsvToDayKeys(weeklyExtracted.daysCsv, subjectActiveDaysInWeek)
+          : dailyExtracted.isDaily && dailyExtracted.daysCsv
+          ? parseDaysCsvToDayKeys(dailyExtracted.daysCsv, subjectActiveDaysInWeek)
           : detectedDays && detectedDays.length >= 2
           ? detectedDays
           : [dayKey];
@@ -836,6 +844,7 @@ export function parseCellNotesAndAssignmentsToItems(params: {
             : null,
           subItems: groupSubItems,
           repeatAcrossWeek: isRepeated || Boolean(matchedWeeklyAssign),
+          repeatCadence: isExplicitDaily ? 'daily' : isRepeated ? 'weekly_shared' : 'daily',
           repeatDays: effectiveRepeatDays,
           weeklyGroupKey: 'memory_work',
           sourceNoteId: note.id,
@@ -949,12 +958,17 @@ export function parseCellNotesAndAssignmentsToItems(params: {
           j++;
         }
 
+        const dailyExtracted = extractDailyMarkerFromLine(verifiedMeta.cleanText);
+        const isExplicitDaily = dailyExtracted.isDaily;
         const detectedDays = repeatedBlocksMap.get('novels');
         const isRepeated =
-          weeklyExtracted.isWeeklyShared ||
-          (detectedDays !== undefined && detectedDays.length >= 2);
+          !isExplicitDaily &&
+          (weeklyExtracted.isWeeklyShared ||
+            (detectedDays !== undefined && detectedDays.length >= 2));
         const effectiveRepeatDays = weeklyExtracted.isWeeklyShared
           ? parseDaysCsvToDayKeys(weeklyExtracted.daysCsv, subjectActiveDaysInWeek)
+          : dailyExtracted.isDaily && dailyExtracted.daysCsv
+          ? parseDaysCsvToDayKeys(dailyExtracted.daysCsv, subjectActiveDaysInWeek)
           : detectedDays && detectedDays.length >= 2
           ? detectedDays
           : [dayKey];
@@ -1010,6 +1024,7 @@ export function parseCellNotesAndAssignmentsToItems(params: {
             : null,
           subItems: groupSubItems,
           repeatAcrossWeek: isRepeated || Boolean(matchedWeeklyAssign),
+          repeatCadence: isExplicitDaily ? 'daily' : isRepeated ? 'weekly_shared' : 'daily',
           repeatDays: effectiveRepeatDays,
           weeklyGroupKey: 'novels',
           sourceNoteId: note.id,
@@ -1053,16 +1068,21 @@ export function parseCellNotesAndAssignmentsToItems(params: {
           ? 'parent_note'
           : inferred.infoSubType;
 
+      const dailyExtracted = extractDailyMarkerFromLine(rawLine);
+      const isExplicitDaily = dailyExtracted.isDaily;
       const blockKey = normalizeWeeklyBlockKey(inferred.cleanText);
       const detectedDays = repeatedBlocksMap.get(blockKey);
       const isRepeated =
-        inferred.isWeeklySharedMarker ||
-        (inferred.infoSubType !== 'header' &&
-          inferred.infoSubType !== 'divider' &&
-          detectedDays !== undefined &&
-          detectedDays.length >= 2);
+        !isExplicitDaily &&
+        (inferred.isWeeklySharedMarker ||
+          (inferred.infoSubType !== 'header' &&
+            inferred.infoSubType !== 'divider' &&
+            detectedDays !== undefined &&
+            detectedDays.length >= 2));
       const effectiveRepeatDays = inferred.isWeeklySharedMarker
         ? parseDaysCsvToDayKeys(inferred.weeklyDaysCsv, subjectActiveDaysInWeek)
+        : dailyExtracted.isDaily && dailyExtracted.daysCsv
+        ? parseDaysCsvToDayKeys(dailyExtracted.daysCsv, subjectActiveDaysInWeek)
         : detectedDays && detectedDays.length >= 2
         ? detectedDays
         : [dayKey];
@@ -1111,6 +1131,7 @@ export function parseCellNotesAndAssignmentsToItems(params: {
           : null,
         subItems: [],
         repeatAcrossWeek: isRepeated,
+        repeatCadence: isExplicitDaily ? 'daily' : isRepeated ? 'weekly_shared' : 'daily',
         repeatDays: effectiveRepeatDays,
         weeklyGroupKey: blockKey,
         sourceNoteId: note.id,
@@ -1249,10 +1270,19 @@ export function serializeCellItemsToNotesPayload(
 
       if (!clean) return;
 
-      const weeklyPrefix =
-        it.repeatAcrossWeek && it.repeatDays && it.repeatDays.length > 0
-          ? `[WEEKLY:${DAY_KEYS.filter((d) => it.repeatDays.includes(d)).join(',')}] `
-          : '';
+      const isWeeklyShared =
+        it.repeatAcrossWeek &&
+        it.repeatCadence !== 'daily' &&
+        it.repeatDays &&
+        it.repeatDays.length > 0;
+      const isExplicitDailyMultiDay =
+        it.repeatCadence === 'daily' && it.repeatDays && it.repeatDays.length > 1;
+
+      const schedulePrefix = isWeeklyShared
+        ? `[WEEKLY:${DAY_KEYS.filter((d) => it.repeatDays.includes(d)).join(',')}] `
+        : isExplicitDailyMultiDay
+        ? `[DAILY:${DAY_KEYS.filter((d) => it.repeatDays.includes(d)).join(',')}] `
+        : '';
 
       if (
         it.category === 'info' &&
@@ -1266,9 +1296,9 @@ export function serializeCellItemsToNotesPayload(
         headerTitle = clean;
       } else if (it.category === 'info' && it.infoSubType === 'header') {
         const cleanHdr = clean.replace(/^###\s*/, '');
-        bodyLines.push(`${weeklyPrefix}### ${cleanHdr}`);
+        bodyLines.push(`${schedulePrefix}### ${cleanHdr}`);
       } else if (it.category === 'info') {
-        bodyLines.push(`${weeklyPrefix}• ${clean.replace(/^[-*•]\s*/, '')}`);
+        bodyLines.push(`${schedulePrefix}• ${clean.replace(/^[-*•]\s*/, '')}`);
       } else if (it.category === 'verified' || it.category === 'graded') {
         const cleanCheck = stripVerifiedMetaMarker(clean)
           .replace(/^-\s*\[[ xX]\]\s*/, '')
@@ -1280,7 +1310,7 @@ export function serializeCellItemsToNotesPayload(
             ? ` [VERIFIED:${it.verifiedBy || ''}|${it.verifiedAt || ''}]`
             : '';
         bodyLines.push(
-          `${weeklyPrefix}${it.checked ? '- [x]' : '- [ ]'} ${cleanCheck}${verifiedSuffix}`
+          `${schedulePrefix}${it.checked ? '- [x]' : '- [ ]'} ${cleanCheck}${verifiedSuffix}`
         );
       }
 
@@ -1320,12 +1350,20 @@ export function serializeCellItemsToNotesPayload(
   if (parentNoteItems.length > 0) {
     const lines: string[] = [];
     for (const it of parentNoteItems) {
-      const weeklyPrefix =
-        it.repeatAcrossWeek && it.repeatDays && it.repeatDays.length > 0
-          ? `[WEEKLY:${DAY_KEYS.filter((d) => it.repeatDays.includes(d)).join(',')}] `
-          : '';
+      const isWeeklyShared =
+        it.repeatAcrossWeek &&
+        it.repeatCadence !== 'daily' &&
+        it.repeatDays &&
+        it.repeatDays.length > 0;
+      const isExplicitDailyMultiDay =
+        it.repeatCadence === 'daily' && it.repeatDays && it.repeatDays.length > 1;
+      const schedulePrefix = isWeeklyShared
+        ? `[WEEKLY:${DAY_KEYS.filter((d) => it.repeatDays.includes(d)).join(',')}] `
+        : isExplicitDailyMultiDay
+        ? `[DAILY:${DAY_KEYS.filter((d) => it.repeatDays.includes(d)).join(',')}] `
+        : '';
       lines.push(
-        `${weeklyPrefix}• ${stripWeeklySharedMarker(it.text).trim().replace(/^[-*•]\s*/, '')}`
+        `${schedulePrefix}• ${stripWeeklySharedMarker(it.text).trim().replace(/^[-*•]\s*/, '')}`
       );
       if (it.subItems && it.subItems.length > 0) {
         for (const sub of it.subItems) {
@@ -1369,7 +1407,7 @@ export function consolidateSection1WeeklyItems(
     const blockKey = item.weeklyGroupKey || normalizeWeeklyBlockKey(item.text);
     const compositeKey = `${item.subjectId}::${blockKey}`;
     const occurrences = countBySubjectAndKey.get(compositeKey) || 1;
-    const isSharedWeekly = item.repeatAcrossWeek || occurrences >= 2;
+    const isSharedWeekly = Boolean(item.repeatAcrossWeek && item.repeatCadence !== 'daily');
 
     if (!isSharedWeekly) {
       result.push(item);

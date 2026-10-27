@@ -3443,7 +3443,9 @@ function PlannerContent() {
                         {dayHolidays.map((h) => (
                           <div key={h.id} className="holiday-banner-top" style={{ backgroundColor: branding.holidays.color }} title={h.title}>
                             <ItemIcon name={branding.holidays.icon} size={10} color="#ffffff" style={{ marginRight: 3, flexShrink: 0 }} />
-                            <span className="banner-text">{h.title}</span>
+                            <span className="banner-text">
+                              {h.title.replace(/^-\s*\[[ xX]\]\s*/, '').replace(/^\[[ xX]\]\s*/, '').replace(/^[☐☑]\s*/, '').trim()}
+                            </span>
                           </div>
                         ))}
                         {dayGoogleEvents.map((g) => (
@@ -3455,7 +3457,9 @@ function PlannerContent() {
                         {dayTasks.map((t) => (
                           <div key={t.id} className="task-banner-top" style={{ backgroundColor: branding.tasks.color }} title={t.title}>
                             <ItemIcon name={branding.tasks.icon} size={10} color="#ffffff" style={{ marginRight: 3, flexShrink: 0 }} />
-                            <span className="banner-text">{t.status === 'completed' ? '[x]' : '[ ]'} {t.title}</span>
+                            <span className="banner-text">
+                              {t.title.replace(/^-\s*\[[ xX]\]\s*/, '').replace(/^\[[ xX]\]\s*/, '').replace(/^[☐☑]\s*/, '').trim()}
+                            </span>
                           </div>
                         ))}
                         {!hasEvents && <div className="all-day-empty">—</div>}
@@ -3669,7 +3673,9 @@ function PlannerContent() {
                             {dayHolidays.map((h) => (
                               <div key={h.id} className="holiday-banner-top" style={{ backgroundColor: branding.holidays.color }} title={h.title}>
                                 <ItemIcon name={branding.holidays.icon} size={10} color="#ffffff" style={{ marginRight: 3, flexShrink: 0 }} />
-                                <span className="banner-text">{h.title}</span>
+                                <span className="banner-text">
+                                  {h.title.replace(/^-\s*\[[ xX]\]\s*/, '').replace(/^\[[ xX]\]\s*/, '').replace(/^[☐☑]\s*/, '').trim()}
+                                </span>
                               </div>
                             ))}
                             {dayGoogleEvents.map((g) => (
@@ -3681,7 +3687,9 @@ function PlannerContent() {
                             {dayTasks.map((t) => (
                               <div key={t.id} className="task-banner-top" style={{ backgroundColor: branding.tasks.color }} title={t.title}>
                                 <ItemIcon name={branding.tasks.icon} size={10} color="#ffffff" style={{ marginRight: 3, flexShrink: 0 }} />
-                                <span className="banner-text">{t.status === 'completed' ? '[x]' : '[ ]'} {t.title}</span>
+                                <span className="banner-text">
+                                  {t.title.replace(/^-\s*\[[ xX]\]\s*/, '').replace(/^\[[ xX]\]\s*/, '').replace(/^[☐☑]\s*/, '').trim()}
+                                </span>
                               </div>
                             ))}
                             {!hasEvents && <div className="all-day-empty">—</div>}
@@ -4095,7 +4103,9 @@ function PlannerContent() {
                                   color="#ffffff"
                                   style={{ marginRight: 3, flexShrink: 0 }}
                                 />
-                                <span className="banner-text">{h.title}</span>
+                                <span className="banner-text">
+                                  {h.title.replace(/^-\s*\[[ xX]\]\s*/, '').replace(/^\[[ xX]\]\s*/, '').replace(/^[☐☑]\s*/, '').trim()}
+                                </span>
                               </div>
                             ))}
                             {dayGoogleEvents.map((g) => (
@@ -4128,7 +4138,7 @@ function PlannerContent() {
                                   style={{ marginRight: 3, flexShrink: 0 }}
                                 />
                                 <span className="banner-text">
-                                  {t.status === 'completed' ? '[x]' : '[ ]'} {t.title}
+                                  {t.title.replace(/^-\s*\[[ xX]\]\s*/, '').replace(/^\[[ xX]\]\s*/, '').replace(/^[☐☑]\s*/, '').trim()}
                                 </span>
                               </div>
                             ))}

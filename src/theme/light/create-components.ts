@@ -202,6 +202,32 @@ export const createComponents = ({ palette }: ComponentsConfig): Components => {
         },
       },
     },
+    MuiSelect: {
+      styleOverrides: {
+        select: {
+          color: palette.text!.primary,
+        },
+        icon: {
+          color: palette.neutral![700],
+        },
+      },
+    },
+    MuiNativeSelect: {
+      styleOverrides: {
+        select: {
+          color: `${palette.text!.primary} !important`,
+          backgroundColor: palette.background?.paper || '#fcfbf8',
+          colorScheme: 'light',
+          '& option': {
+            backgroundColor: `${palette.background?.paper || '#fcfbf8'} !important`,
+            color: `${palette.text!.primary} !important`,
+          },
+        },
+        icon: {
+          color: palette.neutral![700],
+        },
+      },
+    },
     MuiMenuItem: {
       styleOverrides: {
         root: {
@@ -253,11 +279,13 @@ export const createComponents = ({ palette }: ComponentsConfig): Components => {
           colorScheme: 'light',
         },
         'input, textarea, select': {
-          color: palette.text!.primary,
+          color: `${palette.text!.primary} !important`,
+          colorScheme: 'light',
         },
-        option: {
-          backgroundColor: palette.background?.paper || '#ffffff',
-          color: palette.text!.primary,
+        'select, select option, option': {
+          backgroundColor: `${palette.background?.paper || '#fcfbf8'} !important`,
+          color: `${palette.text!.primary} !important`,
+          colorScheme: 'light',
         },
         '#nprogress .bar': {
           backgroundColor: (palette.primary as PaletteColor).main,

@@ -10,17 +10,10 @@ export function AppUpdateBanner() {
   const [dismissed, setDismissed] = useState(false);
 
   useEffect(() => {
-    // Store current loaded build ID in sessionStorage on initial mount
-    if (typeof window !== 'undefined') {
-      if (!sessionStorage.getItem('loaded_build_id')) {
-        sessionStorage.setItem('loaded_build_id', APP_BUILD_ID);
-      }
+    // In local development without a real build ID, skip update checks
+    if (process.env.NODE_ENV === 'development' && APP_BUILD_ID === 'dev') {
+      return;
     }
-
-    const currentLoadedId =
-      typeof window !== 'undefined'
-        ? sessionStorage.getItem('loaded_build_id') || APP_BUILD_ID
-        : APP_BUILD_ID;
 
     const checkForUpdates = async () => {
       try {
@@ -32,7 +25,12 @@ export function AppUpdateBanner() {
         });
         if (res.ok) {
           const data = (await res.json()) as { buildId?: string };
-          if (data.buildId && data.buildId !== currentLoadedId) {
+          if (
+            data.buildId &&
+            data.buildId !== 'dev' &&
+            APP_BUILD_ID !== 'dev' &&
+            data.buildId !== APP_BUILD_ID
+          ) {
             setUpdateAvailable(true);
           }
         }
@@ -41,10 +39,13 @@ export function AppUpdateBanner() {
       }
     };
 
-    // Poll every 3 minutes
-    const interval = setInterval(checkForUpdates, 3 * 60 * 1000);
+    // Initial check shortly after mount
+    const initialTimer = setTimeout(checkForUpdates, 6000);
 
-    // Also check immediately when window regains focus (e.g. waking PC from sleep or switching back to tab)
+    // Poll every 2 minutes
+    const interval = setInterval(checkForUpdates, 2 * 60 * 1000);
+
+    // Also check immediately when window regains focus or visibility (e.g. switching back to tab)
     const handleFocus = () => {
       checkForUpdates();
     };
@@ -57,6 +58,7 @@ export function AppUpdateBanner() {
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
+      clearTimeout(initialTimer);
       clearInterval(interval);
       window.removeEventListener('focus', handleFocus);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
@@ -64,9 +66,6 @@ export function AppUpdateBanner() {
   }, []);
 
   const handleRefresh = () => {
-    if (typeof window !== 'undefined') {
-      sessionStorage.removeItem('loaded_build_id');
-    }
     window.location.reload();
   };
 

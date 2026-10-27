@@ -57,6 +57,7 @@ export type ApiWeekdaySplitSource =
   | 'day_5'
   | 'day_4_and_5'
   | 'read_only'
+  | 'remaining_after_read'
   | 'memorize_only'
   | 'complete_and_do';
 
@@ -289,7 +290,7 @@ export function createDefaultApiAutoPopulateConfig(
           enabled: true,
           attend_class: false,
           attend_class_label: 'Attend Class',
-          api_source: 'full_week',
+          api_source: 'read_only',
           format_as_checkboxes: true,
           strip_week_header: true,
           include_linked_quiz_line: false,
@@ -309,11 +310,11 @@ export function createDefaultApiAutoPopulateConfig(
           enabled: true,
           attend_class: false,
           attend_class_label: 'Attend Class',
-          api_source: 'none',
+          api_source: 'remaining_after_read',
           format_as_checkboxes: true,
           strip_week_header: true,
           include_linked_quiz_line: false,
-          custom_additional_lines: '- [ ] Memory Work',
+          custom_additional_lines: '',
         },
         thursday: {
           enabled: true,
@@ -512,6 +513,7 @@ const VALID_API_SPLIT_SOURCES: ApiWeekdaySplitSource[] = [
   'day_5',
   'day_4_and_5',
   'read_only',
+  'remaining_after_read',
   'memorize_only',
   'complete_and_do',
 ];
@@ -1395,24 +1397,64 @@ export function formatApiWeekBlockForWeekday(
       );
       break;
     }
-    case 'read_only':
-      if (week.structured_lines.read_line) {
+    case 'read_only': {
+      const readLinesFromSummary = effectiveFullText
+        .split('\n')
+        .map((l) => l.trim())
+        .filter((l) => /^[-*•]?\s*read\s*:/i.test(l));
+      if (readLinesFromSummary.length > 0) {
+        rawLinesToFormat.push(...readLinesFromSummary);
+      } else if (week.structured_lines.read_line) {
         rawLinesToFormat.push(week.structured_lines.read_line);
       }
       break;
+    }
+    case 'remaining_after_read': {
+      const splitLines = effectiveFullText
+        .split('\n')
+        .filter((l) => l.trim().length > 0);
+      for (const line of splitLines) {
+        const trimmedLine = line.trim();
+        if (
+          rule.strip_week_header &&
+          /^week\s+\d+\b/i.test(trimmedLine) &&
+          trimmedLine.length <= 24
+        ) {
+          continue;
+        }
+        if (/^(?:-\s*\[[ xX]\]\s*|[-*•☐☑]\s*)?read\s*:/i.test(trimmedLine)) {
+          continue;
+        }
+        rawLinesToFormat.push(line);
+      }
+      break;
+    }
     case 'memorize_only':
       if (week.structured_lines.memorize_line) {
         rawLinesToFormat.push(week.structured_lines.memorize_line);
       }
       break;
-    case 'complete_and_do':
-      if (week.structured_lines.complete_line) {
-        rawLinesToFormat.push(week.structured_lines.complete_line);
-      }
-      if (week.structured_lines.do_line) {
-        rawLinesToFormat.push(week.structured_lines.do_line);
+    case 'complete_and_do': {
+      const completeAndDoFromSummary = effectiveFullText
+        .split('\n')
+        .map((l) => l.trim())
+        .filter((l) => /^(?:-\s*\[[ xX]\]\s*|[-*•☐☑]\s*)?(?:complete|do)\s*:/i.test(l));
+      if (completeAndDoFromSummary.length > 0) {
+        rawLinesToFormat.push(...completeAndDoFromSummary);
+      } else {
+        if (week.structured_lines.complete_line) {
+          rawLinesToFormat.push(
+            ...week.structured_lines.complete_line.split('\n').filter((l) => l.trim().length > 0)
+          );
+        }
+        if (week.structured_lines.do_line) {
+          rawLinesToFormat.push(
+            ...week.structured_lines.do_line.split('\n').filter((l) => l.trim().length > 0)
+          );
+        }
       }
       break;
+    }
   }
 
   const linkedAssessmentNames = new Set(
@@ -1846,8 +1888,8 @@ export function generateSubjectWeekNotesStructured(
           replacedLine = `### ${trimmedLine.replace(/^###\s*/, '')}`;
         }
 
-        // Auto-tag weekly-shared Memory Work or Novels blocks if not already tagged with [WEEKLY:...], preserving any explicit role prefix
-        if (!/^\s{2,}/.test(replacedLine) && !/^\[WEEKLY/i.test(replacedLine.trim())) {
+        // Auto-tag weekly-shared Memory Work or Novels blocks if not already tagged with [WEEKLY:...] or [DAILY], preserving any explicit role prefix
+        if (!/^\s{2,}/.test(replacedLine) && !/^\[WEEKLY/i.test(replacedLine.trim()) && !/^\[DAILY/i.test(replacedLine.trim())) {
           const curTrimmed = replacedLine.trim();
           const existingPrefix = curTrimmed.startsWith('### ')
             ? '### '

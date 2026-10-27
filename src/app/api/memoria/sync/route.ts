@@ -339,14 +339,14 @@ function parseDaysAndStructuredLines(lines: string[]): {
       daysBuckets[currentDay].push(cleanLine);
     }
 
-    if (!read_line && /^read\s*:/i.test(cleanLine)) {
-      read_line = cleanLine;
-    } else if (!memorize_line && /^memorize\s*:/i.test(cleanLine)) {
-      memorize_line = cleanLine;
-    } else if (!complete_line && /^complete\s*:/i.test(cleanLine)) {
-      complete_line = cleanLine;
-    } else if (!do_line && /^do\s*:/i.test(cleanLine)) {
-      do_line = cleanLine;
+    if (/^read\s*:/i.test(cleanLine)) {
+      read_line = read_line ? `${read_line}\n${cleanLine}` : cleanLine;
+    } else if (/^memorize\s*:/i.test(cleanLine)) {
+      memorize_line = memorize_line ? `${memorize_line}\n${cleanLine}` : cleanLine;
+    } else if (/^complete\s*:/i.test(cleanLine)) {
+      complete_line = complete_line ? `${complete_line}\n${cleanLine}` : cleanLine;
+    } else if (/^do\s*:/i.test(cleanLine)) {
+      do_line = do_line ? `${do_line}\n${cleanLine}` : cleanLine;
     } else if (currentDay === 0) {
       other_lines.push(cleanLine);
     }
@@ -1211,6 +1211,17 @@ export async function POST(req: NextRequest) {
               : null,
         });
       }
+
+      // Sort grade report items chronologically by week_number ascending (nulls last), then due_date ascending
+      reportItems.sort((a, b) => {
+        const wa = typeof a.week_number === 'number' ? a.week_number : Number.MAX_SAFE_INTEGER;
+        const wb = typeof b.week_number === 'number' ? b.week_number : Number.MAX_SAFE_INTEGER;
+        if (wa !== wb) return wa - wb;
+        const da = a.due_date || '9999-12-31';
+        const db = b.due_date || '9999-12-31';
+        if (da !== db) return da.localeCompare(db);
+        return (a.cmid ?? a.item_id ?? 0) - (b.cmid ?? b.item_id ?? 0);
+      });
 
       const moodleGradeReport: MoodleCourseGradeReport = {
         moodle_course_id: mapping.moodle_course_id,

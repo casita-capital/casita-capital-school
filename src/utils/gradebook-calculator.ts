@@ -885,6 +885,69 @@ export function parseAssignmentMoodleMeta(
   };
 }
 
+export function getAssignmentDayNumber(a: GradebookAssignment): number | null {
+  if (typeof a.syllabus_day_number === 'number' && !Number.isNaN(a.syllabus_day_number)) {
+    return a.syllabus_day_number;
+  }
+  const mMeta = parseAssignmentMoodleMeta(a.state_standards);
+  if (typeof mMeta?.syllabus_day_number === 'number' && !Number.isNaN(mMeta.syllabus_day_number)) {
+    return mMeta.syllabus_day_number;
+  }
+  if (typeof mMeta?.class_number === 'number' && !Number.isNaN(mMeta.class_number)) {
+    return mMeta.class_number;
+  }
+  const titleMatch = a.title.match(/\b(?:day|class)\s+(\d+)\b/i);
+  if (titleMatch) {
+    const parsed = parseInt(titleMatch[1], 10);
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+  return null;
+}
+
+export function getAssignmentWeekNumber(a: GradebookAssignment): number | null {
+  const mMeta = parseAssignmentMoodleMeta(a.state_standards);
+  if (typeof mMeta?.week_number === 'number' && !Number.isNaN(mMeta.week_number)) {
+    return mMeta.week_number;
+  }
+  const titleMatch = a.title.match(/\bweek\s+(\d+)\b/i);
+  if (titleMatch) {
+    const parsed = parseInt(titleMatch[1], 10);
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+  return null;
+}
+
+export function compareGradebookAssignmentsChronological(
+  a: GradebookAssignment,
+  b: GradebookAssignment
+): number {
+  const dayA = getAssignmentDayNumber(a);
+  const dayB = getAssignmentDayNumber(b);
+  if (dayA !== null && dayB !== null) {
+    if (dayA !== dayB) return dayA - dayB;
+  } else if (dayA !== null) {
+    return -1;
+  } else if (dayB !== null) {
+    return 1;
+  }
+
+  const weekA = getAssignmentWeekNumber(a);
+  const weekB = getAssignmentWeekNumber(b);
+  if (weekA !== null && weekB !== null) {
+    if (weekA !== weekB) return weekA - weekB;
+  } else if (weekA !== null) {
+    return -1;
+  } else if (weekB !== null) {
+    return 1;
+  }
+
+  if (a.due_date !== b.due_date) {
+    return a.due_date.localeCompare(b.due_date);
+  }
+
+  return a.title.localeCompare(b.title, undefined, { numeric: true });
+}
+
 export function isSubjectApiSynced(sub?: SubjectWithGrading | null): boolean {
   if (!sub) return false;
   if (parseMoodleGradeReport(sub.grading_config) !== null) return true;
@@ -1066,6 +1129,17 @@ export function parseMoodleGradeReport(
       due_date: typeof ri.due_date === 'string' ? ri.due_date : null,
     });
   }
+
+  // Sort items chronologically by week_number ascending (nulls last), then due_date ascending
+  items.sort((a, b) => {
+    const wa = typeof a.week_number === 'number' ? a.week_number : Number.MAX_SAFE_INTEGER;
+    const wb = typeof b.week_number === 'number' ? b.week_number : Number.MAX_SAFE_INTEGER;
+    if (wa !== wb) return wa - wb;
+    const da = a.due_date || '9999-12-31';
+    const db = b.due_date || '9999-12-31';
+    if (da !== db) return da.localeCompare(db);
+    return (a.cmid ?? a.item_id ?? 0) - (b.cmid ?? b.item_id ?? 0);
+  });
 
   return {
     moodle_course_id: rep.moodle_course_id,

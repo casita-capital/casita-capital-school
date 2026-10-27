@@ -119,6 +119,7 @@ const API_SPLIT_SOURCE_OPTIONS: Array<{ value: ApiWeekdaySplitSource; label: str
   { value: 'day_5', label: 'Day 5 Portion' },
   { value: 'day_4_and_5', label: 'Days 4 & 5 Combined' },
   { value: 'read_only', label: 'Read Line Only' },
+  { value: 'remaining_after_read', label: 'All Remaining Lines (After Read)' },
   { value: 'memorize_only', label: 'Memorize Line Only' },
   { value: 'complete_and_do', label: 'Complete & Do Lines' },
 ];
@@ -2348,7 +2349,6 @@ function AutomationsContent() {
                                   </Typography>
                                   <TextField
                                     select
-                                    SelectProps={{ native: true }}
                                     size="small"
                                     value={getApiSyllabusWeekStartDay(apiAutoPop)}
                                     onChange={(e) => {
@@ -2366,9 +2366,9 @@ function AutomationsContent() {
                                     sx={{ minWidth: 120 }}
                                   >
                                     {DAY_KEYS.map((dk) => (
-                                      <option key={dk} value={dk}>
+                                      <MenuItem key={dk} value={dk}>
                                         {DAY_LABELS[dk]}
-                                      </option>
+                                      </MenuItem>
                                     ))}
                                   </TextField>
                                 </Stack>
@@ -2379,7 +2379,6 @@ function AutomationsContent() {
                                   </Typography>
                                   <TextField
                                     select
-                                    SelectProps={{ native: true }}
                                     size="small"
                                     value={apiAutoPop.quiz_assignment_target_day}
                                     onChange={(e) => {
@@ -2392,9 +2391,9 @@ function AutomationsContent() {
                                     sx={{ minWidth: 120 }}
                                   >
                                     {DAY_KEYS.map((dk) => (
-                                      <option key={dk} value={dk}>
+                                      <MenuItem key={dk} value={dk}>
                                         {DAY_LABELS[dk]}
-                                      </option>
+                                      </MenuItem>
                                     ))}
                                   </TextField>
                                 </Stack>
@@ -2533,7 +2532,6 @@ function AutomationsContent() {
                                           </Typography>
                                           <TextField
                                             select
-                                            SelectProps={{ native: true }}
                                             fullWidth
                                             size="small"
                                             value={rule.api_source}
@@ -2556,11 +2554,22 @@ function AutomationsContent() {
                                               };
                                               void handleUpdateSubjectApiAutoPopulate(selectedSub, nextAuto);
                                             }}
+                                            sx={{
+                                              '& .MuiSelect-select': {
+                                                fontSize: '0.8rem',
+                                                fontWeight: 600,
+                                                color: 'text.primary',
+                                              },
+                                            }}
                                           >
                                             {API_SPLIT_SOURCE_OPTIONS.map((opt) => (
-                                              <option key={opt.value} value={opt.value}>
+                                              <MenuItem
+                                                key={opt.value}
+                                                value={opt.value}
+                                                sx={{ fontSize: '0.82rem', fontWeight: 600 }}
+                                              >
                                                 {opt.label}
-                                              </option>
+                                              </MenuItem>
                                             ))}
                                           </TextField>
                                         </Box>
@@ -2684,7 +2693,6 @@ function AutomationsContent() {
                                     </Typography>
                                     <TextField
                                       select
-                                      SelectProps={{ native: true }}
                                       size="small"
                                       value={selectedPreviewWeekObj.week_number}
                                       onChange={(e) => setPreviewSyllabusWeekNum(Number(e.target.value))}
@@ -2699,10 +2707,10 @@ function AutomationsContent() {
                                               : ` (Starts ${DAY_LABELS[startDay]})`
                                             : '';
                                         return (
-                                          <option key={w.week_number} value={w.week_number}>
+                                          <MenuItem key={w.week_number} value={w.week_number}>
                                             {w.section_title}
                                             {spanInfo}
-                                          </option>
+                                          </MenuItem>
                                         );
                                       })}
                                     </TextField>

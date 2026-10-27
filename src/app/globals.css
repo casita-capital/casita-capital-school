@@ -36,3 +36,22 @@ body {
   outline: 2px solid currentColor;
   outline-offset: 2px;
 }
+
+/* Ensure native select and option elements always respect active light/dark color scheme */
+html[data-color-scheme="light"] select,
+html[data-color-scheme="light"] select option,
+html[data-color-scheme="light"] option,
+html[data-color-scheme="light"] .MuiNativeSelect-select {
+  color: #171614 !important;
+  background-color: #fcfbf8 !important;
+  color-scheme: light !important;
+}
+
+html[data-color-scheme="dark"] select,
+html[data-color-scheme="dark"] select option,
+html[data-color-scheme="dark"] option,
+html[data-color-scheme="dark"] .MuiNativeSelect-select {
+  color: #f7f4ee !important;
+  background-color: #21201d !important;
+  color-scheme: dark !important;
+}

@@ -20,6 +20,7 @@ import {
   ArrowDown,
   ArrowUp,
   Award,
+  Calendar,
   CheckSquare,
   Code,
   CornerDownRight,
@@ -144,6 +145,7 @@ export const StructuredTemplateBlocksEditor: React.FC<
       checked: false,
       subItems: [],
       repeatAcrossWeek: false,
+      repeatCadence: 'daily',
       repeatDays: [dayKey],
       weeklyGroupKey: '',
       assignmentCategory: defaultType?.slug || 'homework',
@@ -254,10 +256,51 @@ export const StructuredTemplateBlocksEditor: React.FC<
 
     handleUpdateBlock(item.id, {
       repeatAcrossWeek: nextRepeat,
+      repeatCadence: nextRepeat ? 'weekly_shared' : 'daily',
       repeatDays: nextRepeat ? ensuredDays : [dayKey],
       weeklyGroupKey:
         item.weeklyGroupKey || normalizeWeeklyBlockKey(item.text || item.id),
     });
+  };
+
+  const handleSetRepeatCadence = (
+    item: StructuredCellLineItem,
+    targetCadence: 'weekly_shared' | 'daily' | 'single_day'
+  ) => {
+    if (targetCadence === 'single_day') {
+      handleUpdateBlock(item.id, {
+        repeatAcrossWeek: false,
+        repeatCadence: 'daily',
+        repeatDays: [dayKey],
+      });
+      return;
+    }
+
+    const defaultDays: DayKey[] =
+      item.repeatDays && item.repeatDays.length >= 2
+        ? item.repeatDays
+        : (['monday', 'tuesday', 'wednesday', 'thursday'] as DayKey[]);
+    const ensuredDays = defaultDays.includes(dayKey)
+      ? defaultDays
+      : DAY_KEYS.filter((d) => defaultDays.includes(d) || d === dayKey);
+
+    if (targetCadence === 'weekly_shared') {
+      handleUpdateBlock(item.id, {
+        repeatAcrossWeek: true,
+        repeatCadence: 'weekly_shared',
+        repeatDays: ensuredDays,
+        weeklyGroupKey:
+          item.weeklyGroupKey || normalizeWeeklyBlockKey(item.text || item.id),
+      });
+    } else {
+      handleUpdateBlock(item.id, {
+        repeatAcrossWeek: false,
+        repeatCadence: 'daily',
+        repeatDays: ensuredDays,
+        weeklyGroupKey:
+          item.weeklyGroupKey || normalizeWeeklyBlockKey(item.text || item.id),
+      });
+    }
   };
 
   const handleToggleRepeatDayPill = (
@@ -271,7 +314,7 @@ export const StructuredTemplateBlocksEditor: React.FC<
       ? current.filter((d) => d !== targetDay)
       : DAY_KEYS.filter((d) => current.includes(d) || d === targetDay);
     handleUpdateBlock(item.id, {
-      repeatAcrossWeek: true,
+      repeatAcrossWeek: item.repeatCadence === 'weekly_shared' && nextDays.length > 1,
       repeatDays: nextDays,
     });
   };
@@ -328,6 +371,7 @@ export const StructuredTemplateBlocksEditor: React.FC<
       checked: false,
       subItems: [],
       repeatAcrossWeek: false,
+      repeatCadence: 'daily',
       repeatDays: [dayKey],
       weeklyGroupKey: normalizeWeeklyBlockKey(targetSub.text),
       assignmentId: undefined,
@@ -738,21 +782,36 @@ export const StructuredTemplateBlocksEditor: React.FC<
                       </ToggleButtonGroup>
                     )}
 
-                    {/* Repeat All Week Toggle & Day Selector Pills */}
+                    {/* Repeat Cadence Toggles & Day Selector Pills */}
                     {!isHeader && allowRepeatAcrossWeek && (
                       <Stack direction="row" spacing={0.5} alignItems="center">
-                        <Tooltip title="Show this block on multiple days of the week on the Weekly Binder, while grading/verifying it only ONCE per week on the Weekly Grading Summary. Editing on any day syncs across all selected days.">
+                        <Tooltip title="Verified Once: Show this block on selected days, and grade/verify it only ONCE for the week on the Weekly Grading Summary.">
                           <Chip
                             size="small"
                             icon={<Repeat size={12} />}
                             label={
-                              item.repeatAcrossWeek
-                                ? formatRepeatDaysShortLabel(item.repeatDays)
-                                : 'Repeat All Week'
+                              item.repeatAcrossWeek && item.repeatCadence !== 'daily'
+                                ? `${formatRepeatDaysShortLabel(item.repeatDays)} • Verified Once`
+                                : 'Repeat • Verified Once'
                             }
-                            onClick={() => handleToggleRepeatAcrossWeek(item)}
-                            color={item.repeatAcrossWeek ? 'primary' : 'default'}
-                            variant={item.repeatAcrossWeek ? 'filled' : 'outlined'}
+                            onClick={() =>
+                              handleSetRepeatCadence(
+                                item,
+                                item.repeatAcrossWeek && item.repeatCadence !== 'daily'
+                                  ? 'single_day'
+                                  : 'weekly_shared'
+                              )
+                            }
+                            color={
+                              item.repeatAcrossWeek && item.repeatCadence !== 'daily'
+                                ? 'primary'
+                                : 'default'
+                            }
+                            variant={
+                              item.repeatAcrossWeek && item.repeatCadence !== 'daily'
+                                ? 'filled'
+                                : 'outlined'
+                            }
                             sx={{
                               height: 24,
                               fontSize: '0.68rem',
@@ -762,7 +821,58 @@ export const StructuredTemplateBlocksEditor: React.FC<
                           />
                         </Tooltip>
 
-                        {item.repeatAcrossWeek && (
+                        <Tooltip title="Verified Daily: Show this block on selected days, but require independent verification/checking EVERY DAY.">
+                          <Chip
+                            size="small"
+                            icon={<Calendar size={12} />}
+                            label={
+                              !item.repeatAcrossWeek &&
+                              item.repeatCadence === 'daily' &&
+                              item.repeatDays &&
+                              item.repeatDays.length > 1
+                                ? `${formatRepeatDaysShortLabel(item.repeatDays)} • Verified Daily`
+                                : 'Repeat • Verified Daily'
+                            }
+                            onClick={() =>
+                              handleSetRepeatCadence(
+                                item,
+                                !item.repeatAcrossWeek &&
+                                  item.repeatCadence === 'daily' &&
+                                  item.repeatDays &&
+                                  item.repeatDays.length > 1
+                                  ? 'single_day'
+                                  : 'daily'
+                              )
+                            }
+                            color={
+                              !item.repeatAcrossWeek &&
+                              item.repeatCadence === 'daily' &&
+                              item.repeatDays &&
+                              item.repeatDays.length > 1
+                                ? 'info'
+                                : 'default'
+                            }
+                            variant={
+                              !item.repeatAcrossWeek &&
+                              item.repeatCadence === 'daily' &&
+                              item.repeatDays &&
+                              item.repeatDays.length > 1
+                                ? 'filled'
+                                : 'outlined'
+                            }
+                            sx={{
+                              height: 24,
+                              fontSize: '0.68rem',
+                              fontWeight: 700,
+                              cursor: 'pointer',
+                            }}
+                          />
+                        </Tooltip>
+
+                        {(item.repeatAcrossWeek ||
+                          (item.repeatCadence === 'daily' &&
+                            item.repeatDays &&
+                            item.repeatDays.length > 1)) && (
                           <Stack direction="row" spacing={0.35} alignItems="center">
                             {SHORT_DAY_PILLS.map((dp) => {
                               const active = item.repeatDays.includes(dp.key);
@@ -779,14 +889,18 @@ export const StructuredTemplateBlocksEditor: React.FC<
                                     cursor: 'pointer',
                                     userSelect: 'none',
                                     bgcolor: active
-                                      ? theme.palette.primary.main
+                                      ? item.repeatAcrossWeek && item.repeatCadence !== 'daily'
+                                        ? theme.palette.primary.main
+                                        : theme.palette.info.main
                                       : alpha(theme.palette.text.secondary, 0.08),
                                     color: active
                                       ? theme.palette.primary.contrastText
                                       : 'text.secondary',
                                     border: `1px solid ${
                                       active
-                                        ? theme.palette.primary.main
+                                        ? item.repeatAcrossWeek && item.repeatCadence !== 'daily'
+                                          ? theme.palette.primary.main
+                                          : theme.palette.info.main
                                         : alpha(theme.palette.divider, 0.8)
                                     }`,
                                   }}

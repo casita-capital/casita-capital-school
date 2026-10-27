@@ -6,6 +6,7 @@ import { ItemIcon } from './item-icon';
 
 export const PARENT_NOTE_MARKER = '[PARENT_NOTE]';
 export const WEEKLY_SHARED_MARKER_REGEX = /^\s*\[WEEKLY(?::([a-z,]+))?\]\s*/i;
+export const DAILY_MARKER_REGEX = /^\s*\[DAILY(?::([a-z,]+))?\]\s*/i;
 export const VERIFIED_META_MARKER_REGEX = /\s*\[VERIFIED:([^\]|]*)\|([^\]]*)\]\s*$/i;
 export type PlannerNoteCategory = 'school_work' | 'parent_note';
 
@@ -35,7 +36,11 @@ export function extractVerifiedMetaFromLine(text?: string | null): {
 
 export function stripWeeklySharedMarker(text?: string | null): string {
   if (!text) return '';
-  return stripVerifiedMetaMarker(text.replace(WEEKLY_SHARED_MARKER_REGEX, ''));
+  return stripVerifiedMetaMarker(
+    text
+      .replace(WEEKLY_SHARED_MARKER_REGEX, '')
+      .replace(DAILY_MARKER_REGEX, '')
+  );
 }
 
 export function extractWeeklySharedDaysFromLine(text?: string | null): {
@@ -48,12 +53,43 @@ export function extractWeeklySharedDaysFromLine(text?: string | null): {
   }
   const match = text.match(WEEKLY_SHARED_MARKER_REGEX);
   if (!match) {
-    return { isWeeklyShared: false, daysCsv: null, cleanText: stripVerifiedMetaMarker(text) };
+    return {
+      isWeeklyShared: false,
+      daysCsv: null,
+      cleanText: stripVerifiedMetaMarker(text.replace(DAILY_MARKER_REGEX, '')),
+    };
   }
   return {
     isWeeklyShared: true,
     daysCsv: match[1] ? match[1].toLowerCase() : null,
-    cleanText: stripVerifiedMetaMarker(text.replace(WEEKLY_SHARED_MARKER_REGEX, '')),
+    cleanText: stripVerifiedMetaMarker(
+      text.replace(WEEKLY_SHARED_MARKER_REGEX, '').replace(DAILY_MARKER_REGEX, '')
+    ),
+  };
+}
+
+export function extractDailyMarkerFromLine(text?: string | null): {
+  isDaily: boolean;
+  daysCsv: string | null;
+  cleanText: string;
+} {
+  if (!text) {
+    return { isDaily: false, daysCsv: null, cleanText: '' };
+  }
+  const match = text.match(DAILY_MARKER_REGEX);
+  if (!match) {
+    return {
+      isDaily: false,
+      daysCsv: null,
+      cleanText: stripVerifiedMetaMarker(text.replace(WEEKLY_SHARED_MARKER_REGEX, '')),
+    };
+  }
+  return {
+    isDaily: true,
+    daysCsv: match[1] ? match[1].toLowerCase() : null,
+    cleanText: stripVerifiedMetaMarker(
+      text.replace(DAILY_MARKER_REGEX, '').replace(WEEKLY_SHARED_MARKER_REGEX, '')
+    ),
   };
 }
 
