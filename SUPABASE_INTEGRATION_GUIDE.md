@@ -41,8 +41,8 @@ This application connects to your existing shared Supabase database instance whi
 Environment configuration is defined in `.env.local` (and `.env.example` for templates):
 
 ```env
-NEXT_PUBLIC_SUPABASE_URL=https://engratmfsfifqwvluepy.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=sb_publishable_wH6y0FgdcLsYMIMXY_e1DA_96PLYlxL
+NEXT_PUBLIC_SUPABASE_URL=https://potzuuqaxzjupbajhbha.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=sb_publishable_E4yMWDnJpNtt4ZGWIZmTGg_d_ZKEX0M
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
 NEXT_PUBLIC_SITE_URL=https://school.casitacapital.com
 ```

@@ -1942,14 +1942,14 @@ export default function SettingsPage() {
                     Google Calendar API Needs to be Enabled
                   </Typography>
                   <Typography variant="caption" color="text.secondary" display="block" mb={1}>
-                    Google Cloud Project <strong>74675552707</strong> requires the Google Calendar API service to be turned on.
+                    Google Cloud Project <strong>personal-projects-512919</strong> requires the Google Calendar API service to be turned on.
                   </Typography>
                   <Button
                     variant="contained"
                     color="warning"
                     size="small"
                     component="a"
-                    href="https://console.developers.google.com/apis/api/calendar-json.googleapis.com/overview?project=74675552707"
+                    href="https://console.developers.google.com/apis/api/calendar-json.googleapis.com/overview?project=personal-projects-512919"
                     target="_blank"
                     rel="noopener noreferrer"
                     sx={{ fontWeight: 700, fontSize: '0.72rem' }}

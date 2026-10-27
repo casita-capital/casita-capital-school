@@ -6,8 +6,8 @@ export async function createClient() {
   const cookieStore = await cookies();
 
   return createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://engratmfsfifqwvluepy.supabase.co',
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'sb_publishable_wH6y0FgdcLsYMIMXY_e1DA_96PLYlxL',
+    process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://potzuuqaxzjupbajhbha.supabase.co',
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'sb_publishable_E4yMWDnJpNtt4ZGWIZmTGg_d_ZKEX0M',
     {
       db: { schema: 'school' },
       auth: {
@@ -34,8 +34,8 @@ export async function createClient() {
 }
 
 export function createAdminClient() {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://engratmfsfifqwvluepy.supabase.co';
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVuZ3JhdG1mc2ZpZnF3dmx1ZXB5Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MjA1NTg2NywiZXhwIjoyMDg3NjMxODY3fQ.vI8m5qfH8iyA-yU8BTyiwLSgl-8GHlu-VtdovPk0Z6k';
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://potzuuqaxzjupbajhbha.supabase.co';
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBvdHp1dXFheHpqdXBiYWpoYmhhIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4OTc4MTQxMywiZXhwIjoyMTA1MzU3NDEzfQ.V0zm8IeQiP1EMKrydtZ30aJlvSWGi5wfq46kBWYntiw';
 
   return createSupabaseAdminClient(supabaseUrl, serviceRoleKey, {
     db: { schema: 'school' },
