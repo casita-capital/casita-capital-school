@@ -256,6 +256,9 @@ function WeeklyGradingSummaryContent() {
   const [apiWarningAssignment, setApiWarningAssignment] = useState<GradebookAssignment | null>(
     null
   );
+  const [pendingUnverifyItem, setPendingUnverifyItem] = useState<StructuredCellLineItem | null>(
+    null
+  );
 
   // Compute Monday–Sunday dates for the selected week
   const { mondayStr, fridayStr, sundayStr, weekDates, weekRangeLabel } = useMemo(() => {
@@ -504,7 +507,12 @@ function WeeklyGradingSummaryContent() {
 
       for (const a of subAssignments) {
         const isActivityItem = a.category === 'activity';
-        if (!isExternal && !isActivityItem && !isAssignmentApiSynced(a, sub)) continue;
+        const isApiItem = isAssignmentApiSynced(a, sub);
+        const mm = parseAssignmentMoodleMeta(a.state_standards);
+        const isInternalGrade = mm?.is_internal_grade === true;
+        const isExternalSyllabusItem =
+          isExternal && !isSubjectApiSynced(sub) && !isInternalGrade;
+        if (!isActivityItem && !isApiItem && !isExternalSyllabusItem) continue;
 
         // Strictly only items due this particular week!
         const dueInWeek = a.due_date >= mondayStr && a.due_date <= sundayStr;
@@ -514,8 +522,6 @@ function WeeklyGradingSummaryContent() {
         const key = `${sub.id}::${normTitle}::${a.due_date}`;
         if (seenKeys.has(key)) continue;
         seenKeys.add(key);
-
-        const mm = parseAssignmentMoodleMeta(a.state_standards);
         const typeInfo = typeMap.get(a.category);
         const hasScore = isAssignmentScored(a);
         const isCompleted = isAssignmentCompletedOrSubmitted(a, mm);
@@ -728,7 +734,11 @@ function WeeklyGradingSummaryContent() {
         // External course assignments & syllabus lab activities are merged below from externalDueThisWeekItems with full provider/class/supply metadata
         const dayAssigns = subAssignsDueThisWeek.filter((a) => {
           if (a.due_date !== dStr) return false;
-          if (isExtSub || a.category === 'activity' || isAssignmentApiSynced(a, sub)) {
+          if (a.category === 'activity' || isAssignmentApiSynced(a, sub)) {
+            return false;
+          }
+          const mm = parseAssignmentMoodleMeta(a.state_standards);
+          if (isExtSub && !isSubjectApiSynced(sub) && mm?.is_internal_grade !== true) {
             return false;
           }
           return true;
@@ -763,7 +773,6 @@ function WeeklyGradingSummaryContent() {
       const isCompletionOnly =
         isActivity || a?.is_graded === false || a?.grading_mode === 'completion';
       const category: WeeklyItemCategory = isCompletionOnly ? 'verified' : 'graded';
-      const isDone = ext.isCompleted || ext.isScored;
 
       const stdObj =
         a?.state_standards &&
@@ -781,6 +790,9 @@ function WeeklyGradingSummaryContent() {
           : null) ||
         a?.completed_at ||
         null;
+      const hasStoredVer = Boolean(verifiedBy || verifiedAt);
+      const isDone =
+        category === 'verified' ? ext.isCompleted || ext.isScored || hasStoredVer : ext.isScored;
 
       const parsedPct =
         a?.percentage_score ??
@@ -798,8 +810,8 @@ function WeeklyGradingSummaryContent() {
         text: ext.title,
         infoSubType: 'bullet',
         checked: isDone,
-        verifiedBy: isDone ? verifiedBy : null,
-        verifiedAt: isDone ? verifiedAt : null,
+        verifiedBy,
+        verifiedAt,
         subItems: [],
         repeatAcrossWeek: false,
         repeatDays: [getDayKeyFromIsoDate(ext.dueDate)],
@@ -875,10 +887,39 @@ function WeeklyGradingSummaryContent() {
   }, [section1Items, filterMode]);
 
   // Toggle Verified / Completed state on a Weekly Grading Summary item (logs user initials & timestamp)
-  const handleToggleSection1ItemVerified = async (item: StructuredCellLineItem) => {
+  const handleToggleSection1ItemVerified = async (
+    item: StructuredCellLineItem,
+    forcePurge = false
+  ) => {
+    // When un-verifying an item that is currently verified, prompt the user with a warning before purging
+    if (item.checked && !forcePurge) {
+      setPendingUnverifyItem(item);
+      return;
+    }
+
     const nextChecked = !item.checked;
     const activeUserName = getCachedActiveUserName();
     const nowIso = new Date().toISOString();
+
+    const sourceRefsToToggle =
+      item.weeklySourceNotes && item.weeklySourceNotes.length > 0
+        ? item.weeklySourceNotes
+        : item.sourceNoteId &&
+          typeof item.sourceLineIndex === 'number' &&
+          item.sourceLineIndex >= 0
+        ? [
+            {
+              noteId: item.sourceNoteId,
+              dateStr: item.dateStr,
+              dayKey: item.dayKey,
+              lineIndices:
+                item.sourceGroupLineIndices &&
+                item.sourceGroupLineIndices.length > 0
+                  ? item.sourceGroupLineIndices
+                  : [item.sourceLineIndex],
+            },
+          ]
+        : [];
 
     if (item.assignmentId && item.assignmentRecord) {
       const nextStatus = nextChecked ? 'completed' : 'pending';
@@ -923,15 +964,18 @@ function WeeklyGradingSummaryContent() {
               : a
           )
         );
-        toast.success(
-          nextChecked
-            ? `Verified "${item.text}" (${getUserInitials(activeUserName)})`
-            : `Marked "${item.text}" pending`
-        );
+        if (sourceRefsToToggle.length === 0) {
+          toast.success(
+            nextChecked
+              ? `Verified "${item.text}" (${getUserInitials(activeUserName)})`
+              : `Purged verification record for "${item.text}"`
+          );
+          return;
+        }
       } catch (err) {
         toast.error(err instanceof Error ? err.message : 'Failed to update status');
+        return;
       }
-      return;
     }
 
     // Uncreated external item (e.g. syllabus Lab Activity due this week) -> create assignment record on verify
@@ -973,26 +1017,6 @@ function WeeklyGradingSummaryContent() {
       }
       return;
     }
-
-    const sourceRefsToToggle =
-      item.weeklySourceNotes && item.weeklySourceNotes.length > 0
-        ? item.weeklySourceNotes
-        : item.sourceNoteId &&
-          typeof item.sourceLineIndex === 'number' &&
-          item.sourceLineIndex >= 0
-        ? [
-            {
-              noteId: item.sourceNoteId,
-              dateStr: item.dateStr,
-              dayKey: item.dayKey,
-              lineIndices:
-                item.sourceGroupLineIndices &&
-                item.sourceGroupLineIndices.length > 0
-                  ? item.sourceGroupLineIndices
-                  : [item.sourceLineIndex],
-            },
-          ]
-        : [];
 
     if (sourceRefsToToggle.length > 0) {
       const updatedNotesById = new Map<string, string>();
@@ -1095,7 +1119,7 @@ function WeeklyGradingSummaryContent() {
             ? item.repeatAcrossWeek
               ? `Verified across week (${getUserInitials(activeUserName)})!`
               : `Verified (${getUserInitials(activeUserName)})!`
-            : 'Verification unchecked'
+            : `Purged verification record for "${item.text}"`
         );
       } catch (err) {
         toast.error(err instanceof Error ? err.message : 'Failed to update verification');
@@ -1109,6 +1133,10 @@ function WeeklyGradingSummaryContent() {
     targetCategory: WeeklyItemCategory
   ) => {
     if (targetCategory === item.category) return;
+
+    const hasVer = Boolean(item.checked || item.verifiedBy || item.verifiedAt);
+    const savedVerBy = item.verifiedBy || (item.checked ? getCachedActiveUserName() : null);
+    const savedVerAt = item.verifiedAt || (item.checked ? new Date().toISOString() : null);
 
     try {
       // Converting a Parent Note line or Multi-Line Group ('verified') -> 'graded' Assignment
@@ -1124,7 +1152,16 @@ function WeeklyGradingSummaryContent() {
               )
             : item.dateStr;
 
+        // Infer problem count if item text contains a range like "#9-16"
+        const rangeMatch = item.text.match(/#(\d+)\s*[-–]\s*(\d+)/);
+        const inferredTotalProblems = rangeMatch
+          ? Math.max(1, Number.parseInt(rangeMatch[2], 10) - Number.parseInt(rangeMatch[1], 10) + 1)
+          : 20;
+        const defaultGradingMode: ScoringMode = rangeMatch ? 'problems_calculator' : 'points';
+
         // 1. Create ONE single graded assignment in school.assignments (even for a weekly-shared block!)
+        // Verification status is hidden while in Graded mode (status: 'pending'), but stored in state_standards
+        // so that switching back to Verified restores the original verification record.
         const { data: inserted, error: insertErr } = await supabase
           .schema('school')
           .from('assignments')
@@ -1137,10 +1174,21 @@ function WeeklyGradingSummaryContent() {
             assigned_date: mondayStr,
             category: item.assignmentCategory || 'homework',
             is_graded: true,
-            grading_mode: 'points',
+            grading_mode: defaultGradingMode,
             points_possible: 100,
-            status: item.checked ? 'completed' : 'pending',
-            workflow_status: item.checked ? 'completed' : 'not_started',
+            total_problems: inferredTotalProblems,
+            status: 'pending',
+            workflow_status: 'not_started',
+            completed_at: null,
+            state_standards: {
+              moodle_meta: { is_internal_grade: true },
+              ...(hasVer
+                ? {
+                    verified_by: savedVerBy,
+                    verified_at: savedVerAt,
+                  }
+                : {}),
+            },
           })
           .select('*')
           .single();
@@ -1189,11 +1237,11 @@ function WeeklyGradingSummaryContent() {
           setInlineDrafts((prev) => ({
             ...prev,
             [newAssign.id]: {
-              mode: 'points',
+              mode: defaultGradingMode,
               pointsEarned: '',
               pointsPossible: '100',
               problemsMissed: '',
-              totalProblems: '20',
+              totalProblems: String(inferredTotalProblems),
             },
           }));
         }
@@ -1201,13 +1249,17 @@ function WeeklyGradingSummaryContent() {
         return;
       }
 
-      // Converting a Note line ('verified') -> 'info' (removes checkbox so it's just informational)
+      // Converting a Note line ('verified') -> 'info' (removes checkbox so it's just informational, preserving stored verification tag)
       if (!item.assignmentId && targetCategory === 'info') {
+        const verifiedSuffix =
+          hasVer && (savedVerBy || savedVerAt)
+            ? ` [VERIFIED:${savedVerBy || ''}|${savedVerAt || ''}]`
+            : '';
         if (item.sourceNoteId && typeof item.sourceLineIndex === 'number' && item.sourceLineIndex >= 0) {
           const targetNote = parentNotes.find((n) => n.id === item.sourceNoteId);
           if (targetNote) {
             const lines = targetNote.description.split('\n');
-            lines[item.sourceLineIndex] = `• ${item.text}`;
+            lines[item.sourceLineIndex] = `• ${item.text}${verifiedSuffix}`;
             const nextDesc = lines.join('\n');
             await supabase
               .schema('school')
@@ -1223,52 +1275,195 @@ function WeeklyGradingSummaryContent() {
         return;
       }
 
-      // Converting an Assignment ('graded' <-> 'verified')
+      // Converting an Assignment ('graded' <-> 'verified' or -> 'info')
       if (item.assignmentId && item.assignmentRecord) {
+        const existingRecord = item.assignmentRecord;
+        const existingStd =
+          existingRecord.state_standards &&
+          typeof existingRecord.state_standards === 'object' &&
+          !Array.isArray(existingRecord.state_standards)
+            ? (existingRecord.state_standards as Record<string, Json | undefined>)
+            : {};
+        const stdVerBy =
+          typeof existingStd.verified_by === 'string' && existingStd.verified_by.trim()
+            ? existingStd.verified_by.trim()
+            : null;
+        const stdVerAt =
+          typeof existingStd.verified_at === 'string' && existingStd.verified_at.trim()
+            ? existingStd.verified_at.trim()
+            : null;
+        const restoredVerBy = savedVerBy || stdVerBy;
+        const restoredVerAt = savedVerAt || stdVerAt;
+        const hasStoredVer = Boolean(restoredVerBy || restoredVerAt);
+
         if (targetCategory === 'verified') {
+          const nextStatus = hasStoredVer ? 'completed' : 'pending';
+          const nextWorkflow = hasStoredVer ? 'completed' : 'not_started';
+          const nextCompletedAt = hasStoredVer
+            ? restoredVerAt || existingRecord.completed_at || new Date().toISOString()
+            : null;
+          const updatedStd: Record<string, Json | undefined> = {
+            ...existingStd,
+            ...(hasStoredVer
+              ? {
+                  verified_by: restoredVerBy,
+                  verified_at: restoredVerAt,
+                }
+              : {}),
+          };
+
           const { error } = await supabase
             .schema('school')
             .from('assignments')
             .update({
               is_graded: false,
               grading_mode: 'completion',
+              status: nextStatus,
+              workflow_status: nextWorkflow,
+              completed_at: nextCompletedAt,
+              state_standards: updatedStd as Json,
             })
             .eq('id', item.assignmentId);
           if (error) throw error;
           setAssignments((prev) =>
             prev.map((a) =>
               a.id === item.assignmentId
-                ? { ...a, is_graded: false, grading_mode: 'completion' }
+                ? {
+                    ...a,
+                    is_graded: false,
+                    grading_mode: 'completion',
+                    status: nextStatus,
+                    workflow_status: nextWorkflow,
+                    completed_at: nextCompletedAt,
+                    state_standards: updatedStd as Json,
+                  }
                 : a
             )
           );
-          toast.success(`Changed "${item.text}" to Parent Verified`);
+          toast.success(
+            hasStoredVer
+              ? `Changed "${item.text}" to Parent Verified (restored verification record)`
+              : `Changed "${item.text}" to Parent Verified`
+          );
         } else if (targetCategory === 'graded') {
+          const targetSub = subjectMap.get(item.subjectId);
+          const existingMm = parseAssignmentMoodleMeta(existingRecord.state_standards);
+          const shouldMarkInternal =
+            !isAssignmentApiSynced(existingRecord, targetSub) &&
+            typeof existingMm?.moodle_cmid !== 'number';
+          const updatedStd: Record<string, Json | undefined> = {
+            ...existingStd,
+            ...(shouldMarkInternal
+              ? {
+                  moodle_meta: {
+                    ...(existingMm || {}),
+                    is_internal_grade: true,
+                  },
+                }
+              : {}),
+            ...(hasStoredVer
+              ? {
+                  verified_by: restoredVerBy,
+                  verified_at: restoredVerAt,
+                }
+              : {}),
+          };
+
+          const rangeMatch = item.text.match(/#(\d+)\s*[-–]\s*(\d+)/);
+          const inferredTotalProblems = rangeMatch
+            ? Math.max(
+                1,
+                Number.parseInt(rangeMatch[2], 10) - Number.parseInt(rangeMatch[1], 10) + 1
+              )
+            : existingRecord.total_problems || 20;
+          const defaultMode: ScoringMode = rangeMatch ? 'problems_calculator' : 'points';
+          const alreadyScored = isAssignmentScored(existingRecord);
+          const nextStatus = alreadyScored ? existingRecord.status : 'pending';
+          const nextWorkflow = alreadyScored ? existingRecord.workflow_status : 'not_started';
+
           const { error } = await supabase
             .schema('school')
             .from('assignments')
             .update({
               is_graded: true,
-              grading_mode: 'points',
+              grading_mode: defaultMode,
+              total_problems: inferredTotalProblems,
+              status: nextStatus,
+              workflow_status: nextWorkflow,
+              state_standards: updatedStd as Json,
             })
             .eq('id', item.assignmentId);
           if (error) throw error;
           setAssignments((prev) =>
             prev.map((a) =>
-              a.id === item.assignmentId ? { ...a, is_graded: true, grading_mode: 'points' } : a
+              a.id === item.assignmentId
+                ? {
+                    ...a,
+                    is_graded: true,
+                    grading_mode: defaultMode,
+                    total_problems: inferredTotalProblems,
+                    status: nextStatus,
+                    workflow_status: nextWorkflow,
+                    state_standards: updatedStd as Json,
+                  }
+                : a
             )
           );
           setInlineDrafts((prev) => ({
             ...prev,
             [item.assignmentId!]: prev[item.assignmentId!] || {
-              mode: 'points',
+              mode: defaultMode,
               pointsEarned: '',
               pointsPossible: '100',
               problemsMissed: '',
-              totalProblems: '20',
+              totalProblems: String(inferredTotalProblems),
             },
           }));
           toast.success(`Changed "${item.text}" to Graded`);
+        } else if (targetCategory === 'info') {
+          const verifiedSuffix =
+            hasStoredVer && (restoredVerBy || restoredVerAt)
+              ? ` [VERIFIED:${restoredVerBy || ''}|${restoredVerAt || ''}]`
+              : '';
+          if (!item.repeatAcrossWeek) {
+            const infoLine = `• ${item.text}${verifiedSuffix}`;
+            const existingCellNote = parentNotes.find(
+              (n) => n.subject_id === item.subjectId && n.note_date === item.dateStr
+            );
+            if (existingCellNote) {
+              const nextDesc = existingCellNote.description
+                ? `${existingCellNote.description}\n${infoLine}`
+                : infoLine;
+              await supabase
+                .schema('school')
+                .from('parent_notes')
+                .update({ description: nextDesc })
+                .eq('id', existingCellNote.id);
+              setParentNotes((prev) =>
+                prev.map((n) =>
+                  n.id === existingCellNote.id ? { ...n, description: nextDesc } : n
+                )
+              );
+            } else {
+              const { data: insertedNote } = await supabase
+                .schema('school')
+                .from('parent_notes')
+                .insert({
+                  subject_id: item.subjectId,
+                  note_date: item.dateStr,
+                  title: '',
+                  description: infoLine,
+                })
+                .select('*')
+                .single();
+              if (insertedNote) {
+                setParentNotes((prev) => [...prev, insertedNote]);
+              }
+            }
+          }
+          await supabase.schema('school').from('assignments').delete().eq('id', item.assignmentId);
+          setAssignments((prev) => prev.filter((a) => a.id !== item.assignmentId));
+          toast.success(`Changed "${item.text}" to Informational (hidden from grading sheet)`);
         }
       }
     } catch (err) {
@@ -1505,7 +1700,7 @@ function WeeklyGradingSummaryContent() {
     const typeInfo = typeMap.get(item.assignmentCategory);
     const isGraded = item.category === 'graded';
     const isScored = item.percentageScore !== null;
-    const isRowDone = isGraded ? isScored || item.checked : item.checked;
+    const isRowDone = isGraded ? isScored : item.checked;
     const isActivityRow = item.assignmentCategory.toLowerCase() === 'activity';
     const supplyCount = item.supplies?.length ?? 0;
     const draft = item.assignmentId
@@ -1805,6 +2000,20 @@ function WeeklyGradingSummaryContent() {
                   Graded
                 </ToggleButton>
               </ToggleButtonGroup>
+              {sub && isSubjectApiSynced(sub) && !item.isApiSynced && item.category === 'graded' && (
+                <Tooltip
+                  title="Internal / Home Grade — calculated independently alongside the official API course grade"
+                  arrow
+                >
+                  <Chip
+                    size="small"
+                    label="Internal Grade"
+                    color="secondary"
+                    variant="outlined"
+                    sx={{ height: 20, fontSize: '0.65rem', fontWeight: 700 }}
+                  />
+                </Tooltip>
+              )}
               {item.isExternalItem && (
                 <Chip
                   size="small"
@@ -2817,6 +3026,78 @@ function WeeklyGradingSummaryContent() {
           setModalOpen(true);
         }}
       />
+
+      {/* Purge Verification Record Warning Dialog */}
+      <Dialog
+        open={Boolean(pendingUnverifyItem)}
+        onClose={() => setPendingUnverifyItem(null)}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle sx={{ fontWeight: 700, pb: 1 }}>
+          Remove Verification Record?
+        </DialogTitle>
+        <DialogContent dividers>
+          <Stack spacing={1.5}>
+            <Alert severity="warning" variant="outlined">
+              Un-verifying this item will permanently purge the stored verification record.
+            </Alert>
+            {pendingUnverifyItem && (
+              <Box
+                sx={{
+                  p: 1.5,
+                  borderRadius: 1,
+                  bgcolor: alpha(theme.palette.success.main, 0.06),
+                  border: '1px solid',
+                  borderColor: alpha(theme.palette.success.main, 0.25),
+                }}
+              >
+                <Typography variant="subtitle2" fontWeight={700} gutterBottom>
+                  {pendingUnverifyItem.text}
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  <strong>Verified by:</strong>{' '}
+                  {pendingUnverifyItem.verifiedBy || getCachedActiveUserName()}
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  <strong>Timestamp:</strong>{' '}
+                  {pendingUnverifyItem.verifiedAt
+                    ? new Date(pendingUnverifyItem.verifiedAt).toLocaleString('en-US', {
+                        month: 'short',
+                        day: 'numeric',
+                        year: 'numeric',
+                        hour: 'numeric',
+                        minute: '2-digit',
+                      })
+                    : 'Recorded'}
+                </Typography>
+              </Box>
+            )}
+          </Stack>
+        </DialogContent>
+        <DialogActions sx={{ px: 2.5, py: 1.5 }}>
+          <Button
+            variant="outlined"
+            color="inherit"
+            onClick={() => setPendingUnverifyItem(null)}
+          >
+            Keep Verified
+          </Button>
+          <Button
+            variant="contained"
+            color="error"
+            onClick={() => {
+              const target = pendingUnverifyItem;
+              setPendingUnverifyItem(null);
+              if (target) {
+                void handleToggleSection1ItemVerified(target, true);
+              }
+            }}
+          >
+            Purge Verification
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 }

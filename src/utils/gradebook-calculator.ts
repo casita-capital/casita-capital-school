@@ -100,6 +100,7 @@ export interface SubjectGradingPolicy {
   participation_points: number;
   credit_calculation_mode: CreditCalculationMode;
   preset_credits: number;
+  show_internal_grade_on_gradebook: boolean;
   category_weights: Record<string, CategoryWeightRule>;
   grading_scale: GradingScaleCutoffs;
 }
@@ -434,6 +435,7 @@ export function createDefaultGradingPolicy(subjectName = ''): SubjectGradingPoli
     participation_points: 10,
     credit_calculation_mode: 'fixed_preset',
     preset_credits: 1.0,
+    show_internal_grade_on_gradebook: true,
     category_weights: defaultWeights,
     grading_scale: { A: 90, B: 80, C: 70, D: 60 },
   };
@@ -568,6 +570,10 @@ export function parseSubjectGradingPolicy(sub: SubjectWithGrading): SubjectGradi
         : typeof rawCfg.preset_credits === 'number'
         ? rawCfg.preset_credits
         : fallback.preset_credits,
+    show_internal_grade_on_gradebook:
+      typeof rawCfg.show_internal_grade_on_gradebook === 'boolean'
+        ? rawCfg.show_internal_grade_on_gradebook
+        : fallback.show_internal_grade_on_gradebook,
     category_weights: categoryWeights,
     grading_scale: gradingScale,
   };
@@ -806,6 +812,7 @@ export interface MoodleAssignmentMetadata {
   contribution_formatted?: string;
   range_formatted?: string;
   is_ungraded_bucket?: boolean;
+  is_internal_grade?: boolean;
   week_number?: number | null;
   syllabus_day_number?: number | null;
   class_number?: number | null;
@@ -832,8 +839,10 @@ export function parseAssignmentMoodleMeta(
   const raw = isRecord(stateStandards.moodle_meta) ? stateStandards.moodle_meta : stateStandards;
   if (
     typeof raw.moodle_cmid !== 'number' &&
+    typeof raw.moodle_course_id !== 'number' &&
     typeof raw.moodle_category !== 'string' &&
     typeof raw.manual_override !== 'boolean' &&
+    typeof raw.is_internal_grade !== 'boolean' &&
     typeof raw.syllabus_day_number !== 'number' &&
     typeof raw.week_number !== 'number' &&
     typeof raw.activity_name !== 'string' &&
@@ -859,6 +868,8 @@ export function parseAssignmentMoodleMeta(
     range_formatted: typeof raw.range_formatted === 'string' ? raw.range_formatted : undefined,
     is_ungraded_bucket:
       typeof raw.is_ungraded_bucket === 'boolean' ? raw.is_ungraded_bucket : false,
+    is_internal_grade:
+      typeof raw.is_internal_grade === 'boolean' ? raw.is_internal_grade : undefined,
     week_number: typeof raw.week_number === 'number' ? raw.week_number : null,
     syllabus_day_number:
       typeof raw.syllabus_day_number === 'number' ? raw.syllabus_day_number : null,
@@ -960,14 +971,40 @@ export function isSubjectApiSynced(sub?: SubjectWithGrading | null): boolean {
   return false;
 }
 
+function normalizeMoodleLookupTitle(rawTitle: string): string {
+  return rawTitle
+    .replace(/--DUE[\s\S]*$/i, '')
+    .replace(/^LC 4th Edition\s+/i, '')
+    .replace(/\.$/, '')
+    .trim()
+    .toLowerCase();
+}
+
 export function isAssignmentApiSynced(
   a: GradebookAssignment,
   sub?: SubjectWithGrading | null
 ): boolean {
-  if (sub && isSubjectApiSynced(sub)) return true;
   const mm = parseAssignmentMoodleMeta(a.state_standards);
+  if (mm?.is_internal_grade === true) {
+    return false;
+  }
   if (mm && (typeof mm.moodle_cmid === 'number' || typeof mm.moodle_course_id === 'number')) {
     return true;
+  }
+  if (sub && isSubjectApiSynced(sub)) {
+    if (a.source_type === 'syllabus_staged') {
+      return true;
+    }
+    const report = parseMoodleGradeReport(sub.grading_config);
+    if (report && report.items.length > 0) {
+      const normTitle = normalizeMoodleLookupTitle(a.title);
+      const matchesMoodleGradeItem = report.items.some(
+        (it) => normalizeMoodleLookupTitle(it.item_name) === normTitle
+      );
+      if (matchesMoodleGradeItem) {
+        return true;
+      }
+    }
   }
   return false;
 }
@@ -1168,12 +1205,24 @@ export interface CategoryGradeBreakdown {
   average_percentage: number | null;
 }
 
+export interface InternalGradeTrackSummary {
+  graded_count: number;
+  needs_grading_count: number;
+  total_count: number;
+  points_earned: number;
+  points_possible: number;
+  percentage: number | null;
+  letter_grade: string;
+  formatted_display: string;
+}
+
 export interface SubjectGradeSummary {
   subject_id: string;
   subject_name: string;
   policy: SubjectGradingPolicy;
   moodle_report: MoodleCourseGradeReport | null;
   is_api_synced: boolean;
+  internal_grade: InternalGradeTrackSummary;
   total_assignments: number;
   staged_count: number;
   needs_grading_count: number;
@@ -1254,7 +1303,14 @@ export function calculateSubjectGradeSummary(params: {
     assignment: GradebookAssignment;
     metrics: ComputedAssignmentMetrics;
     moodleMeta: MoodleAssignmentMetadata | null;
+    isApiSynced: boolean;
   }> = [];
+
+  let internalTotalCount = 0;
+  let internalNeedsGradingCount = 0;
+  let internalPointsEarned = 0;
+  let internalPointsPossible = 0;
+  let internalGradedCount = 0;
 
   let assignmentMinutes = 0;
   for (const a of subjectAssignments) {
@@ -1265,6 +1321,14 @@ export function calculateSubjectGradeSummary(params: {
     }
 
     if (a.is_graded === false || a.is_exempt) continue;
+
+    const itemIsApiSynced = isAssignmentApiSynced(a, subject);
+    if (!itemIsApiSynced) {
+      internalTotalCount += 1;
+      if (isAssignmentAwaitingManualGrade(a, subject)) {
+        internalNeedsGradingCount += 1;
+      }
+    }
 
     const metrics = computeAssignmentMetrics({
       grading_mode: a.grading_mode || 'points',
@@ -1280,9 +1344,46 @@ export function calculateSubjectGradeSummary(params: {
 
     if (metrics.is_scored && metrics.points_earned !== null && metrics.percentage_score !== null) {
       const moodleMeta = parseAssignmentMoodleMeta(a.state_standards);
-      scoredAssignments.push({ assignment: a, metrics, moodleMeta });
+      scoredAssignments.push({
+        assignment: a,
+        metrics,
+        moodleMeta,
+        isApiSynced: itemIsApiSynced,
+      });
+
+      if (!itemIsApiSynced) {
+        internalGradedCount += 1;
+        internalPointsEarned += metrics.points_earned;
+        internalPointsPossible += metrics.points_possible;
+      }
     }
   }
+
+  const internalPercentage =
+    internalPointsPossible > 0
+      ? Number(((internalPointsEarned / internalPointsPossible) * 100).toFixed(2))
+      : null;
+  const internalLetterGrade = percentageToLetterGrade(internalPercentage, policy.grading_scale);
+  const internalGradeSummary: InternalGradeTrackSummary = {
+    graded_count: internalGradedCount,
+    needs_grading_count: internalNeedsGradingCount,
+    total_count: internalTotalCount,
+    points_earned: Number(internalPointsEarned.toFixed(2)),
+    points_possible: Number(internalPointsPossible.toFixed(2)),
+    percentage: internalPercentage,
+    letter_grade: internalLetterGrade,
+    formatted_display: formatClassGradeDisplay(
+      internalPercentage,
+      internalLetterGrade,
+      policy
+    ),
+  };
+
+  // For API-synced classes, keep the primary Course Total calculation strictly on the API track
+  // so internal assignments calculate independently and display alongside the API grade.
+  const primaryTrackScored = apiSynced
+    ? scoredAssignments.filter((it) => it.isApiSynced)
+    : scoredAssignments;
 
   // Group by category slug and apply drop_lowest rules
   // Note: Items sitting in Moodle's 0%-weighted "Ungraded Items" bucket are still counted in graded_count
@@ -1293,10 +1394,11 @@ export function calculateSubjectGradeSummary(params: {
       assignment: GradebookAssignment;
       metrics: ComputedAssignmentMetrics;
       moodleMeta: MoodleAssignmentMetadata | null;
+      isApiSynced: boolean;
     }>
   >();
 
-  for (const item of scoredAssignments) {
+  for (const item of primaryTrackScored) {
     if (item.moodleMeta?.is_ungraded_bucket) {
       continue;
     }
@@ -1389,7 +1491,7 @@ export function calculateSubjectGradeSummary(params: {
       : null;
 
   const presetPoolPct =
-    policy.preset_total_points > 0 && scoredAssignments.length > 0
+    policy.preset_total_points > 0 && primaryTrackScored.length > 0
       ? Number(((totalEarnedAfterDrops / policy.preset_total_points) * 100).toFixed(2))
       : null;
 
@@ -1454,13 +1556,14 @@ export function calculateSubjectGradeSummary(params: {
     policy,
     moodle_report: moodleReport,
     is_api_synced: apiSynced,
+    internal_grade: internalGradeSummary,
     total_assignments: subjectAssignments.filter(
       (a) => a.workflow_status !== 'staged' && a.workflow_status !== 'ignored'
     ).length,
     staged_count: stagedCount,
     needs_grading_count: needsGradingCount,
     pending_api_count: pendingApiCount,
-    graded_count: scoredAssignments.length,
+    graded_count: primaryTrackScored.length,
     points_earned_so_far: Number(totalEarnedAfterDrops.toFixed(2)),
     points_possible_entered_so_far: Number(totalPossibleAfterDrops.toFixed(2)),
     preset_total_points: policy.preset_total_points,

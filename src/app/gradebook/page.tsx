@@ -41,6 +41,8 @@ import {
   CloudDownload,
   Download,
   Edit3,
+  Eye,
+  EyeOff,
   FileText,
   GraduationCap,
   Layers,
@@ -78,6 +80,7 @@ import {
   getAssignmentWeekNumber,
   GradebookAssignment,
   isAssignmentApiSynced,
+  isSubjectApiSynced,
   parseAssignmentMoodleMeta,
   parseSubjectGradingPolicy,
   RecurringAssignmentTemplate,
@@ -276,6 +279,33 @@ function GradebookHubContent() {
   const [savingOverride, setSavingOverride] = useState<boolean>(false);
 
   const [syncingPortalGrades, setSyncingPortalGrades] = useState<boolean>(false);
+
+  // Global Toggle for Showing / Hiding Internal Grades on Gradebook & Report Card
+  const [showInternalGrades, setShowInternalGrades] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      return window.localStorage.getItem('ccs_show_internal_grades_v1') !== 'false';
+    }
+    return true;
+  });
+
+  const handleToggleShowInternalGrades = (nextVal?: boolean) => {
+    setShowInternalGrades((prev) => {
+      const updated = typeof nextVal === 'boolean' ? nextVal : !prev;
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem('ccs_show_internal_grades_v1', String(updated));
+      }
+      toast.success(
+        updated
+          ? 'Internal / Home Grades shown on Gradebook & Report Card'
+          : 'Internal / Home Grades hidden from Gradebook & Report Card'
+      );
+      return updated;
+    });
+  };
+
+  const isInternalGradeVisibleForSubject = (sum: SubjectGradeSummary): boolean => {
+    return showInternalGrades && sum.policy.show_internal_grade_on_gradebook !== false;
+  };
 
   // Attendance & Instructional Hours Form State
   const [newAttendanceDate, setNewAttendanceDate] = useState<string>(
@@ -756,6 +786,33 @@ function GradebookHubContent() {
       await supabase.from('subjects').update({ sort_order: s.sort_order }).eq('id', s.id);
     }
     toast.success('Updated class order');
+  };
+
+  const handleToggleSubjectInternalGradeVisibility = async (sub: SubjectWithGrading) => {
+    const currentPolicy = parseSubjectGradingPolicy(sub);
+    const nextShow = currentPolicy.show_internal_grade_on_gradebook === false;
+    const nextPolicy = {
+      ...currentPolicy,
+      show_internal_grade_on_gradebook: nextShow,
+    };
+    const { error } = await supabase
+      .from('subjects')
+      .update({ grading_policy: nextPolicy as unknown as Json })
+      .eq('id', sub.id);
+    if (error) {
+      toast.error(`Failed to update internal grade visibility: ${error.message}`);
+      return;
+    }
+    setSubjects((prev) =>
+      prev.map((s) =>
+        s.id === sub.id ? { ...s, grading_policy: nextPolicy as unknown as Json } : s
+      )
+    );
+    toast.success(
+      nextShow
+        ? `Internal Grade shown for ${sub.name}`
+        : `Internal Grade hidden for ${sub.name}`
+    );
   };
 
   // Inline Quick Score Save (Math Total/Missed Problems OR Points Earned/Possible)
@@ -1750,6 +1807,36 @@ function GradebookHubContent() {
               )}
             </Box>
 
+            <Tooltip
+              title={
+                showInternalGrades
+                  ? 'Internal / Home grades for API-synced classes are currently shown alongside API grades on the Gradebook & Report Card. Click to hide.'
+                  : 'Internal / Home grades for API-synced classes are currently hidden from the Gradebook & Report Card. Click to show.'
+              }
+            >
+              <Button
+                variant={showInternalGrades ? 'outlined' : 'text'}
+                color={showInternalGrades ? 'secondary' : 'inherit'}
+                size="small"
+                startIcon={showInternalGrades ? <Eye size={15} /> : <EyeOff size={15} />}
+                onClick={() => handleToggleShowInternalGrades()}
+                sx={{
+                  fontWeight: 600,
+                  textTransform: 'none',
+                  px: 1.5,
+                  height: 38,
+                  whiteSpace: 'nowrap',
+                  border: '1px solid',
+                  borderColor: showInternalGrades
+                    ? alpha(theme.palette.secondary.main, 0.45)
+                    : 'divider',
+                  color: showInternalGrades ? 'secondary.main' : 'text.secondary',
+                }}
+              >
+                Internal Grades: {showInternalGrades ? 'Shown' : 'Hidden'}
+              </Button>
+            </Tooltip>
+
             <Button
               variant="outlined"
               color="secondary"
@@ -1969,6 +2056,10 @@ function GradebookHubContent() {
                       a.workflow_status !== 'staged' &&
                       a.workflow_status !== 'ignored'
                   );
+                  const internalClassAssignments = classAssignments.filter(
+                    (a) => !isAssignmentApiSynced(a, sub)
+                  );
+                  const showInternalForSub = isInternalGradeVisibleForSubject(sum);
 
                   const gradeColor =
                     sum.effective_percentage === null
@@ -2078,7 +2169,7 @@ function GradebookHubContent() {
 
                         {/* CURRENT GRADE */}
                         <TableCell sx={{ whiteSpace: 'nowrap' }}>
-                          <Stack direction="row" spacing={1} alignItems="center">
+                          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
                             <Box
                               sx={{
                                 display: 'inline-flex',
@@ -2094,8 +2185,43 @@ function GradebookHubContent() {
                                 whiteSpace: 'nowrap',
                               }}
                             >
-                              {sum.formatted_display}
+                              {sum.is_api_synced &&
+                              showInternalForSub &&
+                              sum.internal_grade.total_count > 0
+                                ? `API: ${sum.formatted_display}`
+                                : sum.formatted_display}
                             </Box>
+                            {sum.is_api_synced &&
+                              showInternalForSub &&
+                              sum.internal_grade.total_count > 0 && (
+                                <Tooltip
+                                  title={`Internal / Home Grade: ${sum.internal_grade.points_earned}/${sum.internal_grade.points_possible} pts (${sum.internal_grade.graded_count}/${sum.internal_grade.total_count} graded) — calculated independently alongside the official API grade`}
+                                  arrow
+                                >
+                                  <Box
+                                    sx={{
+                                      display: 'inline-flex',
+                                      alignItems: 'center',
+                                      px: 1.1,
+                                      py: 0.35,
+                                      borderRadius: 1,
+                                      border: '1px solid',
+                                      borderColor: alpha(theme.palette.secondary.main, 0.35),
+                                      bgcolor: alpha(theme.palette.secondary.main, 0.08),
+                                      color: 'secondary.dark',
+                                      fontWeight: 700,
+                                      fontSize: '0.78rem',
+                                      fontVariantNumeric: 'tabular-nums',
+                                      whiteSpace: 'nowrap',
+                                    }}
+                                  >
+                                    Internal:{' '}
+                                    {sum.internal_grade.graded_count > 0
+                                      ? sum.internal_grade.formatted_display
+                                      : `Needs Grading (${sum.internal_grade.needs_grading_count})`}
+                                  </Box>
+                                </Tooltip>
+                              )}
                             {sum.is_overridden && (
                               <Chip
                                 size="small"
@@ -2109,34 +2235,50 @@ function GradebookHubContent() {
 
                         {/* STATUS & PROGRESS */}
                         <TableCell>
-                          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+                          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
                             {sum.is_api_synced ? (
-                              sum.pending_api_count > 0 ? (
-                                <Chip
-                                  size="small"
-                                  icon={<CloudDownload size={12} />}
-                                  label={`${sum.pending_api_count} Pending Grades`}
-                                  sx={{
-                                    height: 22,
-                                    fontSize: '0.75rem',
-                                    fontWeight: 600,
-                                    bgcolor: alpha(theme.palette.info.main, 0.12),
-                                    color: 'info.dark',
-                                  }}
-                                />
-                              ) : (
-                                <Chip
-                                  size="small"
-                                  label="All Synced"
-                                  sx={{
-                                    height: 22,
-                                    fontSize: '0.75rem',
-                                    fontWeight: 600,
-                                    bgcolor: alpha(theme.palette.success.main, 0.1),
-                                    color: 'success.dark',
-                                  }}
-                                />
-                              )
+                              <>
+                                {sum.pending_api_count > 0 ? (
+                                  <Chip
+                                    size="small"
+                                    icon={<CloudDownload size={12} />}
+                                    label={`${sum.pending_api_count} Pending Grades`}
+                                    sx={{
+                                      height: 22,
+                                      fontSize: '0.75rem',
+                                      fontWeight: 600,
+                                      bgcolor: alpha(theme.palette.info.main, 0.12),
+                                      color: 'info.dark',
+                                    }}
+                                  />
+                                ) : (
+                                  <Chip
+                                    size="small"
+                                    label="All Synced"
+                                    sx={{
+                                      height: 22,
+                                      fontSize: '0.75rem',
+                                      fontWeight: 600,
+                                      bgcolor: alpha(theme.palette.success.main, 0.1),
+                                      color: 'success.dark',
+                                    }}
+                                  />
+                                )}
+                                {showInternalForSub &&
+                                  sum.internal_grade.needs_grading_count > 0 && (
+                                    <Chip
+                                      size="small"
+                                      label={`${sum.internal_grade.needs_grading_count} Internal Need Grading`}
+                                      sx={{
+                                        height: 22,
+                                        fontSize: '0.75rem',
+                                        fontWeight: 600,
+                                        bgcolor: alpha(theme.palette.warning.main, 0.14),
+                                        color: 'warning.dark',
+                                      }}
+                                    />
+                                  )}
+                              </>
                             ) : sum.needs_grading_count > 0 ? (
                               <Chip
                                 size="small"
@@ -2184,25 +2326,49 @@ function GradebookHubContent() {
                                 ? sum.preset_total_points
                                 : sum.points_possible_entered_so_far}{' '}
                               pts
+                              {sum.is_api_synced &&
+                              showInternalForSub &&
+                              sum.internal_grade.total_count > 0
+                                ? ` • Internal: ${sum.internal_grade.graded_count}/${sum.internal_grade.total_count} (${sum.internal_grade.points_earned}/${sum.internal_grade.points_possible} pts)`
+                                : ''}
                             </Typography>
                           </Stack>
-                          {sum.moodle_report && sum.moodle_report.categories.length > 0 && (
+                          {(Boolean(sum.moodle_report && sum.moodle_report.categories.length > 0) ||
+                            (sum.is_api_synced &&
+                              showInternalForSub &&
+                              sum.internal_grade.total_count > 0)) && (
                             <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap mt={0.5}>
-                              {sum.moodle_report.categories
-                                .filter((c) => !c.is_ungraded_bucket)
-                                .map((cat) => (
+                              {sum.moodle_report &&
+                                sum.moodle_report.categories
+                                  .filter((c) => !c.is_ungraded_bucket)
+                                  .map((cat) => (
+                                    <Chip
+                                      key={cat.category_name}
+                                      size="small"
+                                      variant="outlined"
+                                      label={`${cat.category_name}: ${
+                                        cat.percentage_numeric !== null
+                                          ? `${cat.percentage_numeric.toFixed(2)}%`
+                                          : '—'
+                                      } (${cat.weight_formatted})`}
+                                      sx={{ height: 22, fontSize: '0.75rem', fontWeight: 600 }}
+                                    />
+                                  ))}
+                              {sum.is_api_synced &&
+                                showInternalForSub &&
+                                sum.internal_grade.total_count > 0 && (
                                   <Chip
-                                    key={cat.category_name}
                                     size="small"
+                                    color="secondary"
                                     variant="outlined"
-                                    label={`${cat.category_name}: ${
-                                      cat.percentage_numeric !== null
-                                        ? `${cat.percentage_numeric.toFixed(2)}%`
-                                        : '—'
-                                    } (${cat.weight_formatted})`}
+                                    label={`Internal Home Work: ${
+                                      sum.internal_grade.percentage !== null
+                                        ? `${sum.internal_grade.percentage.toFixed(2)}%`
+                                        : 'Pending'
+                                    } (${sum.internal_grade.points_earned}/${sum.internal_grade.points_possible} pts)`}
                                     sx={{ height: 22, fontSize: '0.75rem', fontWeight: 600 }}
                                   />
-                                ))}
+                                )}
                             </Stack>
                           )}
                         </TableCell>
@@ -2257,10 +2423,8 @@ function GradebookHubContent() {
                             >
                               Assignments (
                               {sum.moodle_report
-                                ? Math.max(
-                                    classAssignments.length,
-                                    sum.moodle_report.items.length
-                                  )
+                                ? sum.moodle_report.items.length +
+                                  (showInternalForSub ? internalClassAssignments.length : 0)
                                 : classAssignments.length}
                               )
                             </Button>
@@ -2358,6 +2522,36 @@ function GradebookHubContent() {
                                     >
                                       Grading &amp; Participation Policy
                                     </Button>
+                                    {sum.is_api_synced && (
+                                      <Button
+                                        fullWidth
+                                        size="small"
+                                        color="inherit"
+                                        startIcon={
+                                          sum.policy.show_internal_grade_on_gradebook !== false ? (
+                                            <EyeOff size={14} />
+                                          ) : (
+                                            <Eye size={14} />
+                                          )
+                                        }
+                                        onClick={() => {
+                                          setOpenMenuSubjectId(null);
+                                          void handleToggleSubjectInternalGradeVisibility(sub);
+                                        }}
+                                        sx={{
+                                          justifyContent: 'flex-start',
+                                          textTransform: 'none',
+                                          fontWeight: 600,
+                                          whiteSpace: 'nowrap',
+                                          px: 1.25,
+                                          py: 0.75,
+                                        }}
+                                      >
+                                        {sum.policy.show_internal_grade_on_gradebook !== false
+                                          ? 'Hide Internal Grade on Gradebook'
+                                          : 'Show Internal Grade on Gradebook'}
+                                      </Button>
+                                    )}
                                     <Button
                                       fullWidth
                                       size="small"
@@ -3341,6 +3535,493 @@ function GradebookHubContent() {
                                               </React.Fragment>
                                             );
                                           })}
+
+                                          {/* COMPANION INTERNAL / HOME GRADED ASSIGNMENTS SECTION FOR API-SYNCED CLASSES */}
+                                          {showInternalForSub &&
+                                            internalClassAssignments.length > 0 &&
+                                            (() => {
+                                              const internalCatKey = `${sub.id}::__internal_home_graded__`;
+                                              const isInternalCollapsed = Boolean(
+                                                collapsedGradeCategories[internalCatKey]
+                                              );
+                                              const sortedInternalAssigns = [
+                                                ...internalClassAssignments,
+                                              ].sort(
+                                                compareGradebookAssignmentsChronological
+                                              );
+
+                                              return (
+                                                <React.Fragment key="__internal_home_graded__">
+                                                  <TableRow
+                                                    hover
+                                                    onClick={() =>
+                                                      toggleCollapseCategory(
+                                                        sub.id,
+                                                        '__internal_home_graded__'
+                                                      )
+                                                    }
+                                                    sx={{
+                                                      cursor: 'pointer',
+                                                      bgcolor: alpha(
+                                                        theme.palette.secondary.main,
+                                                        0.06
+                                                      ),
+                                                    }}
+                                                  >
+                                                    <TableCell colSpan={6} sx={{ pl: 3.5, py: 1.1 }}>
+                                                      <Stack
+                                                        direction="row"
+                                                        spacing={1.25}
+                                                        alignItems="center"
+                                                        justifyContent="space-between"
+                                                        flexWrap="wrap"
+                                                      >
+                                                        <Stack
+                                                          direction="row"
+                                                          spacing={1}
+                                                          alignItems="center"
+                                                        >
+                                                          {isInternalCollapsed ? (
+                                                            <ChevronRight size={15} />
+                                                          ) : (
+                                                            <ChevronDown size={15} />
+                                                          )}
+                                                          <Typography
+                                                            variant="body2"
+                                                            fontWeight={700}
+                                                            color="secondary.dark"
+                                                          >
+                                                            Internal / Home Graded Assignments
+                                                          </Typography>
+                                                          <Chip
+                                                            size="small"
+                                                            color="secondary"
+                                                            variant="outlined"
+                                                            label="Independent from API Grade"
+                                                            sx={{
+                                                              height: 20,
+                                                              fontSize: '0.68rem',
+                                                              fontWeight: 700,
+                                                            }}
+                                                          />
+                                                        </Stack>
+                                                        <Typography
+                                                          variant="caption"
+                                                          color="text.secondary"
+                                                          sx={{ fontWeight: 600 }}
+                                                        >
+                                                          {sum.internal_grade.graded_count}/
+                                                          {sum.internal_grade.total_count} graded •{' '}
+                                                          {sum.internal_grade.points_earned}/
+                                                          {sum.internal_grade.points_possible} pts
+                                                        </Typography>
+                                                      </Stack>
+                                                    </TableCell>
+                                                  </TableRow>
+
+                                                  {!isInternalCollapsed &&
+                                                    sortedInternalAssigns.map((a) => {
+                                                      const hasPct =
+                                                        typeof a.percentage_score === 'number';
+                                                      const typeInfo = typeMap.get(a.category);
+                                                      const catTitle =
+                                                        typeInfo?.name ||
+                                                        a.category ||
+                                                        'Homework';
+                                                      const isQuizOrTest =
+                                                        a.category
+                                                          .toLowerCase()
+                                                          .includes('quiz') ||
+                                                        a.category
+                                                          .toLowerCase()
+                                                          .includes('test');
+
+                                                      return (
+                                                        <TableRow
+                                                          key={a.id}
+                                                          hover
+                                                          sx={{
+                                                            '& > td': { py: 1.35 },
+                                                            bgcolor: alpha(
+                                                              theme.palette.secondary.main,
+                                                              0.015
+                                                            ),
+                                                          }}
+                                                        >
+                                                          {/* 1. GRADE ITEM */}
+                                                          <TableCell sx={{ pl: 5.5 }}>
+                                                            <Stack
+                                                              direction="row"
+                                                              spacing={1.5}
+                                                              alignItems="flex-start"
+                                                            >
+                                                              <Box
+                                                                sx={{
+                                                                  width: 28,
+                                                                  height: 28,
+                                                                  borderRadius: 1,
+                                                                  bgcolor:
+                                                                    theme.palette.secondary.main,
+                                                                  color: '#fff',
+                                                                  display: 'flex',
+                                                                  alignItems: 'center',
+                                                                  justifyContent: 'center',
+                                                                  flexShrink: 0,
+                                                                  mt: 0.25,
+                                                                }}
+                                                              >
+                                                                {isQuizOrTest ? (
+                                                                  <CheckSquare size={14} />
+                                                                ) : (
+                                                                  <FileText size={14} />
+                                                                )}
+                                                              </Box>
+                                                              <Box>
+                                                                <Typography
+                                                                  variant="caption"
+                                                                  sx={{
+                                                                    display: 'block',
+                                                                    fontSize: '0.75rem',
+                                                                    fontWeight: 700,
+                                                                    color: 'secondary.dark',
+                                                                    textTransform: 'uppercase',
+                                                                    letterSpacing: '0.04em',
+                                                                    lineHeight: 1.2,
+                                                                  }}
+                                                                >
+                                                                  INTERNAL • {catTitle}
+                                                                  {(() => {
+                                                                    const dayNum =
+                                                                      getAssignmentDayNumber(a);
+                                                                    if (dayNum !== null) {
+                                                                      return ` • DAY ${dayNum}`;
+                                                                    }
+                                                                    const weekNum =
+                                                                      getAssignmentWeekNumber(a);
+                                                                    if (weekNum !== null) {
+                                                                      return ` • WEEK ${weekNum}`;
+                                                                    }
+                                                                    return '';
+                                                                  })()}
+                                                                </Typography>
+                                                                <Typography
+                                                                  variant="body2"
+                                                                  fontWeight={700}
+                                                                >
+                                                                  {a.title}
+                                                                </Typography>
+                                                                {a.teacher_comments && (
+                                                                  <Typography
+                                                                    variant="caption"
+                                                                    color="text.secondary"
+                                                                    sx={{
+                                                                      display: 'block',
+                                                                      mt: 0.35,
+                                                                      fontStyle: 'italic',
+                                                                    }}
+                                                                  >
+                                                                    Feedback: {a.teacher_comments}
+                                                                  </Typography>
+                                                                )}
+                                                              </Box>
+                                                            </Stack>
+                                                          </TableCell>
+
+                                                          {/* 2. DUE DATE */}
+                                                          <TableCell
+                                                            sx={{
+                                                              fontVariantNumeric: 'tabular-nums',
+                                                              whiteSpace: 'nowrap',
+                                                            }}
+                                                          >
+                                                            <Typography
+                                                              variant="body2"
+                                                              color="text.secondary"
+                                                              sx={{ whiteSpace: 'nowrap' }}
+                                                            >
+                                                              {formatCompactDate(a.due_date)}
+                                                            </Typography>
+                                                          </TableCell>
+
+                                                          {/* 3. POINTS / WEIGHT */}
+                                                          <TableCell
+                                                            sx={{
+                                                              fontVariantNumeric: 'tabular-nums',
+                                                              whiteSpace: 'nowrap',
+                                                            }}
+                                                          >
+                                                            <Typography
+                                                              variant="body2"
+                                                              fontWeight={600}
+                                                            >
+                                                              {typeof a.points_earned === 'number'
+                                                                ? `${a.points_earned} / ${
+                                                                    a.points_possible ?? 100
+                                                                  } pts`
+                                                                : `— / ${
+                                                                    a.points_possible ?? 100
+                                                                  } pts`}
+                                                            </Typography>
+                                                          </TableCell>
+
+                                                          {/* 4. RANGE */}
+                                                          <TableCell
+                                                            sx={{
+                                                              fontVariantNumeric: 'tabular-nums',
+                                                              whiteSpace: 'nowrap',
+                                                            }}
+                                                          >
+                                                            <Typography
+                                                              variant="body2"
+                                                              color="text.secondary"
+                                                            >
+                                                              0&ndash;{a.points_possible ?? 100}
+                                                            </Typography>
+                                                          </TableCell>
+
+                                                          {/* 5. GRADE */}
+                                                          <TableCell
+                                                            sx={{
+                                                              fontVariantNumeric: 'tabular-nums',
+                                                              whiteSpace: 'nowrap',
+                                                            }}
+                                                          >
+                                                            <Stack spacing={0.25}>
+                                                              <Typography
+                                                                variant="body2"
+                                                                fontWeight={hasPct ? 700 : 400}
+                                                              >
+                                                                {hasPct &&
+                                                                a.percentage_score !== null
+                                                                  ? `${a.percentage_score.toFixed(
+                                                                      2
+                                                                    )} % (${
+                                                                      a.letter_grade || ''
+                                                                    })`
+                                                                  : '-'}
+                                                              </Typography>
+                                                              {a.grading_mode ===
+                                                                'problems_calculator' &&
+                                                                typeof a.total_problems ===
+                                                                  'number' &&
+                                                                typeof a.missed_problems ===
+                                                                  'number' && (
+                                                                  <Typography
+                                                                    variant="caption"
+                                                                    color="text.secondary"
+                                                                    sx={{ fontSize: '0.75rem' }}
+                                                                  >
+                                                                    {Math.max(
+                                                                      0,
+                                                                      a.total_problems -
+                                                                        a.missed_problems
+                                                                    )}
+                                                                    /{a.total_problems} correct
+                                                                  </Typography>
+                                                                )}
+                                                            </Stack>
+                                                          </TableCell>
+
+                                                          {/* 6. SCORE / ACTIONS */}
+                                                          <TableCell
+                                                            align="right"
+                                                            sx={{ whiteSpace: 'nowrap' }}
+                                                          >
+                                                            <Stack
+                                                              direction="row"
+                                                              spacing={0.5}
+                                                              justifyContent="flex-end"
+                                                              alignItems="center"
+                                                            >
+                                                              {renderInlineScoreControls(a, sub)}
+                                                              <Tooltip title="Edit Assignment Details">
+                                                                <IconButton
+                                                                  size="small"
+                                                                  aria-label={`Edit ${a.title}`}
+                                                                  onClick={() => {
+                                                                    setEditingTemplate(null);
+                                                                    setEditingAssignment(a);
+                                                                    setUnifiedModalOpen(true);
+                                                                  }}
+                                                                >
+                                                                  <Edit3 size={14} />
+                                                                </IconButton>
+                                                              </Tooltip>
+                                                              {confirmDeleteAssignmentId ===
+                                                              a.id ? (
+                                                                <Button
+                                                                  size="small"
+                                                                  variant="contained"
+                                                                  color="error"
+                                                                  onClick={(e) => {
+                                                                    e.stopPropagation();
+                                                                    handleDeleteAssignmentWithUndo(
+                                                                      a
+                                                                    );
+                                                                  }}
+                                                                  sx={{
+                                                                    textTransform: 'none',
+                                                                    fontWeight: 700,
+                                                                    fontSize: '0.75rem',
+                                                                    minWidth: 72,
+                                                                    py: 0.25,
+                                                                    px: 1,
+                                                                  }}
+                                                                >
+                                                                  Confirm?
+                                                                </Button>
+                                                              ) : (
+                                                                <Tooltip title="Delete Assignment">
+                                                                  <IconButton
+                                                                    size="small"
+                                                                    color="error"
+                                                                    aria-label={`Delete ${a.title}`}
+                                                                    onClick={(e) => {
+                                                                      e.stopPropagation();
+                                                                      setConfirmDeleteAssignmentId(
+                                                                        a.id
+                                                                      );
+                                                                    }}
+                                                                  >
+                                                                    <Trash2 size={14} />
+                                                                  </IconButton>
+                                                                </Tooltip>
+                                                              )}
+                                                            </Stack>
+                                                          </TableCell>
+                                                        </TableRow>
+                                                      );
+                                                    })}
+
+                                                  {/* INTERNAL / HOME GRADE TOTAL AGGREGATION ROW */}
+                                                  {!isInternalCollapsed && (
+                                                    <TableRow
+                                                      sx={{
+                                                        bgcolor: alpha(
+                                                          theme.palette.secondary.main,
+                                                          0.04
+                                                        ),
+                                                        borderBottom: '1px solid',
+                                                        borderColor: 'divider',
+                                                      }}
+                                                    >
+                                                      <TableCell sx={{ pl: 5.5, py: 1.25 }}>
+                                                        <Stack
+                                                          direction="row"
+                                                          spacing={1.5}
+                                                          alignItems="center"
+                                                        >
+                                                          <Box
+                                                            sx={{
+                                                              width: 28,
+                                                              height: 28,
+                                                              borderRadius: 1,
+                                                              display: 'flex',
+                                                              alignItems: 'center',
+                                                              justifyContent: 'center',
+                                                              color: 'secondary.dark',
+                                                              fontWeight: 800,
+                                                              fontSize: '1.125rem',
+                                                              flexShrink: 0,
+                                                            }}
+                                                          >
+                                                            &Sigma;
+                                                          </Box>
+                                                          <Box>
+                                                            <Typography
+                                                              variant="caption"
+                                                              sx={{
+                                                                display: 'block',
+                                                                fontSize: '0.75rem',
+                                                                fontWeight: 700,
+                                                                color: 'secondary.dark',
+                                                                textTransform: 'uppercase',
+                                                                letterSpacing: '0.04em',
+                                                                lineHeight: 1.1,
+                                                              }}
+                                                            >
+                                                              INDEPENDENT AGGREGATION
+                                                            </Typography>
+                                                            <Typography
+                                                              variant="body2"
+                                                              fontWeight={700}
+                                                              color="secondary.dark"
+                                                            >
+                                                              Internal / Home Grade total
+                                                            </Typography>
+                                                          </Box>
+                                                        </Stack>
+                                                      </TableCell>
+                                                      <TableCell
+                                                        sx={{
+                                                          fontVariantNumeric: 'tabular-nums',
+                                                          whiteSpace: 'nowrap',
+                                                        }}
+                                                      >
+                                                        <Typography
+                                                          variant="body2"
+                                                          color="text.secondary"
+                                                        >
+                                                          &mdash;
+                                                        </Typography>
+                                                      </TableCell>
+                                                      <TableCell
+                                                        sx={{
+                                                          fontVariantNumeric: 'tabular-nums',
+                                                          whiteSpace: 'nowrap',
+                                                        }}
+                                                      >
+                                                        <Typography
+                                                          variant="body2"
+                                                          fontWeight={600}
+                                                          color="secondary.dark"
+                                                        >
+                                                          {sum.internal_grade.points_earned} /{' '}
+                                                          {sum.internal_grade.points_possible} pts
+                                                        </Typography>
+                                                      </TableCell>
+                                                      <TableCell
+                                                        sx={{
+                                                          fontVariantNumeric: 'tabular-nums',
+                                                          whiteSpace: 'nowrap',
+                                                        }}
+                                                      >
+                                                        <Typography
+                                                          variant="body2"
+                                                          color="text.secondary"
+                                                        >
+                                                          0&ndash;100
+                                                        </Typography>
+                                                      </TableCell>
+                                                      <TableCell
+                                                        sx={{
+                                                          fontVariantNumeric: 'tabular-nums',
+                                                          whiteSpace: 'nowrap',
+                                                        }}
+                                                      >
+                                                        <Typography
+                                                          variant="body2"
+                                                          fontWeight={
+                                                            sum.internal_grade.percentage !== null
+                                                              ? 700
+                                                              : 400
+                                                          }
+                                                          color="secondary.dark"
+                                                        >
+                                                          {sum.internal_grade.percentage !== null
+                                                            ? sum.internal_grade.formatted_display
+                                                            : '-'}
+                                                        </Typography>
+                                                      </TableCell>
+                                                      <TableCell
+                                                        align="right"
+                                                        sx={{ whiteSpace: 'nowrap' }}
+                                                      />
+                                                    </TableRow>
+                                                  )}
+                                                </React.Fragment>
+                                              );
+                                            })()}
                                         </>
                                       ) : (
                                         /* CASE B: STANDARD / INTERNAL SUBJECT GRADE CARD HIERARCHY */
@@ -4200,6 +4881,26 @@ function GradebookHubContent() {
                         Detailed Itemized
                       </ToggleButton>
                     </ToggleButtonGroup>
+
+                    <Button
+                      variant={showInternalGrades ? 'outlined' : 'text'}
+                      color={showInternalGrades ? 'secondary' : 'inherit'}
+                      size="small"
+                      startIcon={showInternalGrades ? <Eye size={15} /> : <EyeOff size={15} />}
+                      onClick={() => handleToggleShowInternalGrades()}
+                      sx={{
+                        fontWeight: 600,
+                        textTransform: 'none',
+                        whiteSpace: 'nowrap',
+                        border: '1px solid',
+                        borderColor: showInternalGrades
+                          ? alpha(theme.palette.secondary.main, 0.45)
+                          : 'divider',
+                        color: showInternalGrades ? 'secondary.main' : 'text.secondary',
+                      }}
+                    >
+                      Internal Grades: {showInternalGrades ? 'Shown' : 'Hidden'}
+                    </Button>
                   </>
                 ) : (
                   <>
@@ -4493,6 +5194,10 @@ function GradebookHubContent() {
                         o.subject_id === sum.subject_id &&
                         o.term_name === selectedTerm
                     );
+                    const showInternalOnReport =
+                      sum.is_api_synced &&
+                      isInternalGradeVisibleForSubject(sum) &&
+                      sum.internal_grade.graded_count > 0;
                     return (
                       <TableRow key={sum.subject_id} sx={{ borderBottom: '1px solid #ddd' }}>
                         <TableCell sx={{ fontWeight: 700, color: '#000', whiteSpace: 'nowrap' }}>
@@ -4507,6 +5212,20 @@ function GradebookHubContent() {
                             ? sum.preset_total_points
                             : sum.points_possible_entered_so_far}{' '}
                           pts
+                          {showInternalOnReport && (
+                            <Typography
+                              variant="caption"
+                              sx={{
+                                display: 'block',
+                                color: '#555',
+                                fontWeight: 600,
+                                fontVariantNumeric: 'tabular-nums',
+                              }}
+                            >
+                              Internal: {sum.internal_grade.points_earned}/
+                              {sum.internal_grade.points_possible} pts
+                            </Typography>
+                          )}
                         </TableCell>
                         <TableCell
                           sx={{
@@ -4516,7 +5235,22 @@ function GradebookHubContent() {
                             whiteSpace: 'nowrap',
                           }}
                         >
-                          {sum.formatted_display}
+                          {showInternalOnReport
+                            ? `API: ${sum.formatted_display}`
+                            : sum.formatted_display}
+                          {showInternalOnReport && (
+                            <Typography
+                              variant="caption"
+                              sx={{
+                                display: 'block',
+                                color: '#444',
+                                fontWeight: 700,
+                                fontVariantNumeric: 'tabular-nums',
+                              }}
+                            >
+                              Internal: {sum.internal_grade.formatted_display}
+                            </Typography>
+                          )}
                         </TableCell>
                         <TableCell
                           sx={{
@@ -4557,12 +5291,23 @@ function GradebookHubContent() {
                     </TableHead>
                     <TableBody>
                       {reportFilteredAssignments
-                        .filter(
-                          (a) =>
-                            a.is_graded !== false &&
-                            a.workflow_status !== 'staged' &&
-                            a.workflow_status !== 'ignored'
-                        )
+                        .filter((a) => {
+                          if (
+                            a.is_graded === false ||
+                            a.workflow_status === 'staged' ||
+                            a.workflow_status === 'ignored'
+                          ) {
+                            return false;
+                          }
+                          const sub = a.subject_id ? subjectMap.get(a.subject_id) : undefined;
+                          if (sub && isSubjectApiSynced(sub) && !isAssignmentApiSynced(a, sub)) {
+                            const pol = parseSubjectGradingPolicy(sub);
+                            if (!showInternalGrades || pol.show_internal_grade_on_gradebook === false) {
+                              return false;
+                            }
+                          }
+                          return true;
+                        })
                         .sort((a, b) => {
                           if (a.subject_id === b.subject_id) {
                             return compareGradebookAssignmentsChronological(a, b);
@@ -4579,6 +5324,9 @@ function GradebookHubContent() {
                                 sort_order: 0,
                                 color: '#1b5698',
                               });
+                          const isInternalInApiCourse = Boolean(
+                            sub && isSubjectApiSynced(sub) && !isAssignmentApiSynced(a, sub)
+                          );
                           return (
                             <TableRow key={a.id} sx={{ borderBottom: '1px solid #eee' }}>
                               <TableCell sx={{ color: '#333', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
@@ -4589,6 +5337,7 @@ function GradebookHubContent() {
                               </TableCell>
                               <TableCell sx={{ color: '#000' }}>{a.title}</TableCell>
                               <TableCell sx={{ color: '#444', whiteSpace: 'nowrap' }}>
+                                {isInternalInApiCourse ? 'Internal • ' : ''}
                                 {typeMap.get(a.category)?.name || a.category}
                               </TableCell>
                               <TableCell

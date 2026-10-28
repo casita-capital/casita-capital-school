@@ -810,14 +810,47 @@ export function parseCellNotesAndAssignmentsToItems(params: {
         const allChecked =
           checkSubs.length > 0 ? checkSubs.every((s) => s.checked) : memHeaderIsChecked;
 
+        const memAssignStd =
+          matchedWeeklyAssign?.state_standards &&
+          typeof matchedWeeklyAssign.state_standards === 'object' &&
+          !Array.isArray(matchedWeeklyAssign.state_standards)
+            ? (matchedWeeklyAssign.state_standards as Record<string, unknown>)
+            : null;
+        const memAssignVerBy =
+          typeof memAssignStd?.verified_by === 'string' && memAssignStd.verified_by.trim()
+            ? memAssignStd.verified_by.trim()
+            : null;
+        const memAssignVerAt =
+          typeof memAssignStd?.verified_at === 'string' && memAssignStd.verified_at.trim()
+            ? memAssignStd.verified_at.trim()
+            : null;
+
+        const storedMemVerifiedBy =
+          groupVerifiedBy ||
+          memAssignVerBy ||
+          (allChecked ? note.updated_by || note.created_by || null : null);
+        const storedMemVerifiedAt =
+          groupVerifiedAt ||
+          memAssignVerAt ||
+          (allChecked
+            ? matchedWeeklyAssign?.completed_at ||
+              note.updated_at ||
+              note.created_at ||
+              null
+            : null);
+
         const isMemChecked =
           memCategory === 'info'
             ? false
-            : allChecked ||
+            : memCategory === 'verified'
+            ? allChecked ||
+              Boolean(storedMemVerifiedBy || storedMemVerifiedAt) ||
               (matchedWeeklyAssign
-                ? isAssignmentCompletedOrSubmitted(matchedWeeklyAssign) ||
-                  isAssignmentScored(matchedWeeklyAssign)
-                : false);
+                ? isAssignmentCompletedOrSubmitted(matchedWeeklyAssign)
+                : false)
+            : matchedWeeklyAssign
+            ? isAssignmentScored(matchedWeeklyAssign)
+            : allChecked;
 
         items.push({
           id: matchedWeeklyAssign
@@ -832,16 +865,8 @@ export function parseCellNotesAndAssignmentsToItems(params: {
           infoSubType:
             memCategory === 'info' && memHeaderIsSectionHdr ? 'header' : 'bullet',
           checked: isMemChecked,
-          verifiedBy: isMemChecked
-            ? groupVerifiedBy || note.updated_by || note.created_by || null
-            : null,
-          verifiedAt: isMemChecked
-            ? groupVerifiedAt ||
-              matchedWeeklyAssign?.completed_at ||
-              note.updated_at ||
-              note.created_at ||
-              null
-            : null,
+          verifiedBy: storedMemVerifiedBy,
+          verifiedAt: storedMemVerifiedAt,
           subItems: groupSubItems,
           repeatAcrossWeek: isRepeated || Boolean(matchedWeeklyAssign),
           repeatCadence: isExplicitDaily ? 'daily' : isRepeated ? 'weekly_shared' : 'daily',
@@ -991,13 +1016,51 @@ export function parseCellNotesAndAssignmentsToItems(params: {
         const checkSubs = groupSubItems.filter((s) => !s.isBullet);
         const allSubChecked =
           checkSubs.length > 0 ? checkSubs.every((s) => s.checked) : headerIsChecked;
+
+        const novelsAssignStd =
+          matchedWeeklyAssign?.state_standards &&
+          typeof matchedWeeklyAssign.state_standards === 'object' &&
+          !Array.isArray(matchedWeeklyAssign.state_standards)
+            ? (matchedWeeklyAssign.state_standards as Record<string, unknown>)
+            : null;
+        const novelsAssignVerBy =
+          typeof novelsAssignStd?.verified_by === 'string' && novelsAssignStd.verified_by.trim()
+            ? novelsAssignStd.verified_by.trim()
+            : null;
+        const novelsAssignVerAt =
+          typeof novelsAssignStd?.verified_at === 'string' && novelsAssignStd.verified_at.trim()
+            ? novelsAssignStd.verified_at.trim()
+            : null;
+
+        const storedNovelsVerifiedBy =
+          groupVerifiedBy ||
+          novelsAssignVerBy ||
+          (headerIsChecked || allSubChecked
+            ? note.updated_by || note.created_by || null
+            : null);
+        const storedNovelsVerifiedAt =
+          groupVerifiedAt ||
+          novelsAssignVerAt ||
+          (headerIsChecked || allSubChecked
+            ? matchedWeeklyAssign?.completed_at ||
+              note.updated_at ||
+              note.created_at ||
+              null
+            : null);
+
         const isNovelsChecked =
-          headerIsChecked ||
-          allSubChecked ||
-          (matchedWeeklyAssign
-            ? isAssignmentCompletedOrSubmitted(matchedWeeklyAssign) ||
-              isAssignmentScored(matchedWeeklyAssign)
-            : false);
+          novelsCategory === 'info'
+            ? false
+            : novelsCategory === 'verified'
+            ? headerIsChecked ||
+              allSubChecked ||
+              Boolean(storedNovelsVerifiedBy || storedNovelsVerifiedAt) ||
+              (matchedWeeklyAssign
+                ? isAssignmentCompletedOrSubmitted(matchedWeeklyAssign)
+                : false)
+            : matchedWeeklyAssign
+            ? isAssignmentScored(matchedWeeklyAssign)
+            : headerIsChecked || allSubChecked;
 
         items.push({
           id: matchedWeeklyAssign
@@ -1012,16 +1075,8 @@ export function parseCellNotesAndAssignmentsToItems(params: {
           infoSubType:
             novelsCategory === 'info' && headerIsSectionHdr ? 'header' : 'bullet',
           checked: isNovelsChecked,
-          verifiedBy: isNovelsChecked
-            ? groupVerifiedBy || note.updated_by || note.created_by || null
-            : null,
-          verifiedAt: isNovelsChecked
-            ? groupVerifiedAt ||
-              matchedWeeklyAssign?.completed_at ||
-              note.updated_at ||
-              note.created_at ||
-              null
-            : null,
+          verifiedBy: storedNovelsVerifiedBy,
+          verifiedAt: storedNovelsVerifiedAt,
           subItems: groupSubItems,
           repeatAcrossWeek: isRepeated || Boolean(matchedWeeklyAssign),
           repeatCadence: isExplicitDaily ? 'daily' : isRepeated ? 'weekly_shared' : 'daily',
@@ -1096,12 +1151,53 @@ export function parseCellNotesAndAssignmentsToItems(params: {
         linkedWeeklyAssignmentIds.add(matchedWeeklyAssign.id);
       }
 
+      const lineAssignStd =
+        matchedWeeklyAssign?.state_standards &&
+        typeof matchedWeeklyAssign.state_standards === 'object' &&
+        !Array.isArray(matchedWeeklyAssign.state_standards)
+          ? (matchedWeeklyAssign.state_standards as Record<string, unknown>)
+          : null;
+      const lineAssignVerBy =
+        typeof lineAssignStd?.verified_by === 'string' && lineAssignStd.verified_by.trim()
+          ? lineAssignStd.verified_by.trim()
+          : null;
+      const lineAssignVerAt =
+        typeof lineAssignStd?.verified_at === 'string' && lineAssignStd.verified_at.trim()
+          ? lineAssignStd.verified_at.trim()
+          : null;
+
+      const effectiveLineCategory: WeeklyItemCategory = matchedWeeklyAssign
+        ? matchedWeeklyAssign.is_graded === false
+          ? 'verified'
+          : 'graded'
+        : inferred.category;
+
+      const storedLineVerifiedBy =
+        verifiedMeta.verifiedBy ||
+        lineAssignVerBy ||
+        (inferred.checked ? note.updated_by || note.created_by || null : null);
+      const storedLineVerifiedAt =
+        verifiedMeta.verifiedAt ||
+        lineAssignVerAt ||
+        (inferred.checked
+          ? matchedWeeklyAssign?.completed_at ||
+            note.updated_at ||
+            note.created_at ||
+            null
+          : null);
+
       const isLineChecked =
-        inferred.checked ||
-        (matchedWeeklyAssign
-          ? isAssignmentCompletedOrSubmitted(matchedWeeklyAssign) ||
-            isAssignmentScored(matchedWeeklyAssign)
-          : false);
+        effectiveLineCategory === 'info'
+          ? false
+          : effectiveLineCategory === 'verified'
+          ? inferred.checked ||
+            Boolean(storedLineVerifiedBy || storedLineVerifiedAt) ||
+            (matchedWeeklyAssign
+              ? isAssignmentCompletedOrSubmitted(matchedWeeklyAssign)
+              : false)
+          : matchedWeeklyAssign
+          ? isAssignmentScored(matchedWeeklyAssign)
+          : inferred.checked;
 
       items.push({
         id: matchedWeeklyAssign
@@ -1111,24 +1207,12 @@ export function parseCellNotesAndAssignmentsToItems(params: {
         dateStr,
         dayKey,
         weekdayLabel,
-        category: matchedWeeklyAssign
-          ? matchedWeeklyAssign.is_graded === false
-            ? 'verified'
-            : 'graded'
-          : inferred.category,
+        category: effectiveLineCategory,
         text: inferred.cleanText,
         infoSubType: effectiveSubType,
         checked: isLineChecked,
-        verifiedBy: isLineChecked
-          ? verifiedMeta.verifiedBy || note.updated_by || note.created_by || null
-          : null,
-        verifiedAt: isLineChecked
-          ? verifiedMeta.verifiedAt ||
-            matchedWeeklyAssign?.completed_at ||
-            note.updated_at ||
-            note.created_at ||
-            null
-          : null,
+        verifiedBy: storedLineVerifiedBy,
+        verifiedAt: storedLineVerifiedAt,
         subItems: [],
         repeatAcrossWeek: isRepeated,
         repeatCadence: isExplicitDaily ? 'daily' : isRepeated ? 'weekly_shared' : 'daily',
@@ -1168,7 +1252,6 @@ export function parseCellNotesAndAssignmentsToItems(params: {
     const isWeeklySharedAssign =
       detectedDays !== undefined && detectedDays.length >= 2;
 
-    const isAssignDone = done || isAssignmentScored(a);
     const stdObj =
       a.state_standards &&
       typeof a.state_standards === 'object' &&
@@ -1183,8 +1266,13 @@ export function parseCellNotesAndAssignmentsToItems(params: {
       (typeof stdObj?.verified_at === 'string' && stdObj.verified_at.trim()
         ? stdObj.verified_at.trim()
         : null) ||
-      a.completed_at ||
+      (isCompletionOnly && done ? a.completed_at : null) ||
       null;
+    const hasStoredVerification = Boolean(assignVerifiedBy || assignVerifiedAt);
+    const isAssignDone =
+      category === 'verified'
+        ? done || hasStoredVerification
+        : isAssignmentScored(a);
 
     items.push({
       id: `assign-${a.id}`,
@@ -1196,8 +1284,8 @@ export function parseCellNotesAndAssignmentsToItems(params: {
       text: a.title,
       infoSubType: 'bullet',
       checked: isAssignDone,
-      verifiedBy: isAssignDone ? assignVerifiedBy : null,
-      verifiedAt: isAssignDone ? assignVerifiedAt : null,
+      verifiedBy: assignVerifiedBy,
+      verifiedAt: assignVerifiedAt,
       subItems,
       repeatAcrossWeek: isWeeklySharedAssign,
       repeatDays: isWeeklySharedAssign && detectedDays ? detectedDays : [dayKey],
@@ -1284,6 +1372,11 @@ export function serializeCellItemsToNotesPayload(
         ? `[DAILY:${DAY_KEYS.filter((d) => it.repeatDays.includes(d)).join(',')}] `
         : '';
 
+      const storedVerifiedSuffix =
+        it.verifiedBy || it.verifiedAt
+          ? ` [VERIFIED:${it.verifiedBy || ''}|${it.verifiedAt || ''}]`
+          : '';
+
       if (
         it.category === 'info' &&
         it.infoSubType === 'header' &&
@@ -1295,10 +1388,11 @@ export function serializeCellItemsToNotesPayload(
       ) {
         headerTitle = clean;
       } else if (it.category === 'info' && it.infoSubType === 'header') {
-        const cleanHdr = clean.replace(/^###\s*/, '');
-        bodyLines.push(`${schedulePrefix}### ${cleanHdr}`);
+        const cleanHdr = stripVerifiedMetaMarker(clean).replace(/^###\s*/, '');
+        bodyLines.push(`${schedulePrefix}### ${cleanHdr}${storedVerifiedSuffix}`);
       } else if (it.category === 'info') {
-        bodyLines.push(`${schedulePrefix}• ${clean.replace(/^[-*•]\s*/, '')}`);
+        const cleanBullet = stripVerifiedMetaMarker(clean).replace(/^[-*•]\s*/, '');
+        bodyLines.push(`${schedulePrefix}• ${cleanBullet}${storedVerifiedSuffix}`);
       } else if (it.category === 'verified' || it.category === 'graded') {
         const cleanCheck = stripVerifiedMetaMarker(clean)
           .replace(/^-\s*\[[ xX]\]\s*/, '')
@@ -1306,8 +1400,8 @@ export function serializeCellItemsToNotesPayload(
           .replace(/^[☐☑]\s*/, '')
           .trim();
         const verifiedSuffix =
-          it.checked && (it.verifiedBy || it.verifiedAt)
-            ? ` [VERIFIED:${it.verifiedBy || ''}|${it.verifiedAt || ''}]`
+          (it.checked || it.category === 'graded') && (it.verifiedBy || it.verifiedAt)
+            ? storedVerifiedSuffix
             : '';
         bodyLines.push(
           `${schedulePrefix}${it.checked ? '- [x]' : '- [ ]'} ${cleanCheck}${verifiedSuffix}`

@@ -2,11 +2,16 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import {
+  Alert,
   alpha,
   Box,
   Button,
   Checkbox,
   Chip,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   IconButton,
   MenuItem,
   Paper,
@@ -45,6 +50,7 @@ import {
   AssignmentTypeConfig,
   computeAssignmentMetrics,
   GradebookAssignment,
+  parseAssignmentMoodleMeta,
   parseSubjectGradingPolicy,
   ScoringMode,
   SubjectWithGrading,
@@ -185,6 +191,9 @@ export function UnifiedCellItemsEditor({
   const [draggedRowId, setDraggedRowId] = useState<string | null>(null);
   const [dragOverRowId, setDragOverRowId] = useState<string | null>(null);
   const [dragEnabledRowId, setDragEnabledRowId] = useState<string | null>(null);
+  const [pendingUnverifyRow, setPendingUnverifyRow] = useState<StructuredCellLineItem | null>(
+    null
+  );
   const inputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
   const currentDayKey = getDayKeyFromIsoDate(dateStr);
@@ -584,7 +593,12 @@ export function UnifiedCellItemsEditor({
               letter_grade: null,
             };
 
-        const isDone = r.checked || metrics.percentage_score !== null;
+        const hasStoredVer = Boolean(
+          r.verifiedBy || r.verifiedAt || (r.category === 'verified' && r.checked)
+        );
+        const isDone = isGradedCat
+          ? metrics.percentage_score !== null
+          : r.checked || hasStoredVer;
         const formattedSubInstructions = formatSubItemsForAssignmentInstructions(
           r.subItems || [],
           r.assignmentRecord?.instructions
@@ -616,6 +630,37 @@ export function UnifiedCellItemsEditor({
               )
             : dateStr;
 
+        const existingAssign = matchedExistingWeeklyAssign || r.assignmentRecord;
+        const existingStd =
+          existingAssign?.state_standards &&
+          typeof existingAssign.state_standards === 'object' &&
+          !Array.isArray(existingAssign.state_standards)
+            ? (existingAssign.state_standards as Record<string, unknown>)
+            : {};
+        const existingMm = parseAssignmentMoodleMeta(existingAssign?.state_standards);
+        const isInternalAssignment =
+          !r.isApiSynced && typeof existingMm?.moodle_cmid !== 'number';
+        const nextStateStandards: Json = {
+          ...existingStd,
+          ...(isInternalAssignment
+            ? {
+                moodle_meta: {
+                  ...(existingMm || {}),
+                  is_internal_grade: true,
+                },
+              }
+            : {}),
+          ...(hasStoredVer
+            ? {
+                verified_by: r.verifiedBy || activeUserName,
+                verified_at: r.verifiedAt || nowIso,
+              }
+            : {
+                verified_by: null,
+                verified_at: null,
+              }),
+        } as Json;
+
         if (targetAssignId) {
           const { error: updErr } = await supabase
             .from('assignments')
@@ -638,7 +683,8 @@ export function UnifiedCellItemsEditor({
               letter_grade: metrics.letter_grade,
               status: isDone ? 'completed' : 'pending',
               workflow_status: isDone ? 'completed' : 'not_started',
-              completed_at: isDone ? nowIso : null,
+              completed_at: isDone ? r.verifiedAt || nowIso : null,
+              state_standards: nextStateStandards,
             })
             .eq('id', targetAssignId);
           if (updErr) throw updErr;
@@ -661,7 +707,8 @@ export function UnifiedCellItemsEditor({
             letter_grade: metrics.letter_grade,
             status: isDone ? 'completed' : 'pending',
             workflow_status: isDone ? 'completed' : 'not_started',
-            completed_at: isDone ? nowIso : null,
+            completed_at: isDone ? r.verifiedAt || nowIso : null,
+            state_standards: nextStateStandards,
           });
           if (insErr) throw insErr;
         }
@@ -1097,11 +1144,23 @@ export function UnifiedCellItemsEditor({
                           checked={row.checked}
                           onChange={(e) => {
                             const nextChecked = e.target.checked;
+                            if (!nextChecked && isVerified && row.checked) {
+                              setPendingUnverifyRow(row);
+                              return;
+                            }
+                            const activeUserName = getCachedActiveUserName();
+                            const nowIso = new Date().toISOString();
                             const updatedSubs = (row.subItems || []).map((s) =>
                               s.isBullet ? s : { ...s, checked: nextChecked }
                             );
                             handleUpdateRow(row.id, {
                               checked: nextChecked,
+                              verifiedBy: nextChecked
+                                ? row.verifiedBy || activeUserName
+                                : row.verifiedBy,
+                              verifiedAt: nextChecked
+                                ? row.verifiedAt || nowIso
+                                : row.verifiedAt,
                               subItems: updatedSubs,
                             });
                           }}
@@ -1192,11 +1251,26 @@ export function UnifiedCellItemsEditor({
                         value={roleValue}
                         onChange={(_, nextRole: BlockRoleValue | null) => {
                           if (!nextRole) return;
+                          const activeUserName = getCachedActiveUserName();
+                          const nowIso = new Date().toISOString();
+                          const preservedVerBy =
+                            row.verifiedBy ||
+                            (row.category === 'verified' && row.checked
+                              ? activeUserName
+                              : null);
+                          const preservedVerAt =
+                            row.verifiedAt ||
+                            (row.category === 'verified' && row.checked ? nowIso : null);
+                          const hasStoredVer = Boolean(preservedVerBy || preservedVerAt);
+
                           if (nextRole === 'header') {
                             handleUpdateRow(row.id, {
                               category: 'info',
                               infoSubType:
                                 row.infoSubType === 'divider' ? 'divider' : 'header',
+                              checked: false,
+                              verifiedBy: preservedVerBy,
+                              verifiedAt: preservedVerAt,
                               subItems: (row.subItems || []).map((s) => ({
                                 ...s,
                                 isBullet: true,
@@ -1210,6 +1284,9 @@ export function UnifiedCellItemsEditor({
                                 row.infoSubType === 'parent_note'
                                   ? 'parent_note'
                                   : 'bullet',
+                              checked: false,
+                              verifiedBy: preservedVerBy,
+                              verifiedAt: preservedVerAt,
                               subItems: (row.subItems || []).map((s) => ({
                                 ...s,
                                 isBullet: true,
@@ -1220,18 +1297,44 @@ export function UnifiedCellItemsEditor({
                             handleUpdateRow(row.id, {
                               category: 'verified',
                               infoSubType: 'bullet',
+                              checked: hasStoredVer,
+                              verifiedBy: preservedVerBy,
+                              verifiedAt: preservedVerAt,
                               subItems: (row.subItems || []).map((s) => ({
                                 ...s,
                                 isBullet: false,
+                                checked: hasStoredVer ? true : s.checked,
                               })),
                             });
                           } else if (nextRole === 'graded') {
+                            const rangeMatch = row.text.match(/#(\d+)\s*[-–]\s*(\d+)/);
+                            const inferredTotal = rangeMatch
+                              ? Math.max(
+                                  1,
+                                  Number.parseInt(rangeMatch[2], 10) -
+                                    Number.parseInt(rangeMatch[1], 10) +
+                                    1
+                                )
+                              : row.totalProblems;
+                            const isAlreadyScored =
+                              row.percentageScore !== null ||
+                              row.pointsEarned !== null ||
+                              row.problemsMissed !== null;
                             handleUpdateRow(row.id, {
                               category: 'graded',
                               infoSubType: 'bullet',
+                              checked: isAlreadyScored,
+                              verifiedBy: preservedVerBy,
+                              verifiedAt: preservedVerAt,
+                              scoringMode:
+                                rangeMatch && row.pointsEarned === null && row.problemsMissed === null
+                                  ? 'problems_calculator'
+                                  : row.scoringMode,
+                              totalProblems: inferredTotal ?? row.totalProblems,
                               subItems: (row.subItems || []).map((s) => ({
                                 ...s,
                                 isBullet: false,
+                                checked: isAlreadyScored ? s.checked : false,
                               })),
                             });
                           }
@@ -2206,6 +2309,86 @@ export function UnifiedCellItemsEditor({
           </Paper>
         </Box>
       </Stack>
+
+      {/* Purge Verification Record Warning Dialog */}
+      <Dialog
+        open={Boolean(pendingUnverifyRow)}
+        onClose={() => setPendingUnverifyRow(null)}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle sx={{ fontWeight: 700, pb: 1 }}>
+          Remove Verification Record?
+        </DialogTitle>
+        <DialogContent dividers>
+          <Stack spacing={1.5}>
+            <Alert severity="warning" variant="outlined">
+              Un-verifying this item will purge the stored verification record when saved.
+            </Alert>
+            {pendingUnverifyRow && (
+              <Box
+                sx={{
+                  p: 1.5,
+                  borderRadius: 1,
+                  bgcolor: alpha(theme.palette.success.main, 0.06),
+                  border: '1px solid',
+                  borderColor: alpha(theme.palette.success.main, 0.25),
+                }}
+              >
+                <Typography variant="subtitle2" fontWeight={700} gutterBottom>
+                  {pendingUnverifyRow.text || 'Verified Item'}
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  <strong>Verified by:</strong>{' '}
+                  {pendingUnverifyRow.verifiedBy || getCachedActiveUserName()}
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  <strong>Timestamp:</strong>{' '}
+                  {pendingUnverifyRow.verifiedAt
+                    ? new Date(pendingUnverifyRow.verifiedAt).toLocaleString('en-US', {
+                        month: 'short',
+                        day: 'numeric',
+                        year: 'numeric',
+                        hour: 'numeric',
+                        minute: '2-digit',
+                      })
+                    : 'Recorded'}
+                </Typography>
+              </Box>
+            )}
+          </Stack>
+        </DialogContent>
+        <DialogActions sx={{ px: 2.5, py: 1.5 }}>
+          <Button
+            variant="outlined"
+            color="inherit"
+            onClick={() => setPendingUnverifyRow(null)}
+          >
+            Keep Verified
+          </Button>
+          <Button
+            variant="contained"
+            color="error"
+            onClick={() => {
+              const target = pendingUnverifyRow;
+              setPendingUnverifyRow(null);
+              if (target) {
+                const updatedSubs = (target.subItems || []).map((s) =>
+                  s.isBullet ? s : { ...s, checked: false }
+                );
+                handleUpdateRow(target.id, {
+                  checked: false,
+                  verifiedBy: null,
+                  verifiedAt: null,
+                  subItems: updatedSubs,
+                });
+              }
+            }}
+          >
+            Purge Verification
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 }

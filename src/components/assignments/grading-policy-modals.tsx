@@ -862,6 +862,58 @@ export function ClassGradingPolicyModal({
               </Grid>
             </Paper>
 
+            {/* SECTION 1B: INTERNAL GRADE VISIBILITY FOR API-SYNCED CLASSES */}
+            <Paper
+              variant="outlined"
+              sx={{
+                p: 2.5,
+                borderRadius: 2,
+                bgcolor:
+                  policy.show_internal_grade_on_gradebook !== false
+                    ? alpha(theme.palette.secondary.main, 0.04)
+                    : 'background.paper',
+                borderColor:
+                  policy.show_internal_grade_on_gradebook !== false
+                    ? alpha(theme.palette.secondary.main, 0.3)
+                    : 'divider',
+              }}
+            >
+              <Stack
+                direction={{ xs: 'column', sm: 'row' }}
+                justifyContent="space-between"
+                alignItems={{ xs: 'flex-start', sm: 'center' }}
+                spacing={1}
+              >
+                <Box>
+                  <Typography variant="subtitle2" fontWeight={700}>
+                    Show Internal / Home Grade on Gradebook & Report Card
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    For API-synced classes, displays the independent home/internal grade (e.g., graded exercises or memory work not in Moodle) alongside the official API grade. Toggle off to hide internal grades on the Gradebook and Report Card.
+                  </Typography>
+                </Box>
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={policy.show_internal_grade_on_gradebook !== false}
+                      onChange={(e) =>
+                        setPolicy({
+                          ...policy,
+                          show_internal_grade_on_gradebook: e.target.checked,
+                        })
+                      }
+                      color="secondary"
+                    />
+                  }
+                  label={
+                    <Typography variant="body2" fontWeight={700}>
+                      {policy.show_internal_grade_on_gradebook !== false ? 'Shown' : 'Hidden'}
+                    </Typography>
+                  }
+                />
+              </Stack>
+            </Paper>
+
             {/* SECTION 2: PARTICIPATION GRADING CONFIGURATION (SCOPED TO THIS CLASS) */}
             <Paper
               variant="outlined"

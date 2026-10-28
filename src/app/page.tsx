@@ -54,6 +54,7 @@ import {
   DEFAULT_ASSIGNMENT_TYPES,
   formatClassGradeDisplay,
   GradebookAssignment,
+  isAssignmentApiSynced,
   isAssignmentCompletedOrSubmitted,
   isAssignmentScored,
   isSubjectApiSynced,
@@ -453,6 +454,8 @@ export default function SchoolDashboardPage() {
         if (!isExternal && !isActivityItem) continue;
 
         const mm = parseAssignmentMoodleMeta(a.state_standards);
+        if (mm?.is_internal_grade === true) continue;
+        if (isSubjectApiSynced(sub) && !isActivityItem && !isAssignmentApiSynced(a, sub)) continue;
         const dueInWeek = a.due_date >= mondayStr && a.due_date <= sundayStr;
         const matchedSyllabusWeek =
           typeof mm?.week_number === 'number' && mm.week_number === currentWeekNum;

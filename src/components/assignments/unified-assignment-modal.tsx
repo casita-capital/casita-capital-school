@@ -2171,11 +2171,17 @@ export function UnifiedAssignmentModal({
             )
           : undefined;
 
+      const isNonApiManualOrInternal =
+        !isEditingApiAssignment &&
+        !matchedSylAct &&
+        typeof existingMoodleMeta?.moodle_cmid !== 'number';
+
       const preservedStateStandards: Json =
-        existingMoodleMeta || matchedSylAct
+        existingMoodleMeta || matchedSylAct || isNonApiManualOrInternal
           ? ({
               moodle_meta: {
                 ...(existingMoodleMeta || {}),
+                ...(isNonApiManualOrInternal ? { is_internal_grade: true } : {}),
                 official_portal_open_date: assignedDate || dueDate,
                 official_portal_due_date: dueDate,
                 ...(matchedSylAct
