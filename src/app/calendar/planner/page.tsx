@@ -564,6 +564,75 @@ function PlannerContent() {
     }
   }
 
+  async function refreshPlannerDataSilent(monStr: string) {
+    try {
+      const startDate = monStr;
+      const endDateObj = new Date(monStr + 'T00:00:00');
+      endDateObj.setDate(endDateObj.getDate() + 6);
+      const endDate = formatDateStr(endDateObj);
+
+      const [subRes, tplRes, noteRes, assignRes] = await Promise.all([
+        supabase
+          .from('subjects')
+          .select('*')
+          .order('sort_order', { ascending: true }),
+        supabase
+          .from('recurring_assignment_templates')
+          .select('*')
+          .order('created_at', { ascending: true }),
+        supabase
+          .from('parent_notes')
+          .select('*')
+          .gte('note_date', startDate)
+          .lte('note_date', endDate),
+        supabase
+          .from('assignments')
+          .select('*')
+          .gte('due_date', startDate)
+          .lte('due_date', endDate),
+      ]);
+
+      if (subRes.data && subRes.data.length > 0) {
+        const nextSubjects = subRes.data as Subject[];
+        setSubjects(nextSubjects);
+        setSelectedSubject((prev) =>
+          prev ? nextSubjects.find((s) => s.id === prev.id) || prev : null
+        );
+      }
+      if (tplRes.data) {
+        const mappedTemplates: RecurringAssignmentTemplate[] = tplRes.data.map(
+          (row) => ({
+            id: row.id,
+            subject_id: row.subject_id,
+            title_template: row.title_template,
+            instructions_template: row.instructions_template,
+            assignment_type_slug: row.assignment_type_slug,
+            grading_mode: row.grading_mode,
+            points_possible: Number(row.points_possible),
+            total_problems_default: row.total_problems_default,
+            days_of_week: Array.isArray(row.days_of_week)
+              ? row.days_of_week.filter(
+                  (d): d is DayKey =>
+                    typeof d === 'string' && DAY_KEYS.includes(d as DayKey)
+                )
+              : ['friday'],
+            linked_weekly_source: row.linked_weekly_source,
+            auto_behavior: row.auto_behavior,
+            estimated_minutes: row.estimated_minutes,
+            is_active: row.is_active,
+          })
+        );
+        setRecurringTemplates(mappedTemplates);
+      }
+      if (noteRes.data) setParentNotes(noteRes.data as ParentNote[]);
+      if (assignRes.data) {
+        setSchoolAssignments(assignRes.data as SchoolAssignment[]);
+      }
+    } catch {
+      // Silent refresh error ignored
+    }
+  }
+
   useEffect(() => {
     loadPlannerData(weekStartDate);
   }, [weekStartDate]);
@@ -620,6 +689,9 @@ function PlannerContent() {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        if (document.querySelector('.MuiModal-root')) {
+          return;
+        }
         if (confirmUnsavedCloseOpen) {
           setConfirmUnsavedCloseOpen(false);
         } else if (confirmResetOpen) {
@@ -5259,6 +5331,9 @@ function PlannerContent() {
                 onSavingChange={setCellItemsSaving}
                 onDirtyChange={setCellItemsDirty}
                 hideInlineSaveButton
+                onSilentRefresh={async () => {
+                  await refreshPlannerDataSilent(weekStartDate);
+                }}
                 onSaved={async () => {
                   await loadPlannerData(weekStartDate);
                   setCellItemsDirty(false);

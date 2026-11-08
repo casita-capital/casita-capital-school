@@ -1418,7 +1418,10 @@ export function serializeCellItemsToNotesPayload(
             .replace(/^[☐☑•*-]\s*/, '')
             .trim();
           if (!cleanSub) continue;
-          if (it.category === 'info' || sub.isBullet) {
+          if (
+            (it.category === 'info' && it.infoSubType !== 'header') ||
+            Boolean(sub.isBullet)
+          ) {
             bodyLines.push(`  • ${cleanSub}`);
           } else {
             bodyLines.push(`  ${sub.checked ? '- [x]' : '- [ ]'} ${cleanSub}`);
@@ -1724,10 +1727,21 @@ export function serializeItemsToRecurringTemplateText(
       continue;
     }
 
-    const weeklyPrefix =
-      it.repeatAcrossWeek && it.repeatDays && it.repeatDays.length > 0
-        ? `[WEEKLY:${DAY_KEYS.filter((d) => it.repeatDays.includes(d)).join(',')}] `
-        : '';
+    const isWeeklyShared =
+      it.repeatAcrossWeek &&
+      it.repeatCadence !== 'daily' &&
+      it.repeatDays &&
+      it.repeatDays.length > 0;
+    const isExplicitDailyMultiDay =
+      !isWeeklyShared &&
+      it.repeatCadence === 'daily' &&
+      it.repeatDays &&
+      it.repeatDays.length > 1;
+    const weeklyPrefix = isWeeklyShared
+      ? `[WEEKLY:${DAY_KEYS.filter((d) => it.repeatDays.includes(d)).join(',')}] `
+      : isExplicitDailyMultiDay
+      ? `[DAILY:${DAY_KEYS.filter((d) => it.repeatDays.includes(d)).join(',')}] `
+      : '';
 
     if (it.category === 'info' && it.infoSubType === 'header') {
       const cleanHdr = clean.replace(/^###\s*/, '');
@@ -1756,7 +1770,10 @@ export function serializeItemsToRecurringTemplateText(
           .replace(/^[☐☑•*-]\s*/, '')
           .trim();
         if (!cleanSub) continue;
-        if (it.category === 'info' || sub.isBullet) {
+        if (
+          (it.category === 'info' && it.infoSubType !== 'header') ||
+          Boolean(sub.isBullet)
+        ) {
           lines.push(`  • ${cleanSub}`);
         } else {
           lines.push(`  - [ ] ${cleanSub}`);

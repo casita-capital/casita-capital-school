@@ -232,8 +232,10 @@ export default function SchoolDashboardPage() {
     fullTermName,
   } = useMemo(() => getCurrentWeekBounds(), []);
 
-  const loadDashboardData = useCallback(async () => {
-    setLoading(true);
+  const loadDashboardData = useCallback(async (silentRefresh = false) => {
+    if (!silentRefresh) {
+      setLoading(true);
+    }
     setLoadError(null);
     try {
       const resolvedUser = await resolveAndSyncActiveUser(supabase);
@@ -292,7 +294,17 @@ export default function SchoolDashboardPage() {
   }, [supabase]);
 
   useEffect(() => {
-    loadDashboardData();
+    void loadDashboardData();
+  }, [loadDashboardData]);
+
+  useEffect(() => {
+    const handleApiSynced = () => {
+      void loadDashboardData(true);
+    };
+    window.addEventListener('memoria-api-synced', handleApiSynced);
+    return () => {
+      window.removeEventListener('memoria-api-synced', handleApiSynced);
+    };
   }, [loadDashboardData]);
 
   const subjectMap = useMemo(() => {
@@ -833,7 +845,7 @@ export default function SchoolDashboardPage() {
               color="inherit"
               size="small"
               startIcon={<RefreshCw size={14} />}
-              onClick={loadDashboardData}
+              onClick={() => void loadDashboardData()}
             >
               Retry
             </Button>

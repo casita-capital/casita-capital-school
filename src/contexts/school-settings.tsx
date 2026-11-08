@@ -1,7 +1,7 @@
 'use client';
 
 import type { FC, ReactNode } from 'react';
-import { createContext, useContext, useEffect, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import { createClient } from 'src/services/supabase/client';
 import type { Json } from 'src/services/supabase/types';
@@ -9,8 +9,92 @@ import type { Json } from 'src/services/supabase/types';
 const STORAGE_KEY = 'school_app_school_name';
 const BRANDING_STORAGE_KEY = 'school_app_system_branding';
 const SCHEDULE_HOURS_STORAGE_KEY = 'school_app_schedule_hours';
+const API_REFRESH_INTERVAL_STORAGE_KEY = 'school_app_api_refresh_interval_minutes';
+const API_LAST_SYNCED_STORAGE_KEY = 'school_app_api_last_synced_at';
+
+// Sentinel valid DATE keys in school.weekly_planner_settings (since week_start_date is a Postgres DATE column)
+const SENTINEL_SCHOOL_CONFIG_DATE = '2000-01-01';
+const SENTINEL_SYSTEM_BRANDING_DATE = '2000-01-02';
+const SENTINEL_API_SYNC_CONFIG_DATE = '2000-01-03';
 
 const DEFAULT_SCHOOL_NAME = 'Casita Capital School';
+export const DEFAULT_API_REFRESH_INTERVAL_MINUTES = 60;
+
+export interface ApiRefreshIntervalOption {
+  value: number;
+  label: string;
+  shortLabel: string;
+  description: string;
+}
+
+export const API_REFRESH_INTERVAL_OPTIONS: ApiRefreshIntervalOption[] = [
+  {
+    value: 1,
+    label: 'On Every App Open (1 Min Cooldown)',
+    shortLabel: 'Every Open',
+    description: 'Checks for new portal grades immediately whenever the app or tab is opened.',
+  },
+  {
+    value: 5,
+    label: 'Every 5 Minutes',
+    shortLabel: 'Every 5m',
+    description: 'High-frequency background check every 5 minutes while using the app.',
+  },
+  {
+    value: 15,
+    label: 'Every 15 Minutes',
+    shortLabel: 'Every 15m',
+    description: 'Checks Memoria Academy for new quiz and assignment scores every 15 minutes.',
+  },
+  {
+    value: 30,
+    label: 'Every 30 Minutes',
+    shortLabel: 'Every 30m',
+    description: 'Automatically refreshes portal grades every half hour.',
+  },
+  {
+    value: 60,
+    label: 'Every 1 Hour (Recommended)',
+    shortLabel: 'Every 1h',
+    description: 'Balanced automatic sync every hour and whenever you open the app after an hour.',
+  },
+  {
+    value: 120,
+    label: 'Every 2 Hours',
+    shortLabel: 'Every 2h',
+    description: 'Refreshes portal grades every 2 hours.',
+  },
+  {
+    value: 240,
+    label: 'Every 4 Hours',
+    shortLabel: 'Every 4h',
+    description: 'Refreshes portal grades every 4 hours.',
+  },
+  {
+    value: 360,
+    label: 'Every 6 Hours',
+    shortLabel: 'Every 6h',
+    description: 'Refreshes portal grades 4 times per day.',
+  },
+  {
+    value: 720,
+    label: 'Every 12 Hours',
+    shortLabel: 'Every 12h',
+    description: 'Refreshes portal grades twice daily (morning and evening).',
+  },
+  {
+    value: 1440,
+    label: 'Once Daily (Every 24 Hours)',
+    shortLabel: 'Daily (24h)',
+    description: 'Refreshes portal grades once every 24 hours.',
+  },
+  {
+    value: 0,
+    label: 'Manual Only (Off)',
+    shortLabel: 'Manual Only',
+    description: 'Only pulls portal grades when you click a Refresh / Sync button manually.',
+  },
+];
 
 export interface ItemBranding {
   color: string;
@@ -59,6 +143,12 @@ interface SchoolSettingsContextValue {
   scheduleStartHour: number;
   scheduleEndHour: number;
   updateScheduleHours: (startHour: number, endHour: number) => Promise<void>;
+  apiRefreshIntervalMinutes: number;
+  updateApiRefreshInterval: (minutes: number) => Promise<void>;
+  apiLastSyncedAt: string | null;
+  isSyncingApi: boolean;
+  syncApiScoresNow: (options?: { silent?: boolean }) => Promise<boolean>;
+  apiSyncVersion: number;
   loading: boolean;
 }
 
@@ -70,6 +160,12 @@ const SchoolSettingsContext = createContext<SchoolSettingsContextValue>({
   scheduleStartHour: 7,
   scheduleEndHour: 19,
   updateScheduleHours: async () => {},
+  apiRefreshIntervalMinutes: DEFAULT_API_REFRESH_INTERVAL_MINUTES,
+  updateApiRefreshInterval: async () => {},
+  apiLastSyncedAt: null,
+  isSyncingApi: false,
+  syncApiScoresNow: async () => false,
+  apiSyncVersion: 0,
   loading: true,
 });
 
@@ -78,8 +174,110 @@ export const SchoolSettingsProvider: FC<{ children: ReactNode }> = ({ children }
   const [branding, setBranding] = useState<SystemBrandingSettings>(DEFAULT_BRANDING);
   const [scheduleStartHour, setScheduleStartHour] = useState<number>(7);
   const [scheduleEndHour, setScheduleEndHour] = useState<number>(19);
+  const [apiRefreshIntervalMinutes, setApiRefreshIntervalMinutes] = useState<number>(
+    DEFAULT_API_REFRESH_INTERVAL_MINUTES
+  );
+  const [apiLastSyncedAt, setApiLastSyncedAt] = useState<string | null>(null);
+  const [isSyncingApi, setIsSyncingApi] = useState<boolean>(false);
+  const [apiSyncVersion, setApiSyncVersion] = useState<number>(0);
   const [loading, setLoading] = useState(true);
+
+  const isSyncingRef = useRef<boolean>(false);
+  const lastSyncedAtRef = useRef<string | null>(null);
+  const intervalMinutesRef = useRef<number>(DEFAULT_API_REFRESH_INTERVAL_MINUTES);
+
   const supabase = createClient();
+
+  useEffect(() => {
+    lastSyncedAtRef.current = apiLastSyncedAt;
+  }, [apiLastSyncedAt]);
+
+  useEffect(() => {
+    intervalMinutesRef.current = apiRefreshIntervalMinutes;
+  }, [apiRefreshIntervalMinutes]);
+
+  const syncApiScoresNow = useCallback(
+    async (options?: { silent?: boolean }): Promise<boolean> => {
+      if (isSyncingRef.current) return false;
+      isSyncingRef.current = true;
+      setIsSyncingApi(true);
+      const silent = options?.silent === true;
+
+      try {
+        const res = await fetch('/api/memoria/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'sync_courses',
+            auto_refresh_interval_minutes: intervalMinutesRef.current,
+          }),
+        });
+        const data = (await res.json().catch(() => null)) as {
+          ok?: boolean;
+          error?: string;
+          synced_at?: string;
+          synced_courses?: Array<{
+            official_course_name: string;
+            graded_items_count: number;
+          }>;
+        } | null;
+
+        if (!res.ok || !data?.ok) {
+          if (!silent) {
+            toast.error(data?.error || 'Failed to refresh Memoria Academy API scores');
+          }
+          return false;
+        }
+
+        const syncedAt = data.synced_at || new Date().toISOString();
+        setApiLastSyncedAt(syncedAt);
+        lastSyncedAtRef.current = syncedAt;
+        if (typeof window !== 'undefined') {
+          localStorage.setItem(API_LAST_SYNCED_STORAGE_KEY, syncedAt);
+        }
+
+        try {
+          await supabase.from('weekly_planner_settings').upsert(
+            {
+              week_start_date: SENTINEL_API_SYNC_CONFIG_DATE,
+              todos: {
+                auto_refresh_interval_minutes: intervalMinutesRef.current,
+                last_synced_at: syncedAt,
+              } as unknown as Json,
+            },
+            { onConflict: 'week_start_date' }
+          );
+        } catch {
+          // Non-critical backup sync
+        }
+
+        setApiSyncVersion((prev) => prev + 1);
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(
+            new CustomEvent('memoria-api-synced', {
+              detail: { syncedAt, syncedCourses: data.synced_courses || [] },
+            })
+          );
+        }
+
+        if (!silent) {
+          toast.success(
+            `Synced scores for ${data.synced_courses?.length || 0} Memoria Academy courses!`
+          );
+        }
+        return true;
+      } catch {
+        if (!silent) {
+          toast.error('Failed to refresh Memoria Academy API scores');
+        }
+        return false;
+      } finally {
+        isSyncingRef.current = false;
+        setIsSyncingApi(false);
+      }
+    },
+    [supabase]
+  );
 
   useEffect(() => {
     // 1. Try loading from localStorage for instant initial render
@@ -114,38 +312,128 @@ export const SchoolSettingsProvider: FC<{ children: ReactNode }> = ({ children }
       }
     }
 
-    // 2. Load from Supabase DB settings
+    const cachedRefreshInterval = localStorage.getItem(API_REFRESH_INTERVAL_STORAGE_KEY);
+    if (cachedRefreshInterval !== null) {
+      const parsedNum = Number(cachedRefreshInterval);
+      if (!Number.isNaN(parsedNum) && parsedNum >= 0) {
+        setApiRefreshIntervalMinutes(parsedNum);
+        intervalMinutesRef.current = parsedNum;
+      }
+    }
+
+    const cachedLastSynced = localStorage.getItem(API_LAST_SYNCED_STORAGE_KEY);
+    if (cachedLastSynced) {
+      setApiLastSyncedAt(cachedLastSynced);
+      lastSyncedAtRef.current = cachedLastSynced;
+    }
+
+    // 2. Load from Supabase DB settings & Portal Integration config
     async function loadDbSettings() {
       try {
-        const { data: nameData } = await supabase
-          .from('weekly_planner_settings')
-          .select('notes')
-          .eq('week_start_date', 'GLOBAL_SCHOOL_CONFIG')
-          .maybeSingle();
+        const [nameRes, transcriptRes, brandRes, apiSyncRes, portalIntRes] = await Promise.all([
+          supabase
+            .from('weekly_planner_settings')
+            .select('notes')
+            .eq('week_start_date', SENTINEL_SCHOOL_CONFIG_DATE)
+            .maybeSingle(),
+          supabase
+            .from('transcript_settings')
+            .select('school_name')
+            .limit(1)
+            .maybeSingle(),
+          supabase
+            .from('weekly_planner_settings')
+            .select('todos, schedule_start_hour, schedule_end_hour')
+            .eq('week_start_date', SENTINEL_SYSTEM_BRANDING_DATE)
+            .maybeSingle(),
+          supabase
+            .from('weekly_planner_settings')
+            .select('todos')
+            .eq('week_start_date', SENTINEL_API_SYNC_CONFIG_DATE)
+            .maybeSingle(),
+          fetch('/api/memoria/sync')
+            .then((r) => r.json())
+            .catch(() => null),
+        ]);
 
-        if (nameData && nameData.notes) {
-          setSchoolName(nameData.notes);
-          localStorage.setItem(STORAGE_KEY, nameData.notes);
+        const resolvedSchoolName =
+          nameRes.data?.notes || transcriptRes.data?.school_name || null;
+        if (resolvedSchoolName) {
+          setSchoolName(resolvedSchoolName);
+          localStorage.setItem(STORAGE_KEY, resolvedSchoolName);
         }
 
-        const { data: brandData } = await supabase
-          .from('weekly_planner_settings')
-          .select('todos, schedule_start_hour, schedule_end_hour')
-          .eq('week_start_date', 'GLOBAL_SYSTEM_BRANDING')
-          .maybeSingle();
-
-        if (brandData) {
-          if (brandData.todos) {
-            const normalized = normalizeSystemBranding(brandData.todos);
+        if (brandRes.data) {
+          if (brandRes.data.todos) {
+            const normalized = normalizeSystemBranding(brandRes.data.todos);
             setBranding(normalized);
             localStorage.setItem(BRANDING_STORAGE_KEY, JSON.stringify(normalized));
           }
-          if (typeof brandData.schedule_start_hour === 'number') {
-            setScheduleStartHour(brandData.schedule_start_hour);
+          if (typeof brandRes.data.schedule_start_hour === 'number') {
+            setScheduleStartHour(brandRes.data.schedule_start_hour);
           }
-          if (typeof brandData.schedule_end_hour === 'number') {
-            setScheduleEndHour(brandData.schedule_end_hour);
+          if (typeof brandRes.data.schedule_end_hour === 'number') {
+            setScheduleEndHour(brandRes.data.schedule_end_hour);
           }
+        }
+
+        let resolvedInterval: number | null = null;
+        let resolvedLastSynced: string | null = null;
+
+        if (
+          apiSyncRes.data?.todos &&
+          typeof apiSyncRes.data.todos === 'object' &&
+          !Array.isArray(apiSyncRes.data.todos)
+        ) {
+          const rec = apiSyncRes.data.todos as Record<string, unknown>;
+          if (
+            typeof rec.auto_refresh_interval_minutes === 'number' &&
+            !Number.isNaN(rec.auto_refresh_interval_minutes) &&
+            rec.auto_refresh_interval_minutes >= 0
+          ) {
+            resolvedInterval = rec.auto_refresh_interval_minutes;
+          }
+          if (typeof rec.last_synced_at === 'string' && rec.last_synced_at) {
+            resolvedLastSynced = rec.last_synced_at;
+          }
+        }
+
+        if (
+          portalIntRes &&
+          typeof portalIntRes === 'object' &&
+          'integration' in portalIntRes &&
+          portalIntRes.integration &&
+          typeof portalIntRes.integration === 'object'
+        ) {
+          const pi = portalIntRes.integration as Record<string, unknown>;
+          if (
+            resolvedInterval === null &&
+            typeof pi.auto_refresh_interval_minutes === 'number' &&
+            !Number.isNaN(pi.auto_refresh_interval_minutes) &&
+            pi.auto_refresh_interval_minutes >= 0
+          ) {
+            resolvedInterval = pi.auto_refresh_interval_minutes;
+          }
+          if (typeof pi.last_synced_at === 'string' && pi.last_synced_at) {
+            if (
+              !resolvedLastSynced ||
+              Date.parse(pi.last_synced_at) > Date.parse(resolvedLastSynced)
+            ) {
+              resolvedLastSynced = pi.last_synced_at;
+            }
+          }
+        }
+
+        if (resolvedInterval !== null) {
+          setApiRefreshIntervalMinutes(resolvedInterval);
+          intervalMinutesRef.current = resolvedInterval;
+          localStorage.setItem(API_REFRESH_INTERVAL_STORAGE_KEY, String(resolvedInterval));
+        }
+
+        if (resolvedLastSynced) {
+          setApiLastSyncedAt(resolvedLastSynced);
+          lastSyncedAtRef.current = resolvedLastSynced;
+          localStorage.setItem(API_LAST_SYNCED_STORAGE_KEY, resolvedLastSynced);
         }
       } catch {
         // Fallback
@@ -154,8 +442,50 @@ export const SchoolSettingsProvider: FC<{ children: ReactNode }> = ({ children }
       }
     }
 
-    loadDbSettings();
+    void loadDbSettings();
   }, [supabase]);
+
+  // 3. Automatic Background API Refresh Loop (runs on mount after loading, on timer, and on tab focus)
+  useEffect(() => {
+    if (loading) return;
+
+    const checkAndSyncIfDue = () => {
+      const intervalMins = intervalMinutesRef.current;
+      if (intervalMins <= 0 || isSyncingRef.current) return;
+
+      const lastSyncedStr = lastSyncedAtRef.current;
+      const lastSyncedMs = lastSyncedStr ? Date.parse(lastSyncedStr) : Number.NaN;
+      const elapsedMs = Number.isNaN(lastSyncedMs)
+        ? Number.POSITIVE_INFINITY
+        : Date.now() - lastSyncedMs;
+      const thresholdMs = intervalMins * 60 * 1000;
+
+      if (elapsedMs >= thresholdMs) {
+        void syncApiScoresNow({ silent: true });
+      }
+    };
+
+    // Run check immediately once settings have loaded
+    checkAndSyncIfDue();
+
+    // Check every 30 seconds while the app stays open
+    const timerId = window.setInterval(checkAndSyncIfDue, 30 * 1000);
+
+    const handleVisibilityOrFocus = () => {
+      if (document.visibilityState === 'visible') {
+        checkAndSyncIfDue();
+      }
+    };
+
+    window.addEventListener('focus', handleVisibilityOrFocus);
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+
+    return () => {
+      window.clearInterval(timerId);
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+    };
+  }, [loading, apiRefreshIntervalMinutes, syncApiScoresNow]);
 
   const updateSchoolName = async (newName: string) => {
     const trimmed = newName.trim() || DEFAULT_SCHOOL_NAME;
@@ -167,7 +497,7 @@ export const SchoolSettingsProvider: FC<{ children: ReactNode }> = ({ children }
         .from('weekly_planner_settings')
         .upsert(
           {
-            week_start_date: 'GLOBAL_SCHOOL_CONFIG',
+            week_start_date: SENTINEL_SCHOOL_CONFIG_DATE,
             notes: trimmed,
           },
           { onConflict: 'week_start_date' }
@@ -192,7 +522,7 @@ export const SchoolSettingsProvider: FC<{ children: ReactNode }> = ({ children }
         .from('weekly_planner_settings')
         .upsert(
           {
-            week_start_date: 'GLOBAL_SYSTEM_BRANDING',
+            week_start_date: SENTINEL_SYSTEM_BRANDING_DATE,
             todos: normalized as unknown as Json,
           },
           { onConflict: 'week_start_date' }
@@ -216,7 +546,7 @@ export const SchoolSettingsProvider: FC<{ children: ReactNode }> = ({ children }
         .from('weekly_planner_settings')
         .upsert(
           {
-            week_start_date: 'GLOBAL_SYSTEM_BRANDING',
+            week_start_date: SENTINEL_SYSTEM_BRANDING_DATE,
             schedule_start_hour: startHour,
             schedule_end_hour: endHour,
           },
@@ -225,6 +555,42 @@ export const SchoolSettingsProvider: FC<{ children: ReactNode }> = ({ children }
       toast.success('Time Scheduler timeframe updated!');
     } catch {
       toast.error('Saved locally. Failed to sync to cloud.');
+    }
+  };
+
+  const updateApiRefreshInterval = async (minutes: number) => {
+    const sanitized = Number.isNaN(minutes) || minutes < 0 ? 0 : minutes;
+    setApiRefreshIntervalMinutes(sanitized);
+    intervalMinutesRef.current = sanitized;
+    localStorage.setItem(API_REFRESH_INTERVAL_STORAGE_KEY, String(sanitized));
+
+    const matchedOpt = API_REFRESH_INTERVAL_OPTIONS.find((o) => o.value === sanitized);
+    const labelText = matchedOpt ? matchedOpt.label : `${sanitized} minutes`;
+
+    try {
+      await Promise.all([
+        supabase.from('weekly_planner_settings').upsert(
+          {
+            week_start_date: SENTINEL_API_SYNC_CONFIG_DATE,
+            todos: {
+              auto_refresh_interval_minutes: sanitized,
+              last_synced_at: lastSyncedAtRef.current,
+            } as unknown as Json,
+          },
+          { onConflict: 'week_start_date' }
+        ),
+        fetch('/api/memoria/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'update_refresh_settings',
+            auto_refresh_interval_minutes: sanitized,
+          }),
+        }),
+      ]);
+      toast.success(`API score auto-refresh set to: ${labelText}`);
+    } catch {
+      toast.error('Saved locally. Failed to sync setting to cloud.');
     }
   };
 
@@ -238,6 +604,12 @@ export const SchoolSettingsProvider: FC<{ children: ReactNode }> = ({ children }
         scheduleStartHour,
         scheduleEndHour,
         updateScheduleHours,
+        apiRefreshIntervalMinutes,
+        updateApiRefreshInterval,
+        apiLastSyncedAt,
+        isSyncingApi,
+        syncApiScoresNow,
+        apiSyncVersion,
         loading,
       }}
     >

@@ -147,6 +147,7 @@ export interface PortalIntegrationConfig {
   username: string;
   password?: string;
   last_synced_at?: string;
+  auto_refresh_interval_minutes?: number;
   student_fullname?: string;
   moodle_user_id?: number;
   course_mappings: PortalIntegrationCourseMapping[];
@@ -181,6 +182,42 @@ export interface SubjectInstructorInfo {
   teacher_contact_notes: string;
 }
 
+export interface SavedScheduleBlockSubItem {
+  id: string;
+  text: string;
+  isBullet?: boolean;
+}
+
+export type SavedBlockRepeatMode = 'weekly_shared' | 'daily_repeat' | 'single_day';
+
+export type SavedBlockInsertStyle = 'grouped' | 'separate_rows';
+
+export interface SavedScheduleBlock {
+  id: string;
+  /** Friendly set name in the library (e.g. "Memory Work — Set 1 (Weeks 1–6)") */
+  name: string;
+  /** Block header / title rendered on the schedule (e.g. "Memory Work") */
+  title: string;
+  /** Role of the block header / main item */
+  role: 'header' | 'info' | 'verified' | 'graded';
+  /** Sub-type when role is 'header' or 'info' */
+  infoSubType?: 'header' | 'divider' | 'bullet' | 'parent_note';
+  /** Rows underneath the block header (e.g. 6–8 rows of memory work) */
+  subItems: SavedScheduleBlockSubItem[];
+  /** How rows are inserted into the day modal ('grouped' sub-lines under header vs 'separate_rows') */
+  insertStyle?: SavedBlockInsertStyle;
+  /** Default repeat cadence when pulled into a week's schedule */
+  defaultRepeatMode: SavedBlockRepeatMode;
+  /** Default weekdays to repeat across when defaultRepeatMode !== 'single_day' */
+  defaultRepeatDays: DayKey[];
+  /** Optional graded settings when role === 'graded' */
+  assignmentCategory?: string;
+  scoringMode?: 'points' | 'problems_calculator';
+  pointsPossible?: number;
+  totalProblems?: number | null;
+  updatedAt?: string;
+}
+
 export interface SubjectRecurringConfig {
   enabled: boolean;
   mode: 'template' | 'math_syllabus';
@@ -194,6 +231,7 @@ export interface SubjectRecurringConfig {
   course_syllabi?: CourseSyllabusData[];
   active_syllabus_id?: string;
   instructor_info?: SubjectInstructorInfo;
+  saved_blocks?: SavedScheduleBlock[];
 }
 
 export interface MathSyllabusDay {
@@ -1025,6 +1063,8 @@ export function parseRecurringConfig(raw: Json | null | undefined, subjectName =
       }
     : defaultInstructor;
 
+  const saved_blocks = parseSavedScheduleBlocks(raw.saved_blocks);
+
   return {
     enabled,
     mode,
@@ -1038,7 +1078,119 @@ export function parseRecurringConfig(raw: Json | null | undefined, subjectName =
     course_syllabi: course_syllabi.length > 0 ? course_syllabi : undefined,
     active_syllabus_id,
     instructor_info,
+    saved_blocks: saved_blocks.length > 0 ? saved_blocks : undefined,
   };
+}
+
+export function parseSavedScheduleBlocks(raw: unknown): SavedScheduleBlock[] {
+  if (!Array.isArray(raw)) return [];
+  const parsed: SavedScheduleBlock[] = [];
+
+  for (let i = 0; i < raw.length; i++) {
+    const item = raw[i];
+    if (!isRecord(item)) continue;
+
+    const title = typeof item.title === 'string' ? item.title.trim() : '';
+    const name =
+      typeof item.name === 'string' && item.name.trim()
+        ? item.name.trim()
+        : title || `Saved Block ${i + 1}`;
+    if (!title && !name) continue;
+
+    const roleRaw = item.role;
+    const role: SavedScheduleBlock['role'] =
+      roleRaw === 'header' ||
+      roleRaw === 'info' ||
+      roleRaw === 'verified' ||
+      roleRaw === 'graded'
+        ? roleRaw
+        : 'verified';
+
+    const subTypeRaw = item.infoSubType;
+    const infoSubType: SavedScheduleBlock['infoSubType'] =
+      subTypeRaw === 'header' ||
+      subTypeRaw === 'divider' ||
+      subTypeRaw === 'bullet' ||
+      subTypeRaw === 'parent_note'
+        ? subTypeRaw
+        : role === 'header'
+        ? 'header'
+        : 'bullet';
+
+    const rawSubs = Array.isArray(item.subItems) ? item.subItems : [];
+    const subItems: SavedScheduleBlockSubItem[] = [];
+    for (let j = 0; j < rawSubs.length; j++) {
+      const rs = rawSubs[j];
+      if (!isRecord(rs)) continue;
+      const subText = typeof rs.text === 'string' ? rs.text.trim() : '';
+      if (!subText) continue;
+      subItems.push({
+        id:
+          typeof rs.id === 'string' && rs.id.trim()
+            ? rs.id.trim()
+            : `saved-sub-${i}-${j}`,
+        text: subText,
+        isBullet: typeof rs.isBullet === 'boolean' ? rs.isBullet : role === 'info',
+      });
+    }
+
+    const repeatModeRaw = item.defaultRepeatMode;
+    const defaultRepeatMode: SavedBlockRepeatMode =
+      repeatModeRaw === 'weekly_shared' ||
+      repeatModeRaw === 'daily_repeat' ||
+      repeatModeRaw === 'single_day'
+        ? repeatModeRaw
+        : 'daily_repeat';
+
+    const rawDays = Array.isArray(item.defaultRepeatDays)
+      ? item.defaultRepeatDays.filter(
+          (d): d is DayKey => typeof d === 'string' && DAY_KEYS.includes(d as DayKey)
+        )
+      : [];
+    const defaultRepeatDays: DayKey[] =
+      rawDays.length > 0
+        ? DAY_KEYS.filter((d) => rawDays.includes(d))
+        : (['monday', 'tuesday', 'wednesday', 'thursday'] as DayKey[]);
+
+    const insertStyleRaw = item.insertStyle;
+    const insertStyle: SavedBlockInsertStyle =
+      insertStyleRaw === 'separate_rows' ? 'separate_rows' : 'grouped';
+
+    const scoringRaw = item.scoringMode;
+    const scoringMode: 'points' | 'problems_calculator' =
+      scoringRaw === 'problems_calculator' ? 'problems_calculator' : 'points';
+
+    parsed.push({
+      id:
+        typeof item.id === 'string' && item.id.trim()
+          ? item.id.trim()
+          : `saved-block-${i + 1}`,
+      name,
+      title: title || name,
+      role,
+      infoSubType,
+      subItems,
+      insertStyle,
+      defaultRepeatMode,
+      defaultRepeatDays,
+      assignmentCategory:
+        typeof item.assignmentCategory === 'string' && item.assignmentCategory
+          ? item.assignmentCategory
+          : 'homework',
+      scoringMode,
+      pointsPossible:
+        typeof item.pointsPossible === 'number' && item.pointsPossible > 0
+          ? item.pointsPossible
+          : 100,
+      totalProblems:
+        typeof item.totalProblems === 'number' && item.totalProblems > 0
+          ? item.totalProblems
+          : 20,
+      updatedAt: typeof item.updatedAt === 'string' ? item.updatedAt : undefined,
+    });
+  }
+
+  return parsed;
 }
 
 export function createDefaultInstructorInfo(

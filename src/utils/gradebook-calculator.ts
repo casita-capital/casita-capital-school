@@ -246,7 +246,7 @@ export const DEFAULT_ASSIGNMENT_TYPES: AssignmentTypeConfig[] = [
     description:
       'Weekly Thursday or Friday spelling assessment. Enter total words and missed words to calculate % score.',
     scoring_mode: 'problems_calculator',
-    default_points: 20,
+    default_points: 18,
     default_weight: 40,
     color: '#D97706',
     icon: 'CheckSquare',

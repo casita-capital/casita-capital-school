@@ -41,6 +41,7 @@ import {
   Calendar as CalendarIcon,
   Plus,
   RefreshCw,
+  CloudDownload,
   Trash2,
   Type,
   GraduationCap,
@@ -50,7 +51,11 @@ import toast from 'react-hot-toast';
 import { PageHeading } from 'src/components/base/page-heading';
 import { useCustomization } from 'src/hooks/use-customization';
 import { colorPresetOptions, headingFontOptions } from 'src/layouts/header';
-import { useSchoolSettings, SystemBrandingSettings } from 'src/contexts/school-settings';
+import {
+  API_REFRESH_INTERVAL_OPTIONS,
+  useSchoolSettings,
+  SystemBrandingSettings,
+} from 'src/contexts/school-settings';
 import { ItemIcon } from 'src/components/base/item-icon';
 import { createClient } from 'src/services/supabase/client';
 import type { Json } from 'src/services/supabase/types';
@@ -102,6 +107,11 @@ export default function SettingsPage() {
     scheduleStartHour,
     scheduleEndHour,
     updateScheduleHours,
+    apiRefreshIntervalMinutes,
+    updateApiRefreshInterval,
+    apiLastSyncedAt,
+    isSyncingApi,
+    syncApiScoresNow,
   } = useSchoolSettings();
 
   const [activeTab, setActiveTab] = useState<'school' | 'preferences' | 'calendars'>('school');
@@ -729,6 +739,165 @@ export default function SettingsPage() {
                           );
                         })}
                       </TextField>
+                    </Grid>
+                  </Grid>
+                </CardContent>
+              </Card>
+
+              {/* ONLINE PORTAL API SCORE AUTO-REFRESH TIMEFRAME CARD */}
+              <Card elevation={8} sx={{ borderRadius: 3, mb: 3 }}>
+                <CardContent sx={{ p: 4 }}>
+                  <Box
+                    display="flex"
+                    alignItems="center"
+                    justifyContent="space-between"
+                    flexWrap="wrap"
+                    gap={2}
+                    mb={1}
+                  >
+                    <Box display="flex" alignItems="center" gap={1.5}>
+                      <CloudDownload size={22} color={theme.palette.primary.main} />
+                      <Typography variant="h4" fontWeight={700}>
+                        Online Portal API Score Refresh Timeframe
+                      </Typography>
+                    </Box>
+                    <Button
+                      variant="contained"
+                      color="primary"
+                      onClick={() => void syncApiScoresNow({ silent: false })}
+                      disabled={isSyncingApi}
+                      startIcon={<RefreshCw size={16} />}
+                      sx={{
+                        fontWeight: 700,
+                        borderRadius: 2,
+                        textTransform: 'none',
+                      }}
+                    >
+                      {isSyncingApi ? 'Syncing Portal Scores...' : 'Sync API Scores Now'}
+                    </Button>
+                  </Box>
+                  <Typography variant="body2" color="text.secondary" mb={2.5}>
+                    Choose how frequently the app automatically checks and pulls in new quiz, test, and essay scores from the Memoria Academy portal (<code>mpoa.memoriapress.com</code>). When the selected timeframe has elapsed, scores refresh automatically in the background whenever the app is open.
+                  </Typography>
+
+                  {/* Status Strip */}
+                  <Box
+                    sx={{
+                      p: 2,
+                      mb: 3,
+                      borderRadius: 2,
+                      bgcolor: 'action.hover',
+                      border: '1px solid',
+                      borderColor: 'divider',
+                      display: 'flex',
+                      flexWrap: 'wrap',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 2,
+                    }}
+                  >
+                    <Stack direction="row" spacing={1.5} alignItems="center" flexWrap="wrap" useFlexGap>
+                      <Chip
+                        size="small"
+                        color={apiRefreshIntervalMinutes > 0 ? 'success' : 'default'}
+                        label={
+                          apiRefreshIntervalMinutes > 0
+                            ? `Auto-Refresh: ${
+                                API_REFRESH_INTERVAL_OPTIONS.find(
+                                  (o) => o.value === apiRefreshIntervalMinutes
+                                )?.shortLabel || `Every ${apiRefreshIntervalMinutes}m`
+                              }`
+                            : 'Auto-Refresh: Manual Only'
+                        }
+                        sx={{ fontWeight: 700 }}
+                      />
+                      <Typography variant="caption" color="text.secondary" fontWeight={600}>
+                        Last Synced:{' '}
+                        <Box component="span" color="text.primary" fontWeight={700}>
+                          {apiLastSyncedAt
+                            ? new Date(apiLastSyncedAt).toLocaleString()
+                            : 'Never synced'}
+                        </Box>
+                      </Typography>
+                    </Stack>
+                    <Typography variant="caption" color="text.secondary" fontWeight={600}>
+                      Next Scheduled Check:{' '}
+                      <Box component="span" color="primary.main" fontWeight={700}>
+                        {apiRefreshIntervalMinutes === 0
+                          ? 'Manual button only'
+                          : apiRefreshIntervalMinutes === 1
+                          ? 'On every app open'
+                          : apiLastSyncedAt
+                          ? (() => {
+                              const nextMs =
+                                Date.parse(apiLastSyncedAt) +
+                                apiRefreshIntervalMinutes * 60 * 1000;
+                              if (Number.isNaN(nextMs)) return 'On next check';
+                              return nextMs <= Date.now()
+                                ? 'Due now (checking automatically)'
+                                : new Date(nextMs).toLocaleTimeString([], {
+                                    hour: 'numeric',
+                                    minute: '2-digit',
+                                  });
+                            })()
+                          : 'Immediate'}
+                      </Box>
+                    </Typography>
+                  </Box>
+
+                  <Grid container spacing={2.5} alignItems="center">
+                    <Grid item xs={12} md={6}>
+                      <TextField
+                        fullWidth
+                        select
+                        label="API Score Auto-Refresh Frequency"
+                        value={apiRefreshIntervalMinutes}
+                        onChange={(e) => void updateApiRefreshInterval(Number(e.target.value))}
+                        helperText={
+                          API_REFRESH_INTERVAL_OPTIONS.find(
+                            (o) => o.value === apiRefreshIntervalMinutes
+                          )?.description ||
+                          'Select how often the app should automatically pull scores from Memoria Academy.'
+                        }
+                      >
+                        {API_REFRESH_INTERVAL_OPTIONS.map((opt) => (
+                          <MenuItem key={opt.value} value={opt.value}>
+                            {opt.label}
+                          </MenuItem>
+                        ))}
+                      </TextField>
+                    </Grid>
+                    <Grid item xs={12} md={6}>
+                      <Typography
+                        variant="caption"
+                        color="text.secondary"
+                        fontWeight={700}
+                        display="block"
+                        mb={1}
+                      >
+                        Quick Select Frequency:
+                      </Typography>
+                      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                        {API_REFRESH_INTERVAL_OPTIONS.filter((o) =>
+                          [1, 15, 30, 60, 360, 1440, 0].includes(o.value)
+                        ).map((opt) => {
+                          const isSelected = apiRefreshIntervalMinutes === opt.value;
+                          return (
+                            <Chip
+                              key={opt.value}
+                              label={opt.shortLabel}
+                              size="small"
+                              color={isSelected ? 'primary' : 'default'}
+                              variant={isSelected ? 'filled' : 'outlined'}
+                              onClick={() => void updateApiRefreshInterval(opt.value)}
+                              sx={{
+                                fontWeight: 700,
+                                cursor: 'pointer',
+                              }}
+                            />
+                          );
+                        })}
+                      </Stack>
                     </Grid>
                   </Grid>
                 </CardContent>
@@ -1864,6 +2033,24 @@ export default function SettingsPage() {
                   <Typography variant="body2" fontWeight={700} color="primary.main">
                     {googleConnections.length} Connected
                   </Typography>
+                </Box>
+
+                <Box
+                  onClick={() => setActiveTab('school')}
+                  sx={{ cursor: 'pointer', '&:hover': { opacity: 0.85 } }}
+                >
+                  <Typography variant="caption" color="text.secondary" fontWeight={600} display="block">
+                    API Score Auto-Refresh
+                  </Typography>
+                  <Typography variant="body2" fontWeight={700} color="primary.main">
+                    {API_REFRESH_INTERVAL_OPTIONS.find((o) => o.value === apiRefreshIntervalMinutes)
+                      ?.label || `Every ${apiRefreshIntervalMinutes}m`}
+                  </Typography>
+                  {apiLastSyncedAt && (
+                    <Typography variant="caption" color="text.secondary" display="block">
+                      Last synced: {new Date(apiLastSyncedAt).toLocaleString()}
+                    </Typography>
+                  )}
                 </Box>
 
                 <Box>

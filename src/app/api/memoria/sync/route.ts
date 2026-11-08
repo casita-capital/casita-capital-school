@@ -438,6 +438,66 @@ function parseSectionDateRange(sectionTitle: string): {
   };
 }
 
+function extractStoredIntegration(
+  subjects: Array<{
+    id: string;
+    name: string;
+    grading_config?: Json | null;
+  }>
+): PortalIntegrationConfig {
+  for (const s of subjects) {
+    if (isRecord(s.grading_config) && isRecord(s.grading_config.portal_integration)) {
+      const pi = s.grading_config.portal_integration;
+      const rawMappings = Array.isArray(pi.course_mappings) ? pi.course_mappings : [];
+      const course_mappings: PortalIntegrationCourseMapping[] = [];
+      for (const rm of rawMappings) {
+        if (!isRecord(rm) || typeof rm.moodle_course_id !== 'number') continue;
+        course_mappings.push({
+          moodle_course_id: rm.moodle_course_id,
+          course_fullname:
+            typeof rm.course_fullname === 'string' ? rm.course_fullname : '',
+          course_shortname:
+            typeof rm.course_shortname === 'string' ? rm.course_shortname : '',
+          subject_id: typeof rm.subject_id === 'string' ? rm.subject_id : null,
+          ignored: typeof rm.ignored === 'boolean' ? rm.ignored : false,
+        });
+      }
+      return {
+        portal_login_url:
+          typeof pi.portal_login_url === 'string'
+            ? pi.portal_login_url
+            : DEFAULT_PORTAL_LOGIN_URL,
+        moodle_base_url:
+          typeof pi.moodle_base_url === 'string'
+            ? pi.moodle_base_url
+            : DEFAULT_MOODLE_BASE_URL,
+        username: typeof pi.username === 'string' ? pi.username : DEFAULT_USERNAME,
+        password: typeof pi.password === 'string' ? pi.password : DEFAULT_PASSWORD,
+        last_synced_at:
+          typeof pi.last_synced_at === 'string' ? pi.last_synced_at : undefined,
+        auto_refresh_interval_minutes:
+          typeof pi.auto_refresh_interval_minutes === 'number'
+            ? pi.auto_refresh_interval_minutes
+            : 60,
+        student_fullname:
+          typeof pi.student_fullname === 'string' ? pi.student_fullname : undefined,
+        moodle_user_id:
+          typeof pi.moodle_user_id === 'number' ? pi.moodle_user_id : undefined,
+        course_mappings,
+      };
+    }
+  }
+
+  return {
+    portal_login_url: DEFAULT_PORTAL_LOGIN_URL,
+    moodle_base_url: DEFAULT_MOODLE_BASE_URL,
+    username: DEFAULT_USERNAME,
+    password: DEFAULT_PASSWORD,
+    auto_refresh_interval_minutes: 60,
+    course_mappings: [],
+  };
+}
+
 export async function GET() {
   try {
     const supabase = getSupabaseAdmin();
@@ -455,57 +515,7 @@ export async function GET() {
       grading_config?: Json | null;
     }>;
 
-    // Look for stored portal_integration config on any subject's grading_config
-    let storedIntegration: PortalIntegrationConfig | null = null;
-    for (const s of subjects) {
-      if (isRecord(s.grading_config) && isRecord(s.grading_config.portal_integration)) {
-        const pi = s.grading_config.portal_integration;
-        const rawMappings = Array.isArray(pi.course_mappings) ? pi.course_mappings : [];
-        const course_mappings: PortalIntegrationCourseMapping[] = [];
-        for (const rm of rawMappings) {
-          if (!isRecord(rm) || typeof rm.moodle_course_id !== 'number') continue;
-          course_mappings.push({
-            moodle_course_id: rm.moodle_course_id,
-            course_fullname:
-              typeof rm.course_fullname === 'string' ? rm.course_fullname : '',
-            course_shortname:
-              typeof rm.course_shortname === 'string' ? rm.course_shortname : '',
-            subject_id: typeof rm.subject_id === 'string' ? rm.subject_id : null,
-            ignored: typeof rm.ignored === 'boolean' ? rm.ignored : false,
-          });
-        }
-        storedIntegration = {
-          portal_login_url:
-            typeof pi.portal_login_url === 'string'
-              ? pi.portal_login_url
-              : DEFAULT_PORTAL_LOGIN_URL,
-          moodle_base_url:
-            typeof pi.moodle_base_url === 'string'
-              ? pi.moodle_base_url
-              : DEFAULT_MOODLE_BASE_URL,
-          username: typeof pi.username === 'string' ? pi.username : DEFAULT_USERNAME,
-          password: typeof pi.password === 'string' ? pi.password : DEFAULT_PASSWORD,
-          last_synced_at:
-            typeof pi.last_synced_at === 'string' ? pi.last_synced_at : undefined,
-          student_fullname:
-            typeof pi.student_fullname === 'string' ? pi.student_fullname : undefined,
-          moodle_user_id:
-            typeof pi.moodle_user_id === 'number' ? pi.moodle_user_id : undefined,
-          course_mappings,
-        };
-        break;
-      }
-    }
-
-    if (!storedIntegration) {
-      storedIntegration = {
-        portal_login_url: DEFAULT_PORTAL_LOGIN_URL,
-        moodle_base_url: DEFAULT_MOODLE_BASE_URL,
-        username: DEFAULT_USERNAME,
-        password: DEFAULT_PASSWORD,
-        course_mappings: [],
-      };
-    }
+    const storedIntegration = extractStoredIntegration(subjects);
 
     return NextResponse.json({
       ok: true,
@@ -525,22 +535,6 @@ export async function POST(req: NextRequest) {
     const body = isRecord(bodyRaw) ? bodyRaw : {};
 
     const action = typeof body.action === 'string' ? body.action : 'sync_courses';
-    const portalLoginUrl =
-      typeof body.portal_login_url === 'string' && body.portal_login_url.trim()
-        ? body.portal_login_url.trim()
-        : DEFAULT_PORTAL_LOGIN_URL;
-    const moodleBaseUrl =
-      typeof body.moodle_base_url === 'string' && body.moodle_base_url.trim()
-        ? body.moodle_base_url.trim()
-        : DEFAULT_MOODLE_BASE_URL;
-    const username =
-      typeof body.username === 'string' && body.username.trim()
-        ? body.username.trim()
-        : DEFAULT_USERNAME;
-    const password =
-      typeof body.password === 'string' && body.password.trim()
-        ? body.password.trim()
-        : DEFAULT_PASSWORD;
 
     const supabase = getSupabaseAdmin();
     const { data: subData, error: subErr } = await supabase
@@ -565,6 +559,63 @@ export async function POST(req: NextRequest) {
       recurring_config?: Json | null;
       grading_config?: Json | null;
     }>;
+
+    const storedIntegration = extractStoredIntegration(subjects);
+
+    if (action === 'update_refresh_settings') {
+      const nextInterval =
+        typeof body.auto_refresh_interval_minutes === 'number' &&
+        !Number.isNaN(body.auto_refresh_interval_minutes) &&
+        body.auto_refresh_interval_minutes >= 0
+          ? body.auto_refresh_interval_minutes
+          : storedIntegration.auto_refresh_interval_minutes ?? 60;
+
+      const updatedIntegration: PortalIntegrationConfig = {
+        ...storedIntegration,
+        auto_refresh_interval_minutes: nextInterval,
+      };
+
+      for (const s of subjects) {
+        if (isRecord(s.grading_config) && isRecord(s.grading_config.portal_integration)) {
+          const nextGradingCfg = {
+            ...s.grading_config,
+            portal_integration: updatedIntegration,
+          };
+          await supabase
+            .from('subjects')
+            .update({
+              grading_config: JSON.parse(JSON.stringify(nextGradingCfg)) as Json,
+            })
+            .eq('id', s.id);
+        }
+      }
+
+      return NextResponse.json({
+        ok: true,
+        integration: updatedIntegration,
+      });
+    }
+
+    const portalLoginUrl =
+      typeof body.portal_login_url === 'string' && body.portal_login_url.trim()
+        ? body.portal_login_url.trim()
+        : storedIntegration.portal_login_url || DEFAULT_PORTAL_LOGIN_URL;
+    const moodleBaseUrl =
+      typeof body.moodle_base_url === 'string' && body.moodle_base_url.trim()
+        ? body.moodle_base_url.trim()
+        : storedIntegration.moodle_base_url || DEFAULT_MOODLE_BASE_URL;
+    const username =
+      typeof body.username === 'string' && body.username.trim()
+        ? body.username.trim()
+        : storedIntegration.username || DEFAULT_USERNAME;
+    const password =
+      typeof body.password === 'string' && body.password.trim()
+        ? body.password.trim()
+        : storedIntegration.password || DEFAULT_PASSWORD;
+    const autoRefreshIntervalMinutes =
+      typeof body.auto_refresh_interval_minutes === 'number'
+        ? body.auto_refresh_interval_minutes
+        : storedIntegration.auto_refresh_interval_minutes ?? 60;
 
     // 1. Authenticate with Moodle Portal
     const token = await authenticateMoodle(moodleBaseUrl, username, password);
@@ -608,11 +659,16 @@ export async function POST(req: NextRequest) {
 
     const defaultMappings = buildDefaultCourseMappings(enrolledCourses, subjects);
 
-    // Parse user-supplied course_mappings if provided
+    // Parse user-supplied course_mappings if provided, or fall back to stored course_mappings
+    const rawMappingsSource =
+      Array.isArray(body.course_mappings) && body.course_mappings.length > 0
+        ? body.course_mappings
+        : storedIntegration.course_mappings;
+
     let activeMappings: PortalIntegrationCourseMapping[] = defaultMappings;
-    if (Array.isArray(body.course_mappings) && body.course_mappings.length > 0) {
+    if (Array.isArray(rawMappingsSource) && rawMappingsSource.length > 0) {
       const providedMap = new Map<number, { subject_id: string | null; ignored: boolean }>();
-      for (const item of body.course_mappings) {
+      for (const item of rawMappingsSource) {
         if (!isRecord(item) || typeof item.moodle_course_id !== 'number') continue;
         const subId =
           typeof item.subject_id === 'string' && item.subject_id !== 'ignored' && item.subject_id !== ''
@@ -665,6 +721,7 @@ export async function POST(req: NextRequest) {
       username,
       password,
       last_synced_at: nowIso,
+      auto_refresh_interval_minutes: autoRefreshIntervalMinutes,
       student_fullname: studentFullname,
       moodle_user_id: moodleUserId,
       course_mappings: activeMappings,
@@ -1462,7 +1519,10 @@ export async function POST(req: NextRequest) {
         const weekRange = matchedWeekObj
           ? parseSectionDateRange(matchedWeekObj.section_title)
           : null;
-        let resolvedDueDate = item.due_date || weekRange?.fridayCloseDate || '2026-10-16';
+        let resolvedDueDate =
+          existingMatch?.due_date && existingMatch.due_date !== '2026-10-16'
+            ? existingMatch.due_date
+            : item.due_date || weekRange?.fridayCloseDate || '2026-10-16';
         if (weekRange && item.due_date) {
           const monMs = Date.parse(`${weekRange.mondayStartDate}T00:00:00Z`);
           const dueMs = Date.parse(`${item.due_date}T00:00:00Z`);

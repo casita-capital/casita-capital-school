@@ -547,6 +547,13 @@ function GradebookHubContent() {
 
   useEffect(() => {
     loadAllGradebookData();
+    const handleApiSynced = () => {
+      void loadAllGradebookData();
+    };
+    window.addEventListener('memoria-api-synced', handleApiSynced);
+    return () => {
+      window.removeEventListener('memoria-api-synced', handleApiSynced);
+    };
   }, []);
 
   useEffect(() => {

@@ -53,6 +53,7 @@ import {
   FileText,
   KeyRound,
   CloudDownload,
+  Bookmark,
   Trash2,
   X,
 } from 'lucide-react';
@@ -62,6 +63,7 @@ import { createClient } from 'src/services/supabase/client';
 import { Json } from 'src/services/supabase/types';
 import { FormattedParentNote } from 'src/components/base/formatted-parent-note';
 import { StructuredTemplateBlocksEditor } from 'src/components/automations/structured-template-blocks-editor';
+import { SavedScheduleBlocksModal } from 'src/components/planner/saved-schedule-blocks-modal';
 import {
   AssignmentTypeConfig,
   DEFAULT_ASSIGNMENT_TYPES,
@@ -170,6 +172,8 @@ function AutomationsContent() {
   const [recurringTemplates, setRecurringTemplates] = useState<
     RecurringAssignmentTemplate[]
   >([]);
+  const [savedBlocksModalSubject, setSavedBlocksModalSubject] =
+    useState<Subject | null>(null);
 
   // Syllabus Filter & Edit State
   const [syllabusSemesterFilter, setSyllabusSemesterFilter] = useState<'all' | 1 | 2>('all');
@@ -1606,6 +1610,43 @@ function AutomationsContent() {
                         </Stack>
 
                         <Stack direction="row" spacing={1} alignItems="center">
+                          <Button
+                            size="small"
+                            variant={
+                              (recConfig.saved_blocks?.length ?? 0) > 0
+                                ? 'contained'
+                                : 'outlined'
+                            }
+                            color="primary"
+                            startIcon={<Bookmark size={13} />}
+                            onClick={() => setSavedBlocksModalSubject(sub)}
+                            sx={{
+                              fontWeight: 700,
+                              fontSize: '0.73rem',
+                              textTransform: 'none',
+                              borderRadius: 1,
+                              py: 0.35,
+                              px: 1.1,
+                              ...((recConfig.saved_blocks?.length ?? 0) > 0
+                                ? {
+                                    bgcolor: alpha(theme.palette.primary.main, 0.12),
+                                    color: 'primary.main',
+                                    boxShadow: 'none',
+                                    border: '1px solid',
+                                    borderColor: alpha(theme.palette.primary.main, 0.35),
+                                    '&:hover': {
+                                      bgcolor: alpha(theme.palette.primary.main, 0.2),
+                                      boxShadow: 'none',
+                                    },
+                                  }
+                                : {}),
+                            }}
+                          >
+                            {(recConfig.saved_blocks?.length ?? 0) > 0
+                              ? `Saved Blocks (${recConfig.saved_blocks?.length})`
+                              : 'Saved Blocks'}
+                          </Button>
+
                           <FormControlLabel
                             sx={{ mr: 0.5 }}
                             control={
@@ -1690,6 +1731,18 @@ function AutomationsContent() {
                 >
                   <Edit3 size={15} color={theme.palette.primary.main} />
                   Configure Automation Rules…
+                </MenuItem>
+                <MenuItem
+                  onClick={() => {
+                    const target = menuAutomationSubject;
+                    setAutomationMenuAnchorEl(null);
+                    setMenuAutomationSubject(null);
+                    if (target) setSavedBlocksModalSubject(target);
+                  }}
+                  sx={{ borderRadius: 1, py: 1, gap: 1.25, fontSize: '0.875rem', fontWeight: 600 }}
+                >
+                  <Bookmark size={15} color={theme.palette.info.main} />
+                  Saved Schedule Blocks (On-Demand)…
                 </MenuItem>
                 {menuAutomationSubject &&
                   (() => {
@@ -3899,14 +3952,43 @@ function AutomationsContent() {
 
                 {/* 2B. DAY-BY-DAY STRUCTURED BLOCKS EDITOR */}
                 <Paper variant="outlined" sx={{ p: 2.5, borderRadius: 1 }}>
-                  <Typography variant="subtitle1" fontWeight={800} mb={0.5}>
-                    {recurringDraft.mode === 'math_syllabus'
-                      ? '4. Optional Custom Day Blocks (Mon–Fri)'
-                      : 'Day-by-Day Recurring Blocks & Assignments (Mon–Fri)'}
-                  </Typography>
-                  <Typography variant="caption" color="text.secondary" display="block" mb={2}>
-                    Configure structured Headers, Info bullets, Parent-Verified checks, Graded Assignments, multi-line grouped items (such as Memory Work or Novels), and weekly-shared blocks that repeat across selected weekdays.
-                  </Typography>
+                  <Stack
+                    direction={{ xs: 'column', sm: 'row' }}
+                    justifyContent="space-between"
+                    alignItems={{ xs: 'flex-start', sm: 'center' }}
+                    spacing={1.25}
+                    mb={2}
+                  >
+                    <Box>
+                      <Typography variant="subtitle1" fontWeight={800} mb={0.25}>
+                        {recurringDraft.mode === 'math_syllabus'
+                          ? '4. Optional Custom Day Blocks (Mon–Fri)'
+                          : 'Day-by-Day Recurring Blocks & Assignments (Mon–Fri)'}
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary" display="block">
+                        Configure structured Headers, Info bullets, Parent-Verified checks, Graded Assignments, multi-line grouped items (such as Memory Work or Novels), and weekly-shared blocks that repeat across selected weekdays.
+                      </Typography>
+                    </Box>
+                    {recurringSubject && (
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        color="primary"
+                        startIcon={<Bookmark size={14} />}
+                        onClick={() => setSavedBlocksModalSubject(recurringSubject)}
+                        sx={{
+                          fontWeight: 700,
+                          textTransform: 'none',
+                          borderRadius: 1,
+                          flexShrink: 0,
+                        }}
+                      >
+                        {(recurringDraft.saved_blocks?.length ?? 0) > 0
+                          ? `Saved Schedule Blocks (${recurringDraft.saved_blocks?.length})`
+                          : 'Saved Schedule Blocks Library'}
+                      </Button>
+                    )}
+                  </Stack>
 
                   {/* Day Tabs */}
                   <Stack
@@ -5442,6 +5524,48 @@ function AutomationsContent() {
             </Box>
           </Paper>
         </Box>
+      )}
+
+      {savedBlocksModalSubject && (
+        <SavedScheduleBlocksModal
+          open={Boolean(savedBlocksModalSubject)}
+          onClose={() => setSavedBlocksModalSubject(null)}
+          subject={savedBlocksModalSubject}
+          allSubjects={subjects}
+          assignmentTypes={assignmentTypes}
+          onSavedBlocksUpdated={(updatedSubjectId, updatedBlocks) => {
+            setSubjects((prev) =>
+              prev.map((s) => {
+                if (s.id !== updatedSubjectId) return s;
+                const cfg = parseRecurringConfig(s.recurring_config, s.name);
+                return {
+                  ...s,
+                  recurring_config: {
+                    ...cfg,
+                    saved_blocks: updatedBlocks,
+                  } as unknown as Json,
+                };
+              })
+            );
+            setSavedBlocksModalSubject((prev) => {
+              if (!prev || prev.id !== updatedSubjectId) return prev;
+              const cfg = parseRecurringConfig(prev.recurring_config, prev.name);
+              return {
+                ...prev,
+                recurring_config: {
+                  ...cfg,
+                  saved_blocks: updatedBlocks,
+                } as unknown as Json,
+              };
+            });
+            if (recurringSubject?.id === updatedSubjectId && recurringDraft) {
+              setRecurringDraft({
+                ...recurringDraft,
+                saved_blocks: updatedBlocks,
+              });
+            }
+          }}
+        />
       )}
     </Box>
   );

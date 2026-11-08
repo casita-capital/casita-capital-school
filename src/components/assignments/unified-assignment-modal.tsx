@@ -909,7 +909,7 @@ export function QuickGradeAssignmentModal({
       typeof assignment.total_problems === 'number'
         ? String(assignment.total_problems)
         : assignment.category === 'spelling_test'
-        ? '20'
+        ? '18'
         : ''
     );
     setMissedProblems(
@@ -1205,7 +1205,7 @@ export function QuickGradeAssignmentModal({
                               : 'Total Problems'
                           }
                           placeholder={
-                            assignment.category === 'spelling_test' ? '20' : '25'
+                            assignment.category === 'spelling_test' ? '18' : '25'
                           }
                           InputLabelProps={{ shrink: true }}
                           value={totalProblems}
@@ -1694,7 +1694,7 @@ export function UnifiedAssignmentModal({
       typeof initialValues?.total_problems === 'number'
         ? String(initialValues.total_problems)
         : isSpellingSub
-        ? '20'
+        ? '18'
         : ''
     );
     setMissedProblems(
@@ -1824,7 +1824,7 @@ export function UnifiedAssignmentModal({
       setPointsPossible(String(typeInfo.default_points));
       setIsGraded(typeInfo.is_graded_by_default);
       if (nextSlug === 'spelling_test' && !totalProblems) {
-        setTotalProblems('20');
+        setTotalProblems('18');
       }
     }
   };
@@ -2730,8 +2730,8 @@ export function UnifiedAssignmentModal({
                                   setTitle('Week {week} Spelling Test');
                                   setCategorySlug('spelling_test');
                                   setGradingMode('problems_calculator');
-                                  setPointsPossible('20');
-                                  setTotalProblems('20');
+                                  setPointsPossible('18');
+                                  setTotalProblems('18');
                                   setInstructions(
                                     `Weekly Spelling Test (18–20 words) linked to "${item.line}" on ${item.dayLabel}.`
                                   );
@@ -3055,7 +3055,7 @@ export function UnifiedAssignmentModal({
                                   ? 'Default Total Problems'
                                   : 'Total Problems'
                               }
-                              placeholder={categorySlug === 'spelling_test' ? '20' : '25'}
+                              placeholder={categorySlug === 'spelling_test' ? '18' : '25'}
                               InputLabelProps={{ shrink: true }}
                               value={totalProblems}
                               onChange={(e) => setTotalProblems(e.target.value)}

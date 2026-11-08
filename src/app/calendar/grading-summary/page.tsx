@@ -59,6 +59,7 @@ import {
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { RouterLink } from 'src/components/base/router-link';
+import { useSchoolSettings } from 'src/contexts/school-settings';
 import { stripVerifiedMetaMarker } from 'src/components/base/formatted-parent-note';
 import {
   ApiGradeOverrideWarningModal,
@@ -306,8 +307,12 @@ function WeeklyGradingSummaryContent() {
     };
   }, [weekStartDate]);
 
-  const loadSummaryData = useCallback(async () => {
-    setLoading(true);
+  const { isSyncingApi, syncApiScoresNow, apiLastSyncedAt } = useSchoolSettings();
+
+  const loadSummaryData = useCallback(async (silentRefresh = false) => {
+    if (!silentRefresh) {
+      setLoading(true);
+    }
     setLoadError(null);
     try {
       void resolveAndSyncActiveUser(supabase);
@@ -382,6 +387,16 @@ function WeeklyGradingSummaryContent() {
 
   useEffect(() => {
     void loadSummaryData();
+  }, [loadSummaryData]);
+
+  useEffect(() => {
+    const handleApiSynced = () => {
+      void loadSummaryData(true);
+    };
+    window.addEventListener('memoria-api-synced', handleApiSynced);
+    return () => {
+      window.removeEventListener('memoria-api-synced', handleApiSynced);
+    };
   }, [loadSummaryData]);
 
   const subjectMap = useMemo(() => {
@@ -2541,6 +2556,30 @@ function WeeklyGradingSummaryContent() {
             )}
 
             <Divider orientation="vertical" flexItem sx={{ mx: 0.5 }} />
+
+            <Tooltip
+              title={
+                apiLastSyncedAt
+                  ? `Pull latest Memoria Academy grades • Last synced: ${new Date(
+                      apiLastSyncedAt
+                    ).toLocaleString()}`
+                  : 'Pull latest Memoria Academy grades'
+              }
+            >
+              <span>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  color="primary"
+                  disabled={isSyncingApi}
+                  onClick={() => void syncApiScoresNow({ silent: false })}
+                  startIcon={<RefreshCw size={14} />}
+                  sx={{ fontWeight: 700, textTransform: 'none', borderRadius: 1 }}
+                >
+                  {isSyncingApi ? 'Syncing API...' : 'Refresh API Scores'}
+                </Button>
+              </span>
+            </Tooltip>
 
             <Button
               component={RouterLink}

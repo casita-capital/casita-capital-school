@@ -26,7 +26,7 @@ INSERT INTO school.assignment_types (name, slug, description, scoring_mode, defa
 VALUES
   ('Math Problem Set', 'math_problem_set', 'Daily or bi-weekly math workbook and textbook problem sets. Enter Total Problems and Missed Problems after completion to automatically compute % correct.', 'problems_calculator', 100, 30, '#0C74E4', 'Calculator', true, 1),
   ('Daily Homework', 'homework', 'Regular daily or weekly homework assignments, worksheets, and practice exercises.', 'points', 100, 25, '#02876f', 'FileText', true, 2),
-  ('Spelling Test', 'spelling_test', 'Weekly Thursday or Friday spelling assessment. Enter total words and missed words to calculate % score.', 'problems_calculator', 20, 40, '#D97706', 'CheckSquare', true, 3),
+  ('Spelling Test', 'spelling_test', 'Weekly Thursday or Friday spelling assessment. Enter total words and missed words to calculate % score.', 'problems_calculator', 18, 40, '#D97706', 'CheckSquare', true, 3),
   ('Quiz', 'quiz', 'Short periodic assessments checking comprehension of recent lessons, vocabulary, or concepts.', 'points', 50, 20, '#894AE0', 'Sparkles', true, 4),
   ('Unit Test / Exam', 'test', 'Major chapter, unit, or semester exams evaluating cumulative mastery of course material.', 'points', 100, 35, '#ea2012', 'Award', true, 5),
   ('Class Participation', 'participation', 'Engagement, preparedness, discussion, and attentiveness attached to each class event, week, module, or semester.', 'points', 10, 10, '#018a3c', 'Users', true, 6),
