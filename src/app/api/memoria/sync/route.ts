@@ -445,6 +445,17 @@ function extractStoredIntegration(
     grading_config?: Json | null;
   }>
 ): PortalIntegrationConfig {
+  let cachedWsToken: string | undefined;
+  for (const s of subjects) {
+    if (isRecord(s.grading_config) && isRecord(s.grading_config.portal_integration)) {
+      const tokenCandidate = s.grading_config.portal_integration.wstoken;
+      if (typeof tokenCandidate === 'string' && tokenCandidate.trim()) {
+        cachedWsToken = tokenCandidate.trim();
+        break;
+      }
+    }
+  }
+
   for (const s of subjects) {
     if (isRecord(s.grading_config) && isRecord(s.grading_config.portal_integration)) {
       const pi = s.grading_config.portal_integration;
@@ -473,6 +484,10 @@ function extractStoredIntegration(
             : DEFAULT_MOODLE_BASE_URL,
         username: typeof pi.username === 'string' ? pi.username : DEFAULT_USERNAME,
         password: typeof pi.password === 'string' ? pi.password : DEFAULT_PASSWORD,
+        wstoken:
+          typeof pi.wstoken === 'string' && pi.wstoken.trim()
+            ? pi.wstoken.trim()
+            : cachedWsToken,
         last_synced_at:
           typeof pi.last_synced_at === 'string' ? pi.last_synced_at : undefined,
         auto_refresh_interval_minutes:
@@ -617,15 +632,33 @@ export async function POST(req: NextRequest) {
         ? body.auto_refresh_interval_minutes
         : storedIntegration.auto_refresh_interval_minutes ?? 60;
 
-    // 1. Authenticate with Moodle Portal
-    const token = await authenticateMoodle(moodleBaseUrl, username, password);
+    // 1. Reuse cached Moodle wstoken if available & valid; otherwise authenticate via /login/token.php
+    const canReuseCachedToken =
+      typeof storedIntegration.wstoken === 'string' &&
+      storedIntegration.wstoken.trim().length > 0 &&
+      username === storedIntegration.username &&
+      moodleBaseUrl === storedIntegration.moodle_base_url;
 
-    // 2. Get Site Info (user ID & student name)
-    const siteInfoRaw = await callMoodleRest(
-      moodleBaseUrl,
-      token,
-      'core_webservice_get_site_info'
-    );
+    let token = canReuseCachedToken ? storedIntegration.wstoken!.trim() : '';
+    let siteInfoRaw: unknown = null;
+
+    if (token) {
+      siteInfoRaw = await callMoodleRest(
+        moodleBaseUrl,
+        token,
+        'core_webservice_get_site_info'
+      ).catch(() => null);
+    }
+
+    if (!isRecord(siteInfoRaw) || typeof siteInfoRaw.userid !== 'number') {
+      token = await authenticateMoodle(moodleBaseUrl, username, password);
+      siteInfoRaw = await callMoodleRest(
+        moodleBaseUrl,
+        token,
+        'core_webservice_get_site_info'
+      );
+    }
+
     if (!isRecord(siteInfoRaw) || typeof siteInfoRaw.userid !== 'number') {
       return NextResponse.json(
         { ok: false, error: 'Failed to retrieve student profile from Memoria portal' },
@@ -690,6 +723,25 @@ export async function POST(req: NextRequest) {
     }
 
     if (action === 'discover_courses') {
+      if (token && token !== storedIntegration.wstoken) {
+        for (const s of subjects) {
+          if (isRecord(s.grading_config) && isRecord(s.grading_config.portal_integration)) {
+            const nextGradingCfg = {
+              ...s.grading_config,
+              portal_integration: {
+                ...s.grading_config.portal_integration,
+                wstoken: token,
+              },
+            };
+            await supabase
+              .from('subjects')
+              .update({
+                grading_config: JSON.parse(JSON.stringify(nextGradingCfg)) as Json,
+              })
+              .eq('id', s.id);
+          }
+        }
+      }
       return NextResponse.json({
         ok: true,
         moodle_user_id: moodleUserId,
@@ -720,6 +772,7 @@ export async function POST(req: NextRequest) {
       moodle_base_url: moodleBaseUrl,
       username,
       password,
+      wstoken: token,
       last_synced_at: nowIso,
       auto_refresh_interval_minutes: autoRefreshIntervalMinutes,
       student_fullname: studentFullname,

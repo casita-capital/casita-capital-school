@@ -146,6 +146,7 @@ export interface PortalIntegrationConfig {
   moodle_base_url: string;
   username: string;
   password?: string;
+  wstoken?: string;
   last_synced_at?: string;
   auto_refresh_interval_minutes?: number;
   student_fullname?: string;
