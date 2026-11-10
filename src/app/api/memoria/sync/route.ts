@@ -29,6 +29,7 @@ const DEFAULT_PORTAL_LOGIN_URL = 'https://www.memoriaacademy.com/my-account/';
 const DEFAULT_MOODLE_BASE_URL = 'https://mpoa.memoriapress.com';
 const DEFAULT_USERNAME = 'audrey.womble';
 const DEFAULT_PASSWORD = 'rascallovesme!';
+const TOKEN_REQUEST_COOLDOWN_MS = 24 * 60 * 60 * 1000; // Max 1 new login token request per 24 hours
 
 interface MoodleCourseItem {
   id: number;
@@ -446,12 +447,21 @@ function extractStoredIntegration(
   }>
 ): PortalIntegrationConfig {
   let cachedWsToken: string | undefined;
+  let latestWsTokenRequestedAt: string | undefined;
+  let latestWsTokenRequestedMs = Number.NEGATIVE_INFINITY;
+
   for (const s of subjects) {
     if (isRecord(s.grading_config) && isRecord(s.grading_config.portal_integration)) {
-      const tokenCandidate = s.grading_config.portal_integration.wstoken;
-      if (typeof tokenCandidate === 'string' && tokenCandidate.trim()) {
-        cachedWsToken = tokenCandidate.trim();
-        break;
+      const pi = s.grading_config.portal_integration;
+      if (!cachedWsToken && typeof pi.wstoken === 'string' && pi.wstoken.trim()) {
+        cachedWsToken = pi.wstoken.trim();
+      }
+      if (typeof pi.wstoken_requested_at === 'string' && pi.wstoken_requested_at.trim()) {
+        const parsedMs = Date.parse(pi.wstoken_requested_at.trim());
+        if (!Number.isNaN(parsedMs) && parsedMs > latestWsTokenRequestedMs) {
+          latestWsTokenRequestedMs = parsedMs;
+          latestWsTokenRequestedAt = pi.wstoken_requested_at.trim();
+        }
       }
     }
   }
@@ -488,6 +498,11 @@ function extractStoredIntegration(
           typeof pi.wstoken === 'string' && pi.wstoken.trim()
             ? pi.wstoken.trim()
             : cachedWsToken,
+        wstoken_requested_at:
+          latestWsTokenRequestedAt ??
+          (typeof pi.wstoken_requested_at === 'string' && pi.wstoken_requested_at.trim()
+            ? pi.wstoken_requested_at.trim()
+            : undefined),
         last_synced_at:
           typeof pi.last_synced_at === 'string' ? pi.last_synced_at : undefined,
         auto_refresh_interval_minutes:
@@ -632,7 +647,7 @@ export async function POST(req: NextRequest) {
         ? body.auto_refresh_interval_minutes
         : storedIntegration.auto_refresh_interval_minutes ?? 60;
 
-    // 1. Reuse cached Moodle wstoken if available & valid; otherwise authenticate via /login/token.php
+    // 1. Reuse cached Moodle wstoken if available & valid; otherwise authenticate via /login/token.php (max 1 login request per 24h)
     const canReuseCachedToken =
       typeof storedIntegration.wstoken === 'string' &&
       storedIntegration.wstoken.trim().length > 0 &&
@@ -640,6 +655,7 @@ export async function POST(req: NextRequest) {
       moodleBaseUrl === storedIntegration.moodle_base_url;
 
     let token = canReuseCachedToken ? storedIntegration.wstoken!.trim() : '';
+    let wsTokenRequestedAt = storedIntegration.wstoken_requested_at;
     let siteInfoRaw: unknown = null;
 
     if (token) {
@@ -651,6 +667,46 @@ export async function POST(req: NextRequest) {
     }
 
     if (!isRecord(siteInfoRaw) || typeof siteInfoRaw.userid !== 'number') {
+      const lastRequestedMs = wsTokenRequestedAt ? Date.parse(wsTokenRequestedAt) : Number.NaN;
+      const nowMs = Date.now();
+      if (
+        !Number.isNaN(lastRequestedMs) &&
+        nowMs - lastRequestedMs < TOKEN_REQUEST_COOLDOWN_MS
+      ) {
+        const nextAllowedIso = new Date(
+          lastRequestedMs + TOKEN_REQUEST_COOLDOWN_MS
+        ).toISOString();
+        return NextResponse.json(
+          {
+            ok: false,
+            rate_limited: true,
+            error: `Moodle token is expired, and a new login token was already requested within the last 24 hours (${wsTokenRequestedAt}). Next token login request allowed after ${nextAllowedIso}.`,
+          },
+          { status: 429 }
+        );
+      }
+
+      wsTokenRequestedAt = new Date(nowMs).toISOString();
+
+      // Persist wstoken_requested_at immediately before calling /login/token.php so we never exceed 1 login attempt per 24 hours
+      for (const s of subjects) {
+        if (isRecord(s.grading_config) && isRecord(s.grading_config.portal_integration)) {
+          const nextGradingCfg = {
+            ...s.grading_config,
+            portal_integration: {
+              ...s.grading_config.portal_integration,
+              wstoken_requested_at: wsTokenRequestedAt,
+            },
+          };
+          await supabase
+            .from('subjects')
+            .update({
+              grading_config: JSON.parse(JSON.stringify(nextGradingCfg)) as Json,
+            })
+            .eq('id', s.id);
+        }
+      }
+
       token = await authenticateMoodle(moodleBaseUrl, username, password);
       siteInfoRaw = await callMoodleRest(
         moodleBaseUrl,
@@ -723,7 +779,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (action === 'discover_courses') {
-      if (token && token !== storedIntegration.wstoken) {
+      if (token && (token !== storedIntegration.wstoken || wsTokenRequestedAt !== storedIntegration.wstoken_requested_at)) {
         for (const s of subjects) {
           if (isRecord(s.grading_config) && isRecord(s.grading_config.portal_integration)) {
             const nextGradingCfg = {
@@ -731,6 +787,7 @@ export async function POST(req: NextRequest) {
               portal_integration: {
                 ...s.grading_config.portal_integration,
                 wstoken: token,
+                wstoken_requested_at: wsTokenRequestedAt,
               },
             };
             await supabase
@@ -773,6 +830,7 @@ export async function POST(req: NextRequest) {
       username,
       password,
       wstoken: token,
+      wstoken_requested_at: wsTokenRequestedAt,
       last_synced_at: nowIso,
       auto_refresh_interval_minutes: autoRefreshIntervalMinutes,
       student_fullname: studentFullname,

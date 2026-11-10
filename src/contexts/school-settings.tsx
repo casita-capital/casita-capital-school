@@ -19,6 +19,7 @@ const SENTINEL_API_SYNC_CONFIG_DATE = '2000-01-03';
 
 const DEFAULT_SCHOOL_NAME = 'Casita Capital School';
 export const DEFAULT_API_REFRESH_INTERVAL_MINUTES = 60;
+export const HOURLY_SYNC_TARGET_MINUTE = 15;
 
 export interface ApiRefreshIntervalOption {
   value: number;
@@ -54,9 +55,9 @@ export const API_REFRESH_INTERVAL_OPTIONS: ApiRefreshIntervalOption[] = [
   },
   {
     value: 60,
-    label: 'Every 1 Hour (Recommended)',
-    shortLabel: 'Every 1h',
-    description: 'Balanced automatic sync every hour and whenever you open the app after an hour.',
+    label: 'Every 1 Hour at :15 Past (Recommended)',
+    shortLabel: 'Every 1h (:15)',
+    description: 'Automatically refreshes portal grades every hour at :15 past the hour.',
   },
   {
     value: 120,
@@ -184,6 +185,7 @@ export const SchoolSettingsProvider: FC<{ children: ReactNode }> = ({ children }
 
   const isSyncingRef = useRef<boolean>(false);
   const lastSyncedAtRef = useRef<string | null>(null);
+  const lastAttemptedSyncMsRef = useRef<number>(0);
   const intervalMinutesRef = useRef<number>(DEFAULT_API_REFRESH_INTERVAL_MINUTES);
 
   const supabase = createClient();
@@ -200,6 +202,7 @@ export const SchoolSettingsProvider: FC<{ children: ReactNode }> = ({ children }
     async (options?: { silent?: boolean }): Promise<boolean> => {
       if (isSyncingRef.current) return false;
       isSyncingRef.current = true;
+      lastAttemptedSyncMsRef.current = Date.now();
       setIsSyncingApi(true);
       const silent = options?.silent === true;
 
@@ -445,19 +448,38 @@ export const SchoolSettingsProvider: FC<{ children: ReactNode }> = ({ children }
     void loadDbSettings();
   }, [supabase]);
 
-  // 3. Automatic Background API Refresh Loop (runs on mount after loading, on timer, and on tab focus)
+  // 3. Automatic Background API Refresh Loop (hourly anchored at :15 past the hour, or custom interval)
   useEffect(() => {
     if (loading) return;
+
+    const getLastHandledMs = (): number => {
+      const lastSyncedStr = lastSyncedAtRef.current;
+      const parsedSyncedMs = lastSyncedStr ? Date.parse(lastSyncedStr) : Number.NaN;
+      const validSyncedMs = Number.isNaN(parsedSyncedMs) ? 0 : parsedSyncedMs;
+      return Math.max(validSyncedMs, lastAttemptedSyncMsRef.current);
+    };
 
     const checkAndSyncIfDue = () => {
       const intervalMins = intervalMinutesRef.current;
       if (intervalMins <= 0 || isSyncingRef.current) return;
 
-      const lastSyncedStr = lastSyncedAtRef.current;
-      const lastSyncedMs = lastSyncedStr ? Date.parse(lastSyncedStr) : Number.NaN;
-      const elapsedMs = Number.isNaN(lastSyncedMs)
-        ? Number.POSITIVE_INFINITY
-        : Date.now() - lastSyncedMs;
+      const nowMs = Date.now();
+      const lastHandledMs = getLastHandledMs();
+
+      // For the 60-minute (hourly) setting, strictly pull at :15 after the hour
+      if (intervalMins === 60) {
+        const nowDate = new Date(nowMs);
+        if (nowDate.getMinutes() === HOURLY_SYNC_TARGET_MINUTE) {
+          const currentHourSlot = new Date(nowMs);
+          currentHourSlot.setMinutes(HOURLY_SYNC_TARGET_MINUTE, 0, 0);
+          if (lastHandledMs < currentHourSlot.getTime()) {
+            void syncApiScoresNow({ silent: true });
+          }
+        }
+        return;
+      }
+
+      const elapsedMs = lastHandledMs > 0 ? nowMs - lastHandledMs : Number.POSITIVE_INFINITY;
       const thresholdMs = intervalMins * 60 * 1000;
 
       if (elapsedMs >= thresholdMs) {
@@ -465,8 +487,32 @@ export const SchoolSettingsProvider: FC<{ children: ReactNode }> = ({ children }
       }
     };
 
-    // Run check immediately once settings have loaded
+    let hourlySlotTimeoutId: number | null = null;
+
+    const scheduleNextHourlyFifteenSlot = () => {
+      if (hourlySlotTimeoutId !== null) {
+        window.clearTimeout(hourlySlotTimeoutId);
+        hourlySlotTimeoutId = null;
+      }
+      if (intervalMinutesRef.current !== 60) return;
+
+      const now = new Date();
+      const target = new Date(now.getTime());
+      target.setMinutes(HOURLY_SYNC_TARGET_MINUTE, 0, 0);
+      if (now.getTime() >= target.getTime()) {
+        target.setHours(target.getHours() + 1);
+      }
+      const delayMs = Math.max(1000, target.getTime() - now.getTime());
+
+      hourlySlotTimeoutId = window.setTimeout(() => {
+        checkAndSyncIfDue();
+        scheduleNextHourlyFifteenSlot();
+      }, delayMs);
+    };
+
+    // Run check immediately once settings have loaded & schedule exact :15 timer
     checkAndSyncIfDue();
+    scheduleNextHourlyFifteenSlot();
 
     // Check every 30 seconds while the app stays open
     const timerId = window.setInterval(checkAndSyncIfDue, 30 * 1000);
@@ -474,6 +520,7 @@ export const SchoolSettingsProvider: FC<{ children: ReactNode }> = ({ children }
     const handleVisibilityOrFocus = () => {
       if (document.visibilityState === 'visible') {
         checkAndSyncIfDue();
+        scheduleNextHourlyFifteenSlot();
       }
     };
 
@@ -481,6 +528,9 @@ export const SchoolSettingsProvider: FC<{ children: ReactNode }> = ({ children }
     document.addEventListener('visibilitychange', handleVisibilityOrFocus);
 
     return () => {
+      if (hourlySlotTimeoutId !== null) {
+        window.clearTimeout(hourlySlotTimeoutId);
+      }
       window.clearInterval(timerId);
       window.removeEventListener('focus', handleVisibilityOrFocus);
       document.removeEventListener('visibilitychange', handleVisibilityOrFocus);

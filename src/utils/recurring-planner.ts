@@ -147,6 +147,7 @@ export interface PortalIntegrationConfig {
   username: string;
   password?: string;
   wstoken?: string;
+  wstoken_requested_at?: string;
   last_synced_at?: string;
   auto_refresh_interval_minutes?: number;
   student_fullname?: string;
