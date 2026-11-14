@@ -28,7 +28,7 @@ export const maxDuration = 60;
 const DEFAULT_PORTAL_LOGIN_URL = 'https://www.memoriaacademy.com/my-account/';
 const DEFAULT_MOODLE_BASE_URL = 'https://mpoa.memoriapress.com';
 const DEFAULT_USERNAME = 'audrey.womble';
-const DEFAULT_PASSWORD = 'rascallovesme!';
+const DEFAULT_PASSWORD = 'Ihatenuts';
 const TOKEN_REQUEST_COOLDOWN_MS = 24 * 60 * 60 * 1000; // Max 1 new login token request per 24 hours
 
 interface MoodleCourseItem {
@@ -493,7 +493,10 @@ function extractStoredIntegration(
             ? pi.moodle_base_url
             : DEFAULT_MOODLE_BASE_URL,
         username: typeof pi.username === 'string' ? pi.username : DEFAULT_USERNAME,
-        password: typeof pi.password === 'string' ? pi.password : DEFAULT_PASSWORD,
+        password:
+          typeof pi.password === 'string' && pi.password !== 'rascallovesme!'
+            ? pi.password
+            : DEFAULT_PASSWORD,
         wstoken:
           typeof pi.wstoken === 'string' && pi.wstoken.trim()
             ? pi.wstoken.trim()

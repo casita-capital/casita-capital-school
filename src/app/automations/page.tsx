@@ -198,7 +198,7 @@ function AutomationsContent() {
   const [portalLoginUrl, setPortalLoginUrl] = useState<string>('https://www.memoriaacademy.com/my-account/');
   const [moodleBaseUrl, setMoodleBaseUrl] = useState<string>('https://mpoa.memoriapress.com');
   const [apiUsername, setApiUsername] = useState<string>('audrey.womble');
-  const [apiPassword, setApiPassword] = useState<string>('rascallovesme!');
+  const [apiPassword, setApiPassword] = useState<string>('Ihatenuts');
   const [showApiPassword, setShowApiPassword] = useState(false);
   const [apiStudentName, setApiStudentName] = useState<string>('Audrey Womble');
   const [apiLastSyncedAt, setApiLastSyncedAt] = useState<string>('');
