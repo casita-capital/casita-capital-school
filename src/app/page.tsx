@@ -53,6 +53,7 @@ import {
   calculateSubjectGradeSummary,
   DEFAULT_ASSIGNMENT_TYPES,
   formatClassGradeDisplay,
+  getAssignmentDisplayDueDate,
   GradebookAssignment,
   isAssignmentApiSynced,
   isAssignmentCompletedOrSubmitted,
@@ -1184,7 +1185,7 @@ export default function SchoolDashboardPage() {
                             )}
                           </TableCell>
                           <TableCell sx={{ py: 1.1, px: 1, whiteSpace: 'nowrap' }}>
-                            <Tooltip title={a.due_date} placement="top" arrow>
+                            <Tooltip title={getAssignmentDisplayDueDate(a)} placement="top" arrow>
                               <Typography
                                 variant="caption"
                                 fontWeight={700}
@@ -1196,7 +1197,7 @@ export default function SchoolDashboardPage() {
                                   display: 'inline-block',
                                 }}
                               >
-                                {formatHumanDate(a.due_date, true)}
+                                {formatHumanDate(getAssignmentDisplayDueDate(a), true)}
                               </Typography>
                             </Tooltip>
                           </TableCell>
@@ -1911,20 +1912,32 @@ export default function SchoolDashboardPage() {
                             noWrap
                             sx={{ fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}
                           >
-                            {item.weekdayLabel
-                              ? `${item.weekdayLabel}, ${formatHumanDate(item.dueDate, false)}`
-                              : formatHumanDate(item.dueDate, true)}
+                            {(() => {
+                              const displayDueDate = item.assignmentRecord
+                                ? getAssignmentDisplayDueDate(item.assignmentRecord)
+                                : item.dueDate;
+                              if (displayDueDate !== item.dueDate) {
+                                return formatHumanDate(displayDueDate, true);
+                              }
+                              return item.weekdayLabel
+                                ? `${item.weekdayLabel}, ${formatHumanDate(item.dueDate, false)}`
+                                : formatHumanDate(item.dueDate, true);
+                            })()}
                           </Typography>
-                          {item.openDate && item.openDate !== item.dueDate && (
-                            <Typography
-                              variant="caption"
-                              color="text.secondary"
-                              noWrap
-                              sx={{ fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}
-                            >
-                              Opens {formatHumanDate(item.openDate, false)}
-                            </Typography>
-                          )}
+                          {item.openDate &&
+                            item.openDate !==
+                              (item.assignmentRecord
+                                ? getAssignmentDisplayDueDate(item.assignmentRecord)
+                                : item.dueDate) && (
+                              <Typography
+                                variant="caption"
+                                color="text.secondary"
+                                noWrap
+                                sx={{ fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}
+                              >
+                                Opens {formatHumanDate(item.openDate, false)}
+                              </Typography>
+                            )}
                         </Stack>
                       </TableCell>
                       <TableCell align="right" sx={{ py: 1.25, whiteSpace: 'nowrap' }}>

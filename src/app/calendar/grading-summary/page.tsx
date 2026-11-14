@@ -74,6 +74,7 @@ import {
   computeAssignmentMetrics,
   DEFAULT_ASSIGNMENT_TYPES,
   formatClassGradeDisplay,
+  getAssignmentDisplayDueDate,
   GradebookAssignment,
   isAssignmentApiSynced,
   isAssignmentCompletedOrSubmitted,
@@ -1942,10 +1943,19 @@ function WeeklyGradingSummaryContent() {
                 </Typography>
               )}
               <Typography variant="caption" color="text.secondary" noWrap display="block" sx={{ fontVariantNumeric: 'tabular-nums' }}>
-                {formatHumanDate(item.dateStr, true)}
-                {item.openDate && item.openDate !== item.dateStr
-                  ? ` · Opened ${formatHumanDate(item.openDate, false)}`
-                  : ''}
+                {(() => {
+                  const displayDueDate = item.assignmentRecord
+                    ? getAssignmentDisplayDueDate(item.assignmentRecord)
+                    : item.dateStr;
+                  return (
+                    <>
+                      {formatHumanDate(displayDueDate, true)}
+                      {item.openDate && item.openDate !== displayDueDate
+                        ? ` · Opened ${formatHumanDate(item.openDate, false)}`
+                        : ''}
+                    </>
+                  );
+                })()}
               </Typography>
             </Box>
           </Stack>

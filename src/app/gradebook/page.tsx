@@ -77,6 +77,7 @@ import {
   DEFAULT_ASSIGNMENT_TYPES,
   formatClassGradeDisplay,
   getAssignmentDayNumber,
+  getAssignmentDisplayDueDate,
   getAssignmentWeekNumber,
   GradebookAssignment,
   isAssignmentApiSynced,
@@ -1194,7 +1195,7 @@ function GradebookHubContent() {
         escapeCsv(policy?.course_level || 'standard'),
         escapeCsv(a.title),
         escapeCsv(a.category),
-        escapeCsv(a.due_date),
+        escapeCsv(getAssignmentDisplayDueDate(a)),
         escapeCsv(a.completed_at ? a.completed_at.split('T')[0] : ''),
         escapeCsv(a.workflow_status || a.status),
         escapeCsv(a.grading_mode || 'points'),
@@ -3182,8 +3183,9 @@ function GradebookHubContent() {
                                                       item.feedback ||
                                                       '';
                                                     const effectiveDueDate =
-                                                      matchedAssignment?.due_date ||
+                                                      matchedMeta?.official_portal_due_date ||
                                                       item.due_date ||
+                                                      matchedAssignment?.due_date ||
                                                       null;
 
                                                     return (
@@ -3746,7 +3748,7 @@ function GradebookHubContent() {
                                                               color="text.secondary"
                                                               sx={{ whiteSpace: 'nowrap' }}
                                                             >
-                                                              {formatCompactDate(a.due_date)}
+                                                              {formatCompactDate(getAssignmentDisplayDueDate(a))}
                                                             </Typography>
                                                           </TableCell>
 
@@ -4260,7 +4262,7 @@ function GradebookHubContent() {
                                                               color="text.secondary"
                                                               sx={{ whiteSpace: 'nowrap' }}
                                                             >
-                                                              {formatCompactDate(a.due_date)}
+                                                              {formatCompactDate(getAssignmentDisplayDueDate(a))}
                                                             </Typography>
                                                           </TableCell>
 
@@ -5337,7 +5339,7 @@ function GradebookHubContent() {
                           return (
                             <TableRow key={a.id} sx={{ borderBottom: '1px solid #eee' }}>
                               <TableCell sx={{ color: '#333', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
-                                {formatCompactDate(a.due_date)}
+                                {formatCompactDate(getAssignmentDisplayDueDate(a))}
                               </TableCell>
                               <TableCell sx={{ fontWeight: 600, color: '#000', whiteSpace: 'nowrap' }}>
                                 {sub?.name || 'General'}

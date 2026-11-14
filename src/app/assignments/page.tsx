@@ -72,6 +72,7 @@ import {
   DEFAULT_ASSIGNMENT_TYPES,
   formatClassGradeDisplay,
   generateWeekAssignmentsFromTemplatesAndPolicy,
+  getAssignmentDisplayDueDate,
   getLocalTodayDateString,
   GradebookAssignment,
   isAssignmentApiSynced,
@@ -1789,6 +1790,7 @@ function AssignmentsPageContent() {
       const typeInfo = typeMap.get(a.category);
       const meta = assignmentMetaMap.get(a.id);
       const moodleMeta = meta?.moodleMeta ?? null;
+      const displayDueDate = getAssignmentDisplayDueDate(a);
       const isCompleted = isAssignmentCompletedOrSubmitted(a, moodleMeta);
       const isSubmittedState =
         a.workflow_status === 'submitted' ||
@@ -1983,7 +1985,7 @@ function AssignmentsPageContent() {
           {/* 4. OPEN / DUE DATES (Single-Row Human-Readable) */}
           <TableCell sx={{ width: 165, whiteSpace: 'nowrap' }}>
             <Stack spacing={0.35} alignItems="flex-start">
-              {a.assigned_date && a.assigned_date !== a.due_date && (
+              {a.assigned_date && a.assigned_date !== displayDueDate && (
                 <Typography
                   variant="caption"
                   color="text.secondary"
@@ -1999,9 +2001,9 @@ function AssignmentsPageContent() {
               <Chip
                 icon={<CalendarIcon size={12} />}
                 label={
-                  a.assigned_date && a.assigned_date !== a.due_date
-                    ? `Due ${formatCompactDate(a.due_date)}`
-                    : formatCompactDate(a.due_date)
+                  a.assigned_date && a.assigned_date !== displayDueDate
+                    ? `Due ${formatCompactDate(displayDueDate)}`
+                    : formatCompactDate(displayDueDate)
                 }
                 size="small"
                 variant="outlined"
@@ -3381,7 +3383,7 @@ function AssignmentsPageContent() {
                                 whiteSpace: 'nowrap',
                               }}
                             >
-                              {formatCompactDate(st.due_date)}
+                              {formatCompactDate(getAssignmentDisplayDueDate(st))}
                             </Typography>
                           </TableCell>
                           <TableCell align="right" sx={{ whiteSpace: 'nowrap' }}>

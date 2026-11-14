@@ -5,12 +5,14 @@ import {
   ApiLinkedAssessment,
   ApiSyllabusWeek,
   CourseSyllabusData,
+  DAY_KEYS,
   MathSyllabusDay,
   PortalIntegrationConfig,
   PortalIntegrationCourseMapping,
   SubjectRecurringConfig,
   createDefaultApiAutoPopulateConfig,
   createDefaultInstructorInfo,
+  getApiSyllabusWeekStartDay,
   parseRecurringConfig,
 } from 'src/utils/recurring-planner';
 import {
@@ -420,18 +422,20 @@ function parseSectionDateRange(sectionTitle: string): {
   const startYear = startMonthNum >= 8 ? 2026 : 2027;
   const endYear = endMonthNum >= 8 ? 2026 : 2027;
 
-  // Section header is Sunday..Saturday; Monday is Sunday + 1 day, Friday is Saturday - 1 day
-  const sunDate = new Date(Date.UTC(startYear, startMonthNum - 1, startDay));
-  sunDate.setUTCDate(sunDate.getUTCDate() + 1);
-  const monY = sunDate.getUTCFullYear();
-  const monM = String(sunDate.getUTCMonth() + 1).padStart(2, '0');
-  const monD = String(sunDate.getUTCDate()).padStart(2, '0');
+  // Section header may start on Sunday (e.g., Sep 6 - Sep 12) or Monday (e.g., Sep 7 - Sep 13)
+  const monDate = new Date(Date.UTC(startYear, startMonthNum - 1, startDay));
+  if (monDate.getUTCDay() === 0) {
+    monDate.setUTCDate(monDate.getUTCDate() + 1);
+  }
+  const monY = monDate.getUTCFullYear();
+  const monM = String(monDate.getUTCMonth() + 1).padStart(2, '0');
+  const monD = String(monDate.getUTCDate()).padStart(2, '0');
 
-  const satDate = new Date(Date.UTC(endYear, endMonthNum - 1, endDay));
-  satDate.setUTCDate(satDate.getUTCDate() - 1);
-  const friY = satDate.getUTCFullYear();
-  const friM = String(satDate.getUTCMonth() + 1).padStart(2, '0');
-  const friD = String(satDate.getUTCDate()).padStart(2, '0');
+  const friDate = new Date(monDate.getTime());
+  friDate.setUTCDate(friDate.getUTCDate() + 4);
+  const friY = friDate.getUTCFullYear();
+  const friM = String(friDate.getUTCMonth() + 1).padStart(2, '0');
+  const friD = String(friDate.getUTCDate()).padStart(2, '0');
 
   return {
     mondayStartDate: `${monY}-${monM}-${monD}`,
@@ -1633,33 +1637,34 @@ export async function POST(req: NextRequest) {
         const weekRange = matchedWeekObj
           ? parseSectionDateRange(matchedWeekObj.section_title)
           : null;
-        let resolvedDueDate =
-          existingMatch?.due_date && existingMatch.due_date !== '2026-10-16'
-            ? existingMatch.due_date
-            : item.due_date || weekRange?.fridayCloseDate || '2026-10-16';
-        if (weekRange && item.due_date) {
+        let syllabusTargetDate: string | null = null;
+        if (weekRange) {
           const monMs = Date.parse(`${weekRange.mondayStartDate}T00:00:00Z`);
-          const dueMs = Date.parse(`${item.due_date}T00:00:00Z`);
-          const daysAfterMon = Math.round((dueMs - monMs) / (1000 * 60 * 60 * 24));
-          // If Moodle has a blanket quarter-end close date (> 10 days after week start),
-          // preserve an already-scheduled due_date or place on the week's completion Thursday (+10 days for Tue-start courses)
-          if (daysAfterMon > 10) {
-            if (existingMatch?.due_date && existingMatch.due_date !== item.due_date) {
-              resolvedDueDate = existingMatch.due_date;
-            } else {
-              const targetDate = new Date(monMs);
-              const offsetDays =
-                autoPopulateCfg.week_start_day && autoPopulateCfg.week_start_day !== 'monday'
-                  ? 10
-                  : 3;
-              targetDate.setUTCDate(targetDate.getUTCDate() + offsetDays);
-              const ty = targetDate.getUTCFullYear();
-              const tm = String(targetDate.getUTCMonth() + 1).padStart(2, '0');
-              const td = String(targetDate.getUTCDate()).padStart(2, '0');
-              resolvedDueDate = `${ty}-${tm}-${td}`;
-            }
-          }
+          const startDay = getApiSyllabusWeekStartDay(autoPopulateCfg);
+          const targetDayKey = autoPopulateCfg.quiz_assignment_target_day || 'thursday';
+          const targetDayIdx = Math.max(0, DAY_KEYS.indexOf(targetDayKey));
+          const offsetDays = startDay !== 'monday' ? 7 + targetDayIdx : targetDayIdx;
+          const targetDate = new Date(monMs);
+          targetDate.setUTCDate(targetDate.getUTCDate() + offsetDays);
+          const ty = targetDate.getUTCFullYear();
+          const tm = String(targetDate.getUTCMonth() + 1).padStart(2, '0');
+          const td = String(targetDate.getUTCDate()).padStart(2, '0');
+          syllabusTargetDate = `${ty}-${tm}-${td}`;
         }
+
+        const existingDueDayOfWeek = existingMatch?.due_date
+          ? new Date(`${existingMatch.due_date}T00:00:00Z`).getUTCDay()
+          : -1;
+        const isExistingValidWeekday =
+          existingMatch?.due_date &&
+          existingMatch.due_date !== '2026-10-16' &&
+          existingDueDayOfWeek >= 1 &&
+          existingDueDayOfWeek <= 5 &&
+          existingMatch.due_date !== item.due_date;
+
+        const resolvedDueDate = isExistingValidWeekday
+          ? existingMatch.due_date
+          : syllabusTargetDate || item.due_date || weekRange?.fridayCloseDate || '2026-10-16';
         const dueDate = resolvedDueDate;
         const openDate = item.open_date || weekRange?.mondayStartDate || dueDate;
 

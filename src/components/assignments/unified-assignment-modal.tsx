@@ -2182,8 +2182,16 @@ export function UnifiedAssignmentModal({
               moodle_meta: {
                 ...(existingMoodleMeta || {}),
                 ...(isNonApiManualOrInternal ? { is_internal_grade: true } : {}),
-                official_portal_open_date: assignedDate || dueDate,
-                official_portal_due_date: dueDate,
+                official_portal_open_date:
+                  typeof existingMoodleMeta?.moodle_cmid === 'number' &&
+                  existingMoodleMeta.official_portal_open_date
+                    ? existingMoodleMeta.official_portal_open_date
+                    : assignedDate || dueDate,
+                official_portal_due_date:
+                  typeof existingMoodleMeta?.moodle_cmid === 'number' &&
+                  existingMoodleMeta.official_portal_due_date
+                    ? existingMoodleMeta.official_portal_due_date
+                    : dueDate,
                 ...(matchedSylAct
                   ? {
                       moodle_category: 'Activity',

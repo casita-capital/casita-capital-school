@@ -896,6 +896,18 @@ export function parseAssignmentMoodleMeta(
   };
 }
 
+export function getAssignmentDisplayDueDate(a: GradebookAssignment): string {
+  const mMeta = parseAssignmentMoodleMeta(a.state_standards);
+  if (
+    (typeof mMeta?.moodle_cmid === 'number' || typeof mMeta?.moodle_course_id === 'number') &&
+    typeof mMeta?.official_portal_due_date === 'string' &&
+    mMeta.official_portal_due_date.trim().length > 0
+  ) {
+    return mMeta.official_portal_due_date.trim();
+  }
+  return a.due_date;
+}
+
 export function getAssignmentDayNumber(a: GradebookAssignment): number | null {
   if (typeof a.syllabus_day_number === 'number' && !Number.isNaN(a.syllabus_day_number)) {
     return a.syllabus_day_number;
@@ -1657,7 +1669,6 @@ export function generateWeekAssignmentsFromTemplatesAndPolicy(params: {
         weekDates[3] ||
         weekDates[weekDates.length - 1];
       const targetDueDate = targetDayInfo?.dateStr || mondayDate;
-      const fridayDate = weekDates[weekDates.length - 1]?.dateStr || targetDueDate;
 
       for (const assessment of matchedWeek.linked_assessments) {
         const cleanTitle = assessment.name
@@ -1678,15 +1689,10 @@ export function generateWeekAssignmentsFromTemplatesAndPolicy(params: {
             : null;
         const letter = pct !== null ? percentageToLetterGrade(pct, policy.grading_scale) : null;
 
-        // If the portal due_date falls within this Mon-Fri week, use that exact day (e.g. Thursday or Friday);
-        // if it is a blanket future quarter-end close date (e.g. 2026-11-06), place it on this week's targetDueDate.
-        const isPortalDueWithinWeek =
-          typeof assessment.due_date === 'string' &&
-          assessment.due_date >= mondayDate &&
-          assessment.due_date <= fridayDate;
-        const resolvedDueDate = isPortalDueWithinWeek
-          ? assessment.due_date!
-          : targetDueDate;
+        // Place the assignment on this week's targetDueDate (quiz_assignment_target_day, e.g. Thursday)
+        // for internal syllabus attachment and chronological sorting, while preserving Moodle's exact due_date
+        // in official_portal_due_date for display.
+        const resolvedDueDate = targetDueDate;
 
         const moodleMeta: MoodleAssignmentMetadata = {
           moodle_cmid: assessment.cmid,
